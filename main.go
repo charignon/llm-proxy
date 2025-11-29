@@ -1097,7 +1097,7 @@ const dashboardHTML = `<!DOCTYPE html>
 <body>
     <div class="container">
         <h1>LLM Proxy</h1>
-        <p class="subtitle">Unified AI gateway with routing, caching, and cost tracking</p>
+        <p class="subtitle">Unified AI gateway with routing, caching, and cost tracking | <a href="/test" style="color:#6366f1">Test Playground →</a></p>
 
         <div class="stats-grid" id="stats-grid">
             <div class="stat-card">
@@ -1214,6 +1214,436 @@ const dashboardHTML = `<!DOCTYPE html>
 func handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(dashboardHTML))
+}
+
+// Test playground HTML
+const testPlaygroundHTML = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Proxy - Test Playground</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0f0f1a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1000px; margin: 0 auto; }
+        h1 { color: #6366f1; margin-bottom: 8px; font-size: 28px; }
+        .subtitle { color: #888; margin-bottom: 24px; }
+        a { color: #6366f1; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 24px;
+        }
+        .tab {
+            padding: 12px 24px;
+            background: #1a1a2e;
+            border: none;
+            border-radius: 8px;
+            color: #888;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .tab.active { background: #6366f1; color: #fff; }
+        .tab:hover:not(.active) { background: #252540; }
+
+        .panel { display: none; }
+        .panel.active { display: block; }
+
+        .form-group { margin-bottom: 16px; }
+        label { display: block; color: #a5b4fc; margin-bottom: 8px; font-weight: 500; }
+
+        textarea, input[type="text"], select {
+            width: 100%;
+            padding: 12px;
+            background: #1a1a2e;
+            border: 1px solid #2d2d44;
+            border-radius: 8px;
+            color: #e0e0e0;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        textarea { min-height: 120px; resize: vertical; }
+        textarea:focus, input:focus, select:focus {
+            outline: none;
+            border-color: #6366f1;
+        }
+
+        .row { display: flex; gap: 16px; }
+        .row > * { flex: 1; }
+
+        .image-upload {
+            border: 2px dashed #2d2d44;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .image-upload:hover { border-color: #6366f1; }
+        .image-upload.has-image { border-style: solid; border-color: #22c55e; }
+        .image-preview { max-width: 100%; max-height: 300px; margin-top: 16px; border-radius: 8px; }
+
+        .submit-btn {
+            background: #6366f1;
+            color: #fff;
+            border: none;
+            padding: 14px 32px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 16px;
+        }
+        .submit-btn:hover { background: #4f46e5; }
+        .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .result-box {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 24px;
+        }
+        .result-header {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #2d2d44;
+        }
+        .result-meta { font-size: 14px; }
+        .result-meta span { color: #888; }
+        .result-meta strong { color: #a5b4fc; }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .badge.openai { background: #10b981; color: #000; }
+        .badge.anthropic { background: #f59e0b; color: #000; }
+        .badge.ollama { background: #6366f1; color: #fff; }
+        .badge.routed { background: #22c55e; color: #000; }
+        .badge.override { background: #f59e0b; color: #000; }
+
+        .result-content {
+            background: #252540;
+            border-radius: 8px;
+            padding: 16px;
+            white-space: pre-wrap;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 14px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .loading { opacity: 0.6; pointer-events: none; }
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #fff;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+        }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+
+        .error { color: #ef4444; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>LLM Proxy Test Playground</h1>
+        <p class="subtitle"><a href="/">← Back to Dashboard</a> | Test routing and model responses</p>
+
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('chat')">Chat Completion</button>
+            <button class="tab" onclick="switchTab('vision')">Vision Analysis</button>
+        </div>
+
+        <!-- Chat Panel -->
+        <div id="chat-panel" class="panel active">
+            <div class="form-group">
+                <label>Prompt</label>
+                <textarea id="chat-prompt" placeholder="Enter your prompt here...">Tell me a short joke about programming.</textarea>
+            </div>
+
+            <div class="row">
+                <div class="form-group">
+                    <label>Sensitive</label>
+                    <select id="chat-sensitive">
+                        <option value="false">false (can use cloud)</option>
+                        <option value="true">true (local only)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Precision</label>
+                    <select id="chat-precision">
+                        <option value="low">low</option>
+                        <option value="medium" selected>medium</option>
+                        <option value="high">high</option>
+                        <option value="very_high">very_high</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Model Override (optional - leave empty to use routing)</label>
+                <input type="text" id="chat-model" placeholder="e.g. gpt-4o, claude-sonnet-4-20250514, qwen3:235b">
+            </div>
+
+            <button class="submit-btn" id="chat-submit" onclick="submitChat()">Send Request</button>
+
+            <div id="chat-result" class="result-box" style="display:none;">
+                <div class="result-header" id="chat-result-header"></div>
+                <div class="result-content" id="chat-result-content"></div>
+            </div>
+        </div>
+
+        <!-- Vision Panel -->
+        <div id="vision-panel" class="panel">
+            <div class="form-group">
+                <label>Image</label>
+                <div class="image-upload" id="image-drop" onclick="document.getElementById('image-input').click()">
+                    <input type="file" id="image-input" accept="image/*" style="display:none" onchange="handleImageSelect(event)">
+                    <p>Click or drag an image here</p>
+                    <img id="image-preview" class="image-preview" style="display:none">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Prompt</label>
+                <textarea id="vision-prompt" placeholder="What should I analyze in this image?">Describe what you see in this image in detail.</textarea>
+            </div>
+
+            <div class="row">
+                <div class="form-group">
+                    <label>Sensitive</label>
+                    <select id="vision-sensitive">
+                        <option value="false">false (can use cloud)</option>
+                        <option value="true">true (local only)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Precision</label>
+                    <select id="vision-precision">
+                        <option value="low">low</option>
+                        <option value="medium" selected>medium</option>
+                        <option value="high">high</option>
+                        <option value="very_high">very_high</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Model Override (optional - leave empty to use routing)</label>
+                <input type="text" id="vision-model" placeholder="e.g. gpt-4o, qwen3-vl:30b">
+            </div>
+
+            <button class="submit-btn" id="vision-submit" onclick="submitVision()">Analyze Image</button>
+
+            <div id="vision-result" class="result-box" style="display:none;">
+                <div class="result-header" id="vision-result-header"></div>
+                <div class="result-content" id="vision-result-content"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedImageBase64 = null;
+
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+            document.querySelector('.tab[onclick*="' + tab + '"]').classList.add('active');
+            document.getElementById(tab + '-panel').classList.add('active');
+        }
+
+        function handleImageSelect(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                selectedImageBase64 = e.target.result;
+                const preview = document.getElementById('image-preview');
+                preview.src = selectedImageBase64;
+                preview.style.display = 'block';
+                document.getElementById('image-drop').classList.add('has-image');
+            };
+            reader.readAsDataURL(file);
+        }
+
+        // Drag and drop
+        const dropZone = document.getElementById('image-drop');
+        dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.style.borderColor = '#6366f1'; });
+        dropZone.addEventListener('dragleave', e => { dropZone.style.borderColor = ''; });
+        dropZone.addEventListener('drop', e => {
+            e.preventDefault();
+            dropZone.style.borderColor = '';
+            const file = e.dataTransfer.files[0];
+            if (file && file.type.startsWith('image/')) {
+                document.getElementById('image-input').files = e.dataTransfer.files;
+                handleImageSelect({target: {files: e.dataTransfer.files}});
+            }
+        });
+
+        async function submitChat() {
+            const btn = document.getElementById('chat-submit');
+            const resultBox = document.getElementById('chat-result');
+            const resultHeader = document.getElementById('chat-result-header');
+            const resultContent = document.getElementById('chat-result-content');
+
+            const prompt = document.getElementById('chat-prompt').value;
+            const sensitive = document.getElementById('chat-sensitive').value === 'true';
+            const precision = document.getElementById('chat-precision').value;
+            const modelOverride = document.getElementById('chat-model').value.trim();
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Processing...';
+            resultBox.style.display = 'none';
+
+            const body = {
+                model: modelOverride || 'auto',
+                messages: [{role: 'user', content: prompt}],
+                sensitive: sensitive,
+                precision: precision,
+                no_cache: true
+            };
+
+            const startTime = Date.now();
+            try {
+                const resp = await fetch('/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body)
+                });
+
+                const latency = Date.now() - startTime;
+                const data = await resp.json();
+
+                if (resp.ok) {
+                    const provider = resp.headers.get('X-LLM-Proxy-Provider') || data.provider || 'unknown';
+                    const model = resp.headers.get('X-LLM-Proxy-Model') || data.model || 'unknown';
+                    const cost = resp.headers.get('X-LLM-Proxy-Cost-USD') || '0';
+                    const isOverride = modelOverride !== '';
+
+                    resultHeader.innerHTML =
+                        '<div class="result-meta"><span>Provider:</span> <span class="badge ' + provider + '">' + provider + '</span></div>' +
+                        '<div class="result-meta"><span>Model:</span> <strong>' + model + '</strong></div>' +
+                        '<div class="result-meta"><span>Routing:</span> <span class="badge ' + (isOverride ? 'override' : 'routed') + '">' + (isOverride ? 'override' : 'auto-routed') + '</span></div>' +
+                        '<div class="result-meta"><span>Latency:</span> <strong>' + latency + 'ms</strong></div>' +
+                        '<div class="result-meta"><span>Cost:</span> <strong>$' + parseFloat(cost).toFixed(6) + '</strong></div>' +
+                        (data.usage ? '<div class="result-meta"><span>Tokens:</span> <strong>' + data.usage.total_tokens + '</strong></div>' : '');
+
+                    resultContent.textContent = data.choices[0].message.content;
+                } else {
+                    resultHeader.innerHTML = '<div class="result-meta error">Error: ' + resp.status + '</div>';
+                    resultContent.textContent = JSON.stringify(data, null, 2);
+                }
+            } catch (err) {
+                resultHeader.innerHTML = '<div class="result-meta error">Request failed</div>';
+                resultContent.textContent = err.message;
+            }
+
+            resultBox.style.display = 'block';
+            btn.disabled = false;
+            btn.innerHTML = 'Send Request';
+        }
+
+        async function submitVision() {
+            if (!selectedImageBase64) {
+                alert('Please select an image first');
+                return;
+            }
+
+            const btn = document.getElementById('vision-submit');
+            const resultBox = document.getElementById('vision-result');
+            const resultHeader = document.getElementById('vision-result-header');
+            const resultContent = document.getElementById('vision-result-content');
+
+            const prompt = document.getElementById('vision-prompt').value;
+            const sensitive = document.getElementById('vision-sensitive').value === 'true';
+            const precision = document.getElementById('vision-precision').value;
+            const modelOverride = document.getElementById('vision-model').value.trim();
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Analyzing...';
+            resultBox.style.display = 'none';
+
+            const body = {
+                model: modelOverride || 'auto',
+                messages: [{
+                    role: 'user',
+                    content: [
+                        {type: 'text', text: prompt},
+                        {type: 'image_url', image_url: {url: selectedImageBase64}}
+                    ]
+                }],
+                sensitive: sensitive,
+                precision: precision,
+                no_cache: true
+            };
+
+            const startTime = Date.now();
+            try {
+                const resp = await fetch('/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body)
+                });
+
+                const latency = Date.now() - startTime;
+                const data = await resp.json();
+
+                if (resp.ok) {
+                    const provider = resp.headers.get('X-LLM-Proxy-Provider') || data.provider || 'unknown';
+                    const model = resp.headers.get('X-LLM-Proxy-Model') || data.model || 'unknown';
+                    const cost = resp.headers.get('X-LLM-Proxy-Cost-USD') || '0';
+                    const isOverride = modelOverride !== '';
+
+                    resultHeader.innerHTML =
+                        '<div class="result-meta"><span>Provider:</span> <span class="badge ' + provider + '">' + provider + '</span></div>' +
+                        '<div class="result-meta"><span>Model:</span> <strong>' + model + '</strong></div>' +
+                        '<div class="result-meta"><span>Routing:</span> <span class="badge ' + (isOverride ? 'override' : 'routed') + '">' + (isOverride ? 'override' : 'auto-routed') + '</span></div>' +
+                        '<div class="result-meta"><span>Latency:</span> <strong>' + latency + 'ms</strong></div>' +
+                        '<div class="result-meta"><span>Cost:</span> <strong>$' + parseFloat(cost).toFixed(6) + '</strong></div>' +
+                        (data.usage ? '<div class="result-meta"><span>Tokens:</span> <strong>' + data.usage.total_tokens + '</strong></div>' : '');
+
+                    resultContent.textContent = data.choices[0].message.content;
+                } else {
+                    resultHeader.innerHTML = '<div class="result-meta error">Error: ' + resp.status + '</div>';
+                    resultContent.textContent = JSON.stringify(data, null, 2);
+                }
+            } catch (err) {
+                resultHeader.innerHTML = '<div class="result-meta error">Request failed</div>';
+                resultContent.textContent = err.message;
+            }
+
+            resultBox.style.display = 'block';
+            btn.disabled = false;
+            btn.innerHTML = 'Analyze Image';
+        }
+    </script>
+</body>
+</html>`
+
+func handleTestPlayground(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(testPlaygroundHTML))
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -1369,6 +1799,7 @@ func main() {
 	http.HandleFunc("/v1/models", handleModels)
 	http.HandleFunc("/api/stats", handleStats)
 	http.HandleFunc("/api/routes", handleRoutes)
+	http.HandleFunc("/test", handleTestPlayground)
 
 	log.Printf("LLM Proxy starting on port %s", port)
 	log.Printf("OpenAI key: %v", openaiKey != "")
