@@ -63,18 +63,21 @@ type RouteConfig struct {
 // Route based on sensitive + precision + hasImages flags
 // Format: routingTable[sensitive][precision] for text
 //         visionRoutingTable[sensitive][precision] for vision
+// Precision levels: very_high > high > medium > low
 var routingTable = map[string]map[string]*RouteConfig{
 	// sensitive: false (text only)
 	"false": {
-		"high":   {Provider: "openai", Model: "gpt-4o"},
-		"medium": {Provider: "openai", Model: "gpt-4o-mini"},
-		"low":    {Provider: "ollama", Model: "llama3:latest"},
+		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
+		"high":      {Provider: "openai", Model: "gpt-4o"},
+		"medium":    {Provider: "openai", Model: "gpt-4o-mini"},
+		"low":       {Provider: "ollama", Model: "llama3:latest"},
 	},
 	// sensitive: true (text only, local)
 	"true": {
-		"high":   {Provider: "ollama", Model: "llama3.3:70b"},
-		"medium": {Provider: "ollama", Model: "gemma3:latest"},
-		"low":    {Provider: "ollama", Model: "llama3:latest"},
+		"very_high": nil, // Not available - Claude requires cloud
+		"high":      {Provider: "ollama", Model: "llama3.3:70b"},
+		"medium":    {Provider: "ollama", Model: "gemma3:latest"},
+		"low":       {Provider: "ollama", Model: "llama3:latest"},
 	},
 }
 
@@ -82,15 +85,17 @@ var routingTable = map[string]map[string]*RouteConfig{
 var visionRoutingTable = map[string]map[string]*RouteConfig{
 	// sensitive: false (can use cloud)
 	"false": {
-		"high":   {Provider: "openai", Model: "gpt-4o"},        // Best vision model for non-sensitive
-		"medium": {Provider: "ollama", Model: "qwen3-vl:30b"},
-		"low":    {Provider: "ollama", Model: "qwen3-vl:30b"},
+		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-20250514"}, // Claude has great vision
+		"high":      {Provider: "openai", Model: "gpt-4o"},
+		"medium":    {Provider: "ollama", Model: "qwen3-vl:30b"},
+		"low":       {Provider: "ollama", Model: "qwen3-vl:30b"},
 	},
-	// sensitive: true (local only)
+	// sensitive: true (local only - no high-quality vision locally)
 	"true": {
-		"high":   {Provider: "ollama", Model: "qwen3-vl:30b"},  // Best local vision model
-		"medium": {Provider: "ollama", Model: "qwen3-vl:30b"},
-		"low":    {Provider: "ollama", Model: "qwen3-vl:30b"},
+		"very_high": nil, // Not available - requires cloud
+		"high":      nil, // Not available - no local model matches gpt-4o vision quality
+		"medium":    {Provider: "ollama", Model: "qwen3-vl:30b"},
+		"low":       {Provider: "ollama", Model: "qwen3-vl:30b"},
 	},
 }
 
