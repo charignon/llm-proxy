@@ -1239,7 +1239,8 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 
 	// Recent requests
 	rows, _ = db.Query(`
-		SELECT id, timestamp, provider, model, cached, latency_ms, cost_usd, success, error
+		SELECT id, timestamp, provider, model, cached, latency_ms, cost_usd, success, error,
+		       sensitive, precision, has_images, input_tokens, output_tokens
 		FROM requests ORDER BY id DESC LIMIT 20
 	`)
 	defer rows.Close()
@@ -1252,20 +1253,32 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		var latencyMs int64
 		var costUsd float64
 		var errStr sql.NullString
-		rows.Scan(&id, &timestamp, &provider, &model, &cached, &latencyMs, &costUsd, &success, &errStr)
+		var sensitive bool
+		var precision sql.NullString
+		var hasImages bool
+		var inputTokens, outputTokens int
+		rows.Scan(&id, &timestamp, &provider, &model, &cached, &latencyMs, &costUsd, &success, &errStr,
+			&sensitive, &precision, &hasImages, &inputTokens, &outputTokens)
 
 		entry := map[string]interface{}{
-			"id":         id,
-			"timestamp":  timestamp,
-			"provider":   provider,
-			"model":      model,
-			"cached":     cached,
-			"latency_ms": latencyMs,
-			"cost_usd":   costUsd,
-			"success":    success,
+			"id":            id,
+			"timestamp":     timestamp,
+			"provider":      provider,
+			"model":         model,
+			"cached":        cached,
+			"latency_ms":    latencyMs,
+			"cost_usd":      costUsd,
+			"success":       success,
+			"sensitive":     sensitive,
+			"has_images":    hasImages,
+			"input_tokens":  inputTokens,
+			"output_tokens": outputTokens,
 		}
 		if errStr.Valid {
 			entry["error"] = errStr.String
+		}
+		if precision.Valid {
+			entry["precision"] = precision.String
 		}
 		recent = append(recent, entry)
 	}
@@ -1349,7 +1362,7 @@ const dashboardHTML = `<!DOCTYPE html>
             min-height: 100vh;
             padding: 20px;
         }
-        .container { max-width: 1200px; margin: 0 auto; }
+        .container { max-width: 1400px; margin: 0 auto; }
         h1 { color: #6366f1; margin-bottom: 8px; font-size: 28px; }
         .subtitle { color: #888; margin-bottom: 24px; }
 
@@ -1385,7 +1398,8 @@ const dashboardHTML = `<!DOCTYPE html>
             border-bottom: 1px solid #2d2d44;
         }
         th { background: #252540; color: #a5b4fc; font-weight: 600; }
-        tr:hover { background: #252540; }
+        tr.clickable { cursor: pointer; }
+        tr.clickable:hover { background: #252540; }
 
         .badge {
             display: inline-block;
@@ -1400,6 +1414,10 @@ const dashboardHTML = `<!DOCTYPE html>
         .badge.cached { background: #22c55e; color: #000; }
         .badge.error { background: #ef4444; color: #fff; }
         .badge.success { background: #22c55e; color: #000; }
+        .badge.sensitive { background: #ef4444; color: #fff; }
+        .badge.not-sensitive { background: #374151; color: #9ca3af; }
+        .badge.precision { background: #8b5cf6; color: #fff; }
+        .badge.images { background: #06b6d4; color: #000; }
 
         .routes-grid {
             display: grid;
@@ -1429,11 +1447,105 @@ const dashboardHTML = `<!DOCTYPE html>
             font-size: 24px;
             cursor: pointer;
             box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);
+            z-index: 100;
         }
         .refresh-btn:hover { background: #4f46e5; }
 
         @keyframes spin { 100% { transform: rotate(360deg); } }
         .spinning { animation: spin 1s linear infinite; }
+
+        /* Modal styles */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.8);
+            z-index: 1000;
+            overflow-y: auto;
+            padding: 40px 20px;
+        }
+        .modal-overlay.active { display: block; }
+        .modal {
+            background: #1a1a2e;
+            border-radius: 16px;
+            max-width: 900px;
+            margin: 0 auto;
+            position: relative;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 24px;
+            border-bottom: 1px solid #2d2d44;
+        }
+        .modal-header h2 { color: #a5b4fc; font-size: 20px; }
+        .modal-close {
+            background: none;
+            border: none;
+            color: #888;
+            font-size: 28px;
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+        }
+        .modal-close:hover { color: #fff; }
+        .modal-body { padding: 24px; }
+        .modal-section { margin-bottom: 24px; }
+        .modal-section:last-child { margin-bottom: 0; }
+        .modal-section h3 {
+            color: #6366f1;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+        }
+
+        .detail-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+        }
+        .detail-item { }
+        .detail-label { color: #888; font-size: 12px; margin-bottom: 4px; }
+        .detail-value { color: #e0e0e0; font-size: 14px; font-weight: 500; }
+
+        .code-block {
+            background: #252540;
+            border-radius: 8px;
+            padding: 16px;
+            font-family: 'SF Mono', Monaco, 'Consolas', monospace;
+            font-size: 13px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .message-block {
+            background: #252540;
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 8px;
+        }
+        .message-block:last-child { margin-bottom: 0; }
+        .message-role {
+            color: #6366f1;
+            font-weight: 600;
+            font-size: 12px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+        .message-content {
+            color: #e0e0e0;
+            font-size: 14px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .tokens-small { font-size: 11px; color: #888; }
     </style>
 </head>
 <body>
@@ -1474,15 +1586,28 @@ const dashboardHTML = `<!DOCTYPE html>
         </div>
 
         <div class="section">
-            <h2 class="section-title">Recent Requests</h2>
+            <h2 class="section-title">Recent Requests <span style="font-size:12px;color:#888;font-weight:normal">(click row for details)</span></h2>
             <table id="recent-table">
-                <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>Latency</th><th>Cost</th><th>Status</th></tr></thead>
+                <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Tokens</th><th>Latency</th><th>Cost</th><th>Status</th></tr></thead>
                 <tbody></tbody>
             </table>
         </div>
     </div>
 
     <button class="refresh-btn" id="refresh-btn" onclick="refresh()">↻</button>
+
+    <!-- Request Detail Modal -->
+    <div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2>Request Details</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body">
+                <div style="text-align:center;color:#888;padding:40px;">Loading...</div>
+            </div>
+        </div>
+    </div>
 
     <script>
         async function loadStats() {
@@ -1511,12 +1636,22 @@ const dashboardHTML = `<!DOCTYPE html>
             recentBody.innerHTML = '';
             for (const req of stats.recent_requests || []) {
                 const tr = document.createElement('tr');
+                tr.className = 'clickable';
+                tr.onclick = () => showRequestDetail(req.id);
                 const time = new Date(req.timestamp).toLocaleTimeString();
                 const status = req.cached ? '<span class="badge cached">cached</span>' :
                     (req.success ? '<span class="badge success">ok</span>' : '<span class="badge error">error</span>');
+                const sensitiveClass = req.sensitive ? 'sensitive' : 'not-sensitive';
+                const sensitiveText = req.sensitive ? 'YES' : 'no';
+                const precision = req.precision || '-';
+                const hasImages = req.has_images ? '<span class="badge images">img</span>' : '';
+                const tokens = (req.input_tokens || 0) + (req.output_tokens || 0);
                 tr.innerHTML = '<td>' + time + '</td>' +
                     '<td><span class="badge ' + req.provider + '">' + req.provider + '</span></td>' +
-                    '<td>' + req.model + '</td>' +
+                    '<td>' + req.model + ' ' + hasImages + '</td>' +
+                    '<td><span class="badge ' + sensitiveClass + '">' + sensitiveText + '</span></td>' +
+                    '<td><span class="badge precision">' + precision + '</span></td>' +
+                    '<td class="tokens-small">' + tokens + '</td>' +
                     '<td>' + req.latency_ms + 'ms</td>' +
                     '<td>$' + req.cost_usd.toFixed(6) + '</td>' +
                     '<td>' + status + '</td>';
@@ -1539,6 +1674,125 @@ const dashboardHTML = `<!DOCTYPE html>
                 grid.appendChild(card);
             }
         }
+
+        async function showRequestDetail(id) {
+            const overlay = document.getElementById('modal-overlay');
+            const body = document.getElementById('modal-body');
+            overlay.classList.add('active');
+            body.innerHTML = '<div style="text-align:center;color:#888;padding:40px;">Loading...</div>';
+
+            try {
+                const resp = await fetch('/api/request?id=' + id);
+                const data = await resp.json();
+                renderRequestDetail(data);
+            } catch (err) {
+                body.innerHTML = '<div style="color:#ef4444;padding:40px;">Error loading request details: ' + err.message + '</div>';
+            }
+        }
+
+        function renderRequestDetail(data) {
+            const body = document.getElementById('modal-body');
+            const time = new Date(data.timestamp).toLocaleString();
+            const sensitiveClass = data.sensitive ? 'sensitive' : 'not-sensitive';
+            const sensitiveText = data.sensitive ? 'YES (local only)' : 'No (cloud OK)';
+
+            let html = '<div class="modal-section"><h3>Request Metadata</h3><div class="detail-grid">';
+            html += '<div class="detail-item"><div class="detail-label">ID</div><div class="detail-value">#' + data.id + '</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Timestamp</div><div class="detail-value">' + time + '</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Provider</div><div class="detail-value"><span class="badge ' + data.provider + '">' + data.provider + '</span></div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Model Used</div><div class="detail-value">' + data.model + '</div></div>';
+            if (data.requested_model) {
+                html += '<div class="detail-item"><div class="detail-label">Requested Model</div><div class="detail-value">' + data.requested_model + '</div></div>';
+            }
+            html += '<div class="detail-item"><div class="detail-label">Sensitive</div><div class="detail-value"><span class="badge ' + sensitiveClass + '">' + sensitiveText + '</span></div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Precision</div><div class="detail-value"><span class="badge precision">' + (data.precision || '-') + '</span></div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Has Images</div><div class="detail-value">' + (data.has_images ? '<span class="badge images">Yes</span>' : 'No') + '</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Cached</div><div class="detail-value">' + (data.cached ? '<span class="badge cached">Yes</span>' : 'No') + '</div></div>';
+            html += '</div></div>';
+
+            html += '<div class="modal-section"><h3>Performance</h3><div class="detail-grid">';
+            html += '<div class="detail-item"><div class="detail-label">Latency</div><div class="detail-value">' + data.latency_ms + ' ms</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Input Tokens</div><div class="detail-value">' + data.input_tokens + '</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Output Tokens</div><div class="detail-value">' + data.output_tokens + '</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Cost</div><div class="detail-value" style="color:#22c55e">$' + data.cost_usd.toFixed(6) + '</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Status</div><div class="detail-value">' + (data.success ? '<span class="badge success">Success</span>' : '<span class="badge error">Error</span>') + '</div></div>';
+            if (data.error) {
+                html += '<div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Error</div><div class="detail-value" style="color:#ef4444">' + escapeHtml(data.error) + '</div></div>';
+            }
+            html += '</div></div>';
+
+            // Request messages
+            if (data.request && data.request.messages) {
+                html += '<div class="modal-section"><h3>Request Messages</h3>';
+                for (const msg of data.request.messages) {
+                    html += '<div class="message-block">';
+                    html += '<div class="message-role">' + msg.role + '</div>';
+                    html += '<div class="message-content">' + formatMessageContent(msg.content) + '</div>';
+                    html += '</div>';
+                }
+                html += '</div>';
+            }
+
+            // Response
+            if (data.response) {
+                html += '<div class="modal-section"><h3>Response</h3>';
+                if (data.response.choices && data.response.choices.length > 0) {
+                    const choice = data.response.choices[0];
+                    if (choice.message && choice.message.content) {
+                        html += '<div class="code-block">' + escapeHtml(choice.message.content) + '</div>';
+                    } else {
+                        html += '<div class="code-block">' + escapeHtml(JSON.stringify(data.response, null, 2)) + '</div>';
+                    }
+                } else {
+                    html += '<div class="code-block">' + escapeHtml(JSON.stringify(data.response, null, 2)) + '</div>';
+                }
+                html += '</div>';
+            }
+
+            // Cache key
+            if (data.cache_key) {
+                html += '<div class="modal-section"><h3>Cache</h3>';
+                html += '<div class="detail-item"><div class="detail-label">Cache Key</div><div class="detail-value" style="font-family:monospace;font-size:12px;word-break:break-all">' + data.cache_key + '</div></div>';
+                html += '</div>';
+            }
+
+            body.innerHTML = html;
+        }
+
+        function formatMessageContent(content) {
+            if (typeof content === 'string') {
+                return escapeHtml(content);
+            }
+            if (Array.isArray(content)) {
+                let result = '';
+                for (const part of content) {
+                    if (part.type === 'text') {
+                        result += escapeHtml(part.text || '');
+                    } else if (part.type === 'image_url') {
+                        result += '<em style="color:#06b6d4">[Image: ' + escapeHtml(part.image_url?.url || 'base64 data') + ']</em>';
+                    } else {
+                        result += escapeHtml(JSON.stringify(part));
+                    }
+                }
+                return result;
+            }
+            return escapeHtml(JSON.stringify(content));
+        }
+
+        function escapeHtml(str) {
+            if (typeof str !== 'string') return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        function closeModal(event) {
+            if (event && event.target !== event.currentTarget) return;
+            document.getElementById('modal-overlay').classList.remove('active');
+        }
+
+        // Close on escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeModal();
+        });
 
         async function refresh() {
             const btn = document.getElementById('refresh-btn');
