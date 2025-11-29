@@ -421,6 +421,23 @@ func getCachedRequest(key string) ([]byte, bool) {
 	return entry.Request, true
 }
 
+func getCachedResponse(key string) ([]byte, bool) {
+	cacheMutex.RLock()
+	defer cacheMutex.RUnlock()
+
+	entry, ok := cache[key]
+	if !ok {
+		return nil, false
+	}
+
+	// Check TTL
+	if time.Since(entry.CreatedAt) > time.Duration(cacheTTLHours)*time.Hour {
+		return nil, false
+	}
+
+	return entry.Response, true
+}
+
 func hasImages(req *ChatCompletionRequest) bool {
 	for _, msg := range req.Messages {
 		switch c := msg.Content.(type) {
@@ -904,6 +921,160 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(history)
 }
 
+// Request detail API - returns full request/response data for a specific request
+func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "id parameter required", http.StatusBadRequest)
+		return
+	}
+
+	var id int64
+	if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	dbMutex.Lock()
+	var entry struct {
+		ID             int64          `json:"id"`
+		Timestamp      string         `json:"timestamp"`
+		Provider       string         `json:"provider"`
+		Model          string         `json:"model"`
+		RequestedModel sql.NullString `json:"-"`
+		Sensitive      bool           `json:"sensitive"`
+		Precision      sql.NullString `json:"-"`
+		Cached         bool           `json:"cached"`
+		InputTokens    int            `json:"input_tokens"`
+		OutputTokens   int            `json:"output_tokens"`
+		LatencyMs      int64          `json:"latency_ms"`
+		CostUSD        float64        `json:"cost_usd"`
+		Success        bool           `json:"success"`
+		Error          sql.NullString `json:"-"`
+		CacheKey       sql.NullString `json:"-"`
+		HasImages      bool           `json:"has_images"`
+	}
+
+	err := db.QueryRow(`
+		SELECT id, timestamp, provider, model, requested_model, sensitive, precision,
+		       cached, input_tokens, output_tokens, latency_ms, cost_usd, success, error, cache_key, has_images
+		FROM requests WHERE id = ?
+	`, id).Scan(&entry.ID, &entry.Timestamp, &entry.Provider, &entry.Model,
+		&entry.RequestedModel, &entry.Sensitive, &entry.Precision, &entry.Cached,
+		&entry.InputTokens, &entry.OutputTokens, &entry.LatencyMs, &entry.CostUSD,
+		&entry.Success, &entry.Error, &entry.CacheKey, &entry.HasImages)
+	dbMutex.Unlock()
+
+	if err == sql.ErrNoRows {
+		http.Error(w, "Request not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Build response with nullable fields
+	response := map[string]interface{}{
+		"id":            entry.ID,
+		"timestamp":     entry.Timestamp,
+		"provider":      entry.Provider,
+		"model":         entry.Model,
+		"sensitive":     entry.Sensitive,
+		"cached":        entry.Cached,
+		"input_tokens":  entry.InputTokens,
+		"output_tokens": entry.OutputTokens,
+		"latency_ms":    entry.LatencyMs,
+		"cost_usd":      entry.CostUSD,
+		"success":       entry.Success,
+		"has_images":    entry.HasImages,
+	}
+
+	if entry.RequestedModel.Valid {
+		response["requested_model"] = entry.RequestedModel.String
+	}
+	if entry.Precision.Valid {
+		response["precision"] = entry.Precision.String
+	}
+	if entry.Error.Valid && entry.Error.String != "" {
+		response["error"] = entry.Error.String
+	}
+
+	// Try to get cached request/response content
+	if entry.CacheKey.Valid {
+		response["cache_key"] = entry.CacheKey.String
+
+		// Get request body from cache
+		if reqBody, found := getCachedRequest(entry.CacheKey.String); found {
+			var req ChatCompletionRequest
+			if json.Unmarshal(reqBody, &req) == nil {
+				// Extract messages for display (but truncate images)
+				var displayMessages []map[string]interface{}
+				for _, msg := range req.Messages {
+					displayMsg := map[string]interface{}{
+						"role": msg.Role,
+					}
+					if msg.Content != nil {
+						// Check if content is a string or array
+						if s, ok := msg.Content.(string); ok {
+							displayMsg["content"] = s
+						} else if arr, ok := msg.Content.([]interface{}); ok {
+							// Array of content parts - handle images
+							var parts []map[string]interface{}
+							for _, part := range arr {
+								if p, ok := part.(map[string]interface{}); ok {
+									partCopy := make(map[string]interface{})
+									for k, v := range p {
+										if k == "image_url" {
+											// Truncate base64 image data
+											if imgUrl, ok := v.(map[string]interface{}); ok {
+												if url, ok := imgUrl["url"].(string); ok {
+													if len(url) > 100 {
+														partCopy[k] = map[string]string{
+															"url": url[:50] + "...[base64 truncated]..." + url[len(url)-20:],
+														}
+													} else {
+														partCopy[k] = v
+													}
+												}
+											}
+										} else {
+											partCopy[k] = v
+										}
+									}
+									parts = append(parts, partCopy)
+								}
+							}
+							displayMsg["content"] = parts
+						} else {
+							displayMsg["content"] = msg.Content
+						}
+					}
+					displayMessages = append(displayMessages, displayMsg)
+				}
+				response["request"] = map[string]interface{}{
+					"model":     req.Model,
+					"messages":  displayMessages,
+					"sensitive": req.Sensitive,
+					"precision": req.Precision,
+					"no_cache":  req.NoCache,
+				}
+			}
+		}
+
+		// Get response from cache
+		if respBody, found := getCachedResponse(entry.CacheKey.String); found {
+			var resp map[string]interface{}
+			if json.Unmarshal(respBody, &resp) == nil {
+				response["response"] = resp
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
 func handleReplayRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -976,6 +1147,24 @@ func handleReplayRequest(w http.ResponseWriter, r *http.Request) {
 type responseRecorder struct {
 	http.ResponseWriter
 	statusCode int
+}
+
+func handleClearCache(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" && r.Method != "DELETE" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	cacheMutex.Lock()
+	count := len(cache)
+	cache = make(map[string]*CacheEntry)
+	cacheMutex.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"cleared": count,
+		"message": fmt.Sprintf("Cleared %d cached entries", count),
+	})
 }
 
 func handleStats(w http.ResponseWriter, r *http.Request) {
@@ -1953,7 +2142,9 @@ func main() {
 	http.HandleFunc("/api/stats", handleStats)
 	http.HandleFunc("/api/routes", handleRoutes)
 	http.HandleFunc("/api/history", handleRequestHistory)
+	http.HandleFunc("/api/request", handleRequestDetail)
 	http.HandleFunc("/api/replay", handleReplayRequest)
+	http.HandleFunc("/api/cache/clear", handleClearCache)
 	http.HandleFunc("/test", handleTestPlayground)
 
 	log.Printf("LLM Proxy starting on port %s", port)
