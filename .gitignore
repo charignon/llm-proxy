@@ -1,0 +1,8 @@
+# Binary
+llm-proxy
+
+# Data directory
+data/
+
+# API keys
+*_key.txt
