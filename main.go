@@ -108,6 +108,7 @@ var cache = make(map[string]*CacheEntry)
 var cacheMutex sync.RWMutex
 
 type CacheEntry struct {
+	Request   []byte    // Original request body for replay
 	Response  []byte
 	CreatedAt time.Time
 }
@@ -392,14 +393,32 @@ func getCached(key string) ([]byte, bool) {
 	return entry.Response, true
 }
 
-func setCache(key string, response []byte) {
+func setCache(key string, request, response []byte) {
 	cacheMutex.Lock()
 	defer cacheMutex.Unlock()
 
 	cache[key] = &CacheEntry{
+		Request:   request,
 		Response:  response,
 		CreatedAt: time.Now(),
 	}
+}
+
+func getCachedRequest(key string) ([]byte, bool) {
+	cacheMutex.RLock()
+	defer cacheMutex.RUnlock()
+
+	entry, ok := cache[key]
+	if !ok {
+		return nil, false
+	}
+
+	// Check TTL
+	if time.Since(entry.CreatedAt) > time.Duration(cacheTTLHours)*time.Hour {
+		return nil, false
+	}
+
+	return entry.Request, true
 }
 
 func hasImages(req *ChatCompletionRequest) bool {
@@ -782,9 +801,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	logEntry.CostUSD = calculateCost(route.Model, logEntry.InputTokens, logEntry.OutputTokens)
 	logEntry.Success = true
 
-	// Cache the response
+	// Cache the response with original request for replay
 	respBytes, _ := json.Marshal(resp)
-	setCache(cacheKey, respBytes)
+	setCache(cacheKey, body, respBytes)
 
 	logRequest(logEntry)
 
@@ -823,6 +842,140 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 		"object": "list",
 		"data":   models,
 	})
+}
+
+// Request history for replay feature
+type RequestHistoryEntry struct {
+	ID           int64  `json:"id"`
+	Timestamp    string `json:"timestamp"`
+	Provider     string `json:"provider"`
+	Model        string `json:"model"`
+	Sensitive    bool   `json:"sensitive"`
+	Precision    string `json:"precision"`
+	HasImages    bool   `json:"has_images"`
+	LatencyMs    int64  `json:"latency_ms"`
+	CostUSD      float64 `json:"cost_usd"`
+	Success      bool   `json:"success"`
+	CacheKey     string `json:"cache_key"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
+}
+
+func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+
+	rows, err := db.Query(`
+		SELECT id, timestamp, provider, model, sensitive, precision, has_images,
+		       latency_ms, cost_usd, success, cache_key, input_tokens, output_tokens
+		FROM requests
+		ORDER BY id DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var history []RequestHistoryEntry
+	for rows.Next() {
+		var entry RequestHistoryEntry
+		var precision sql.NullString
+		var cacheKey sql.NullString
+		rows.Scan(&entry.ID, &entry.Timestamp, &entry.Provider, &entry.Model,
+			&entry.Sensitive, &precision, &entry.HasImages, &entry.LatencyMs,
+			&entry.CostUSD, &entry.Success, &cacheKey, &entry.InputTokens, &entry.OutputTokens)
+		if precision.Valid {
+			entry.Precision = precision.String
+		}
+		if cacheKey.Valid {
+			entry.CacheKey = cacheKey.String
+		}
+		history = append(history, entry)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(history)
+}
+
+func handleReplayRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get original request ID and optional model override
+	var replayReq struct {
+		RequestID int64  `json:"request_id"`
+		Model     string `json:"model"` // Optional: override model for replay
+	}
+	if err := json.NewDecoder(r.Body).Decode(&replayReq); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Get original request's cache_key to find cached content
+	dbMutex.Lock()
+	var cacheKey sql.NullString
+	err := db.QueryRow(`SELECT cache_key FROM requests WHERE id = ?`, replayReq.RequestID).Scan(&cacheKey)
+	dbMutex.Unlock()
+
+	if err != nil {
+		http.Error(w, "Request not found", http.StatusNotFound)
+		return
+	}
+
+	if !cacheKey.Valid {
+		http.Error(w, "Original request has no cache key - cannot replay", http.StatusBadRequest)
+		return
+	}
+
+	// Get the original request body from cache
+	cachedReqBody, found := getCachedRequest(cacheKey.String)
+	if !found {
+		http.Error(w, "Original request content not in cache - cannot replay", http.StatusBadRequest)
+		return
+	}
+
+	// Parse original request
+	var origReq ChatCompletionRequest
+	if err := json.Unmarshal(cachedReqBody, &origReq); err != nil {
+		http.Error(w, "Failed to parse cached request", http.StatusInternalServerError)
+		return
+	}
+
+	// Apply model override if specified
+	if replayReq.Model != "" {
+		origReq.Model = replayReq.Model
+	}
+
+	// Force no-cache to get fresh response
+	origReq.NoCache = true
+
+	// Forward to chat completions handler by creating internal request
+	reqBytes, _ := json.Marshal(origReq)
+	internalReq, _ := http.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(reqBytes))
+	internalReq.Header.Set("Content-Type", "application/json")
+
+	// Use response recorder to capture the response
+	recorder := &responseRecorder{
+		ResponseWriter: w,
+		statusCode:     http.StatusOK,
+	}
+
+	handleChatCompletions(recorder, internalReq)
+}
+
+// responseRecorder wraps ResponseWriter to capture status code
+type responseRecorder struct {
+	http.ResponseWriter
+	statusCode int
 }
 
 func handleStats(w http.ResponseWriter, r *http.Request) {
@@ -1799,6 +1952,8 @@ func main() {
 	http.HandleFunc("/v1/models", handleModels)
 	http.HandleFunc("/api/stats", handleStats)
 	http.HandleFunc("/api/routes", handleRoutes)
+	http.HandleFunc("/api/history", handleRequestHistory)
+	http.HandleFunc("/api/replay", handleReplayRequest)
 	http.HandleFunc("/test", handleTestPlayground)
 
 	log.Printf("LLM Proxy starting on port %s", port)
