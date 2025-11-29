@@ -82,13 +82,13 @@ var routingTable = map[string]map[string]*RouteConfig{
 var visionRoutingTable = map[string]map[string]*RouteConfig{
 	// sensitive: false (can use cloud)
 	"false": {
-		"high":   {Provider: "openai", Model: "gpt-4o"},
+		"high":   {Provider: "openai", Model: "gpt-4o"},        // Best vision model for non-sensitive
 		"medium": {Provider: "ollama", Model: "qwen3-vl:30b"},
 		"low":    {Provider: "ollama", Model: "qwen3-vl:30b"},
 	},
 	// sensitive: true (local only)
 	"true": {
-		"high":   {Provider: "ollama", Model: "qwen3-vl:30b"},
+		"high":   {Provider: "ollama", Model: "qwen3-vl:30b"},  // Best local vision model
 		"medium": {Provider: "ollama", Model: "qwen3-vl:30b"},
 		"low":    {Provider: "ollama", Model: "qwen3-vl:30b"},
 	},
