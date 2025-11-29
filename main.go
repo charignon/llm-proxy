@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,12 +23,13 @@ import (
 
 // Configuration
 var (
-	port           = getEnv("PORT", "8080")
-	openaiKey      = getEnv("OPENAI_API_KEY", "")
-	anthropicKey   = getEnv("ANTHROPIC_API_KEY", "")
-	ollamaHost     = getEnv("OLLAMA_HOST", "localhost:11434")
-	dataDir        = getEnv("DATA_DIR", "./data")
-	cacheTTLHours  = 24 * 7 // 1 week cache
+	port             = getEnv("PORT", "8080")
+	openaiKey        = getEnv("OPENAI_API_KEY", "")
+	anthropicKey     = getEnv("ANTHROPIC_API_KEY", "")
+	ollamaHost       = getEnv("OLLAMA_HOST", "localhost:11434")
+	dataDir          = getEnv("DATA_DIR", "./data")
+	cacheTTLHours    = 24 * 7 // 1 week cache
+	whisperServerURL = getEnv("WHISPER_SERVER_URL", "http://localhost:8890") // Local whisper server
 )
 
 // Model pricing per 1M tokens (input, output)
@@ -261,6 +263,11 @@ type OllamaResponse struct {
 		Content string `json:"content"`
 	} `json:"message"`
 	Done bool `json:"done"`
+}
+
+// Whisper API types (OpenAI-compatible)
+type WhisperTranscriptionResponse struct {
+	Text string `json:"text"`
 }
 
 // Request log entry
@@ -711,6 +718,322 @@ func callOllama(req *ChatCompletionRequest, model string) (*ChatCompletionRespon
 			TotalTokens:      inputTokens + outputTokens,
 		},
 	}, nil
+}
+
+// Whisper transcription handlers
+
+func isSensitiveRequest(r *http.Request) bool {
+	// Check header first (X-Sensitive)
+	if h := r.Header.Get("X-Sensitive"); h != "" {
+		return h != "false"
+	}
+	// Check form value
+	if s := r.FormValue("sensitive"); s != "" {
+		return s != "false"
+	}
+	// Default to sensitive (local) for safety
+	return true
+}
+
+func handleWhisperTranscription(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse multipart form (max 32MB)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		http.Error(w, "Failed to parse form: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Get the audio file
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "Missing or invalid file: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Read file content
+	fileContent, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, "Failed to read file: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Get optional parameters
+	model := r.FormValue("model")
+	language := r.FormValue("language")
+
+	startTime := time.Now()
+
+	// Route based on sensitive flag
+	sensitive := isSensitiveRequest(r)
+
+	var resp *WhisperTranscriptionResponse
+	var provider string
+
+	if sensitive {
+		// Use local whisper server
+		resp, err = callLocalWhisper(fileContent, header.Filename, model, language)
+		provider = "local"
+	} else {
+		// Use OpenAI Whisper API
+		resp, err = callOpenAIWhisper(fileContent, header.Filename, model, language)
+		provider = "openai"
+	}
+
+	latencyMs := time.Since(startTime).Milliseconds()
+
+	if err != nil {
+		log.Printf("Whisper transcription failed (%s): %v", provider, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Whisper transcription complete (%s, %dms): %d chars", provider, latencyMs, len(resp.Text))
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-LLM-Proxy-Provider", provider)
+	w.Header().Set("X-LLM-Proxy-Latency-Ms", fmt.Sprintf("%d", latencyMs))
+	json.NewEncoder(w).Encode(resp)
+}
+
+func callLocalWhisper(fileContent []byte, filename, model, language string) (*WhisperTranscriptionResponse, error) {
+	// Create multipart form for local whisper server
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	// Add file
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create form file: %w", err)
+	}
+	if _, err := part.Write(fileContent); err != nil {
+		return nil, fmt.Errorf("failed to write file content: %w", err)
+	}
+
+	// Add optional fields
+	if model != "" {
+		writer.WriteField("model", model)
+	}
+	if language != "" {
+		writer.WriteField("language", language)
+	}
+
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close writer: %w", err)
+	}
+
+	// Make request to local whisper server
+	url := whisperServerURL + "/v1/audio/transcriptions"
+	req, err := http.NewRequest("POST", url, &buf)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("local whisper request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("local whisper error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result WhisperTranscriptionResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return &result, nil
+}
+
+func callOpenAIWhisper(fileContent []byte, filename, model, language string) (*WhisperTranscriptionResponse, error) {
+	if openaiKey == "" {
+		return nil, fmt.Errorf("OPENAI_API_KEY not set")
+	}
+
+	// Create multipart form for OpenAI
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	// Add file
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create form file: %w", err)
+	}
+	if _, err := part.Write(fileContent); err != nil {
+		return nil, fmt.Errorf("failed to write file content: %w", err)
+	}
+
+	// Add model (default to whisper-1)
+	if model == "" {
+		model = "whisper-1"
+	}
+	writer.WriteField("model", model)
+
+	// Add optional language
+	if language != "" {
+		writer.WriteField("language", language)
+	}
+
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close writer: %w", err)
+	}
+
+	// Make request to OpenAI
+	req, err := http.NewRequest("POST", "https://api.openai.com/v1/audio/transcriptions", &buf)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+openaiKey)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("OpenAI whisper request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("OpenAI whisper error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result WhisperTranscriptionResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return &result, nil
+}
+
+func handleWhisperStream(w http.ResponseWriter, r *http.Request) {
+	// Streaming transcription - ONLY local, refuse cloud requests
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check sensitive flag - streaming MUST be local only
+	if !isSensitiveRequest(r) {
+		http.Error(w, "Streaming transcription only available locally (OpenAI API does not support streaming). Set sensitive=true or remove X-Sensitive header.", http.StatusBadRequest)
+		return
+	}
+
+	// Parse multipart form (max 32MB)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		http.Error(w, "Failed to parse form: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Get the audio file
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "Missing or invalid file: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Read file content
+	fileContent, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, "Failed to read file: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Get optional parameters
+	model := r.FormValue("model")
+	language := r.FormValue("language")
+
+	// Set up SSE
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Forward to local whisper server streaming endpoint
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	part, err := writer.CreateFormFile("file", header.Filename)
+	if err != nil {
+		fmt.Fprintf(w, "data: {\"error\": \"failed to create form file\"}\n\n")
+		flusher.Flush()
+		return
+	}
+	if _, err := part.Write(fileContent); err != nil {
+		fmt.Fprintf(w, "data: {\"error\": \"failed to write file content\"}\n\n")
+		flusher.Flush()
+		return
+	}
+
+	if model != "" {
+		writer.WriteField("model", model)
+	}
+	if language != "" {
+		writer.WriteField("language", language)
+	}
+	writer.Close()
+
+	// Make streaming request to local whisper server
+	url := whisperServerURL + "/v1/audio/transcriptions/stream"
+	req, err := http.NewRequest("POST", url, &buf)
+	if err != nil {
+		fmt.Fprintf(w, "data: {\"error\": \"failed to create request\"}\n\n")
+		flusher.Flush()
+		return
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 300 * time.Second} // Longer timeout for streaming
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(w, "data: {\"error\": \"local whisper stream request failed: %s\"}\n\n", err.Error())
+		flusher.Flush()
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(w, "data: {\"error\": \"local whisper error %d: %s\"}\n\n", resp.StatusCode, string(respBody))
+		flusher.Flush()
+		return
+	}
+
+	// Stream the response back to client
+	buf2 := make([]byte, 4096)
+	for {
+		n, err := resp.Body.Read(buf2)
+		if n > 0 {
+			w.Write(buf2[:n])
+			flusher.Flush()
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			fmt.Fprintf(w, "data: {\"error\": \"stream read error: %s\"}\n\n", err.Error())
+			flusher.Flush()
+			break
+		}
+	}
 }
 
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -2400,8 +2723,11 @@ func main() {
 	http.HandleFunc("/api/replay", handleReplayRequest)
 	http.HandleFunc("/api/cache/clear", handleClearCache)
 	http.HandleFunc("/test", handleTestPlayground)
+	http.HandleFunc("/v1/audio/transcriptions", handleWhisperTranscription)
+	http.HandleFunc("/v1/audio/transcriptions/stream", handleWhisperStream)
 
 	log.Printf("LLM Proxy starting on port %s", port)
+	log.Printf("Whisper server: %s", whisperServerURL)
 	log.Printf("OpenAI key: %v", openaiKey != "")
 	log.Printf("Anthropic key: %v", anthropicKey != "")
 	log.Printf("Ollama host: %s", ollamaHost)
