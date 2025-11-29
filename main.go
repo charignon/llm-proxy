@@ -1294,6 +1294,48 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(sb.String()))
 }
 
+// validateRoutingTableSecurity ensures sensitive data never goes to cloud providers
+// This is a critical security check that runs on startup
+func validateRoutingTableSecurity() {
+	violations := []string{}
+
+	// Check text routing table
+	for sensitive, precisions := range routingTable {
+		if sensitive == "true" {
+			for precision, config := range precisions {
+				if config != nil && config.Provider != "ollama" {
+					violations = append(violations,
+						fmt.Sprintf("TEXT sensitive=true precision=%s routes to %s/%s (must be ollama)",
+							precision, config.Provider, config.Model))
+				}
+			}
+		}
+	}
+
+	// Check vision routing table
+	for sensitive, precisions := range visionRoutingTable {
+		if sensitive == "true" {
+			for precision, config := range precisions {
+				if config != nil && config.Provider != "ollama" {
+					violations = append(violations,
+						fmt.Sprintf("VISION sensitive=true precision=%s routes to %s/%s (must be ollama)",
+							precision, config.Provider, config.Model))
+				}
+			}
+		}
+	}
+
+	if len(violations) > 0 {
+		log.Println("SECURITY VIOLATION: Sensitive data would be sent to cloud providers!")
+		for _, v := range violations {
+			log.Printf("  - %s", v)
+		}
+		log.Fatal("Refusing to start due to routing configuration security violations")
+	}
+
+	log.Println("Security check passed: all sensitive routes use local Ollama")
+}
+
 func main() {
 	// Create data directory
 	os.MkdirAll(dataDir, 0755)
@@ -1314,6 +1356,10 @@ func main() {
 	if err := initDB(); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
+
+	// SECURITY ASSERTION: Verify sensitive routes only use Ollama (local)
+	// This runs on startup to catch configuration errors before serving requests
+	validateRoutingTableSecurity()
 
 	// Routes
 	http.HandleFunc("/", handleDashboard)
