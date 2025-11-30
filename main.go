@@ -1278,6 +1278,97 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// EstimateRequest is a simplified request for route estimation
+type EstimateRequest struct {
+	Model     string `json:"model"`
+	Sensitive *bool  `json:"sensitive,omitempty"`
+	Precision string `json:"precision,omitempty"`
+	HasImages bool   `json:"has_images,omitempty"`
+}
+
+// EstimateResponse returns the estimated model and time
+type EstimateResponse struct {
+	Provider         string  `json:"provider"`
+	Model            string  `json:"model"`
+	EstimatedSeconds float64 `json:"estimated_seconds"`
+	SampleCount      int64   `json:"sample_count"`
+	IsLocal          bool    `json:"is_local"`
+}
+
+func handleEstimate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req EstimateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Build a minimal ChatCompletionRequest for route resolution
+	chatReq := &ChatCompletionRequest{
+		Model:     req.Model,
+		Sensitive: req.Sensitive,
+		Precision: req.Precision,
+	}
+
+	// If has_images is true, add a dummy image message to trigger vision routing
+	if req.HasImages {
+		chatReq.Messages = []Message{{
+			Role: "user",
+			Content: []ContentPart{{
+				Type:     "image_url",
+				ImageURL: &ImageURL{URL: "data:image/png;base64,dummy"},
+			}},
+		}}
+	}
+
+	route, err := resolveRoute(chatReq)
+	if err != nil {
+		http.Error(w, "Route resolution failed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Get average duration from metrics
+	durKey := fmt.Sprintf("%s|%s", route.Provider, route.Model)
+	metrics.mutex.RLock()
+	sumMs := metrics.DurationSumMs[durKey]
+	count := metrics.DurationCount[durKey]
+	metrics.mutex.RUnlock()
+
+	var estimatedSeconds float64
+	if count > 0 {
+		estimatedSeconds = float64(sumMs) / float64(count) / 1000.0
+	} else {
+		// Default estimates if no history
+		switch route.Provider {
+		case "ollama":
+			estimatedSeconds = 30.0 // Local models are slower
+		case "anthropic":
+			estimatedSeconds = 10.0
+		case "openai":
+			estimatedSeconds = 8.0
+		default:
+			estimatedSeconds = 15.0
+		}
+	}
+
+	isLocal := route.Provider == "ollama"
+
+	resp := EstimateResponse{
+		Provider:         route.Provider,
+		Model:            route.Model,
+		EstimatedSeconds: estimatedSeconds,
+		SampleCount:      count,
+		IsLocal:          isLocal,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
 // Request history for replay feature
 type RequestHistoryEntry struct {
 	ID           int64  `json:"id"`
@@ -3259,6 +3350,7 @@ func main() {
 	http.HandleFunc("/health", handleHealth)
 	http.HandleFunc("/metrics", handleMetrics)
 	http.HandleFunc("/v1/chat/completions", handleChatCompletions)
+	http.HandleFunc("/v1/estimate", handleEstimate)
 	http.HandleFunc("/v1/models", handleModels)
 	http.HandleFunc("/api/stats", handleStats)
 	http.HandleFunc("/api/routes", handleRoutes)
