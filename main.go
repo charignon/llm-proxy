@@ -2291,6 +2291,7 @@ const testPlaygroundHTML = `<!DOCTYPE html>
         <div class="tabs">
             <button class="tab active" onclick="switchTab('chat')">Chat Completion</button>
             <button class="tab" onclick="switchTab('vision')">Vision Analysis</button>
+            <button class="tab" onclick="switchTab('whisper')">Speech to Text</button>
         </div>
 
         <!-- Chat Panel -->
@@ -2377,6 +2378,63 @@ const testPlaygroundHTML = `<!DOCTYPE html>
             <div id="vision-result" class="result-box" style="display:none;">
                 <div class="result-header" id="vision-result-header"></div>
                 <div class="result-content" id="vision-result-content"></div>
+            </div>
+        </div>
+
+        <!-- Whisper Panel -->
+        <div id="whisper-panel" class="panel">
+            <div class="form-group">
+                <label>Audio File</label>
+                <div class="image-upload" id="audio-drop" onclick="document.getElementById('audio-input').click()">
+                    <input type="file" id="audio-input" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm" style="display:none" onchange="handleAudioSelect(event)">
+                    <p id="audio-placeholder">Click or drag an audio file here (wav, mp3, m4a, ogg, flac, webm)</p>
+                    <p id="audio-filename" style="display:none; color:#22c55e; font-weight:600;"></p>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Or Record Audio</label>
+                <div style="display: flex; gap: 12px; align-items: center;">
+                    <button class="submit-btn" id="record-btn" onclick="toggleRecording()" style="margin-top:0; background:#ef4444;">
+                        🎤 Start Recording
+                    </button>
+                    <span id="recording-status" style="color:#888;"></span>
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="form-group">
+                    <label>Mode</label>
+                    <select id="whisper-mode">
+                        <option value="single">Single-shot (full transcription)</option>
+                        <option value="stream">Streaming (progressive results)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Routing</label>
+                    <select id="whisper-sensitive">
+                        <option value="true">Local (sensitive=true)</option>
+                        <option value="false">Cloud/OpenAI (sensitive=false)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="form-group">
+                    <label>Model (optional)</label>
+                    <input type="text" id="whisper-model" placeholder="e.g. large-v3-turbo, whisper-1">
+                </div>
+                <div class="form-group">
+                    <label>Language (optional)</label>
+                    <input type="text" id="whisper-language" placeholder="e.g. en, fr, de, es">
+                </div>
+            </div>
+
+            <button class="submit-btn" id="whisper-submit" onclick="submitWhisper()">Transcribe</button>
+
+            <div id="whisper-result" class="result-box" style="display:none;">
+                <div class="result-header" id="whisper-result-header"></div>
+                <div class="result-content" id="whisper-result-content"></div>
             </div>
         </div>
     </div>
@@ -2555,6 +2613,206 @@ const testPlaygroundHTML = `<!DOCTYPE html>
             resultBox.style.display = 'block';
             btn.disabled = false;
             btn.innerHTML = 'Analyze Image';
+        }
+
+        // Whisper/Audio handling
+        let selectedAudioFile = null;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+
+        function handleAudioSelect(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            selectedAudioFile = file;
+            document.getElementById('audio-placeholder').style.display = 'none';
+            document.getElementById('audio-filename').textContent = '🎵 ' + file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
+            document.getElementById('audio-filename').style.display = 'block';
+            document.getElementById('audio-drop').classList.add('has-image');
+        }
+
+        // Audio drag and drop
+        const audioDropZone = document.getElementById('audio-drop');
+        audioDropZone.addEventListener('dragover', e => { e.preventDefault(); audioDropZone.style.borderColor = '#6366f1'; });
+        audioDropZone.addEventListener('dragleave', e => { audioDropZone.style.borderColor = ''; });
+        audioDropZone.addEventListener('drop', e => {
+            e.preventDefault();
+            audioDropZone.style.borderColor = '';
+            const file = e.dataTransfer.files[0];
+            if (file && (file.type.startsWith('audio/') || file.name.match(/\.(wav|mp3|m4a|ogg|flac|webm)$/i))) {
+                document.getElementById('audio-input').files = e.dataTransfer.files;
+                handleAudioSelect({target: {files: e.dataTransfer.files}});
+            }
+        });
+
+        async function toggleRecording() {
+            const btn = document.getElementById('record-btn');
+            const status = document.getElementById('recording-status');
+
+            if (!isRecording) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    mediaRecorder = new MediaRecorder(stream);
+                    audioChunks = [];
+
+                    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+                    mediaRecorder.onstop = () => {
+                        const blob = new Blob(audioChunks, { type: 'audio/webm' });
+                        selectedAudioFile = new File([blob], 'recording.webm', { type: 'audio/webm' });
+                        document.getElementById('audio-placeholder').style.display = 'none';
+                        document.getElementById('audio-filename').textContent = '🎤 Recording (' + (blob.size / 1024).toFixed(1) + ' KB)';
+                        document.getElementById('audio-filename').style.display = 'block';
+                        document.getElementById('audio-drop').classList.add('has-image');
+                        stream.getTracks().forEach(track => track.stop());
+                    };
+
+                    mediaRecorder.start();
+                    isRecording = true;
+                    btn.innerHTML = '⏹ Stop Recording';
+                    btn.style.background = '#22c55e';
+                    status.textContent = 'Recording...';
+
+                    // Visual recording indicator
+                    let seconds = 0;
+                    const timer = setInterval(() => {
+                        if (!isRecording) { clearInterval(timer); return; }
+                        seconds++;
+                        status.textContent = 'Recording... ' + seconds + 's';
+                    }, 1000);
+                } catch (err) {
+                    alert('Could not access microphone: ' + err.message);
+                }
+            } else {
+                mediaRecorder.stop();
+                isRecording = false;
+                btn.innerHTML = '🎤 Start Recording';
+                btn.style.background = '#ef4444';
+                status.textContent = 'Recording saved';
+            }
+        }
+
+        async function submitWhisper() {
+            if (!selectedAudioFile) {
+                alert('Please select or record an audio file first');
+                return;
+            }
+
+            const btn = document.getElementById('whisper-submit');
+            const resultBox = document.getElementById('whisper-result');
+            const resultHeader = document.getElementById('whisper-result-header');
+            const resultContent = document.getElementById('whisper-result-content');
+
+            const mode = document.getElementById('whisper-mode').value;
+            const sensitive = document.getElementById('whisper-sensitive').value;
+            const model = document.getElementById('whisper-model').value.trim();
+            const language = document.getElementById('whisper-language').value.trim();
+
+            // Check streaming + cloud combo
+            if (mode === 'stream' && sensitive === 'false') {
+                alert('Streaming mode is only available with local processing (OpenAI API does not support streaming)');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>' + (mode === 'stream' ? 'Streaming...' : 'Transcribing...');
+            resultBox.style.display = 'block';
+            resultHeader.innerHTML = '<div class="result-meta"><span>Status:</span> <strong>Processing...</strong></div>';
+            resultContent.textContent = '';
+
+            const formData = new FormData();
+            formData.append('file', selectedAudioFile);
+            if (model) formData.append('model', model);
+            if (language) formData.append('language', language);
+            formData.append('sensitive', sensitive);
+
+            const endpoint = mode === 'stream' ? '/v1/audio/transcriptions/stream' : '/v1/audio/transcriptions';
+            const startTime = Date.now();
+
+            try {
+                if (mode === 'stream') {
+                    // Streaming mode - use fetch with reader
+                    const resp = await fetch(endpoint, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (!resp.ok) {
+                        const errorText = await resp.text();
+                        throw new Error(errorText);
+                    }
+
+                    const reader = resp.body.getReader();
+                    const decoder = new TextDecoder();
+                    let fullText = '';
+
+                    resultHeader.innerHTML =
+                        '<div class="result-meta"><span>Mode:</span> <span class="badge ollama">streaming</span></div>' +
+                        '<div class="result-meta"><span>Provider:</span> <span class="badge ollama">local</span></div>';
+
+                    while (true) {
+                        const {done, value} = await reader.read();
+                        if (done) break;
+
+                        const chunk = decoder.decode(value, {stream: true});
+                        // Parse SSE data
+                        const lines = chunk.split('\n');
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.slice(6));
+                                    if (data.text) {
+                                        fullText = data.text;
+                                        resultContent.textContent = fullText;
+                                    }
+                                    if (data.error) {
+                                        resultContent.textContent = 'Error: ' + data.error;
+                                    }
+                                } catch (e) {
+                                    // Not valid JSON, might be partial
+                                    fullText += line.slice(6);
+                                    resultContent.textContent = fullText;
+                                }
+                            }
+                        }
+                    }
+
+                    const latency = Date.now() - startTime;
+                    resultHeader.innerHTML =
+                        '<div class="result-meta"><span>Mode:</span> <span class="badge ollama">streaming</span></div>' +
+                        '<div class="result-meta"><span>Provider:</span> <span class="badge ollama">local</span></div>' +
+                        '<div class="result-meta"><span>Latency:</span> <strong>' + latency + 'ms</strong></div>';
+
+                } else {
+                    // Single-shot mode
+                    const resp = await fetch(endpoint, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const latency = Date.now() - startTime;
+                    const provider = resp.headers.get('X-LLM-Proxy-Provider') || 'unknown';
+                    const serverLatency = resp.headers.get('X-LLM-Proxy-Latency-Ms') || latency;
+
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        resultHeader.innerHTML =
+                            '<div class="result-meta"><span>Mode:</span> <span class="badge routed">single-shot</span></div>' +
+                            '<div class="result-meta"><span>Provider:</span> <span class="badge ' + (provider === 'openai' ? 'openai' : 'ollama') + '">' + provider + '</span></div>' +
+                            '<div class="result-meta"><span>Latency:</span> <strong>' + serverLatency + 'ms</strong></div>';
+                        resultContent.textContent = data.text || '(empty transcription)';
+                    } else {
+                        const errorText = await resp.text();
+                        resultHeader.innerHTML = '<div class="result-meta error">Error: ' + resp.status + '</div>';
+                        resultContent.textContent = errorText;
+                    }
+                }
+            } catch (err) {
+                resultHeader.innerHTML = '<div class="result-meta error">Request failed</div>';
+                resultContent.textContent = err.message;
+            }
+
+            btn.disabled = false;
+            btn.innerHTML = 'Transcribe';
         }
     </script>
 </body>
