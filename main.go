@@ -302,6 +302,7 @@ type TTSRequest struct {
 type RequestLog struct {
 	ID              int64     `json:"id"`
 	Timestamp       time.Time `json:"timestamp"`
+	RequestType     string    `json:"request_type"` // "llm", "tts", "stt"
 	Provider        string    `json:"provider"`
 	Model           string    `json:"model"`
 	RequestedModel  string    `json:"requested_model"`
@@ -318,6 +319,10 @@ type RequestLog struct {
 	HasImages       bool      `json:"has_images"`
 	RequestBody     []byte    `json:"-"` // Stored in DB for persistence
 	ResponseBody    []byte    `json:"-"` // Stored in DB for persistence
+	// TTS/STT specific fields
+	Voice           string    `json:"voice,omitempty"`      // TTS voice used
+	AudioDurationMs int64     `json:"audio_duration_ms,omitempty"` // STT audio duration
+	InputChars      int       `json:"input_chars,omitempty"` // TTS input character count
 }
 
 func getEnv(key, fallback string) string {
@@ -340,6 +345,7 @@ func initDB() error {
 		CREATE TABLE IF NOT EXISTS requests (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			timestamp TEXT NOT NULL,
+			request_type TEXT DEFAULT 'llm',
 			provider TEXT NOT NULL,
 			model TEXT NOT NULL,
 			requested_model TEXT,
@@ -355,11 +361,15 @@ func initDB() error {
 			cache_key TEXT,
 			has_images INTEGER DEFAULT 0,
 			request_body TEXT,
-			response_body TEXT
+			response_body TEXT,
+			voice TEXT,
+			audio_duration_ms INTEGER DEFAULT 0,
+			input_chars INTEGER DEFAULT 0
 		);
 		CREATE INDEX IF NOT EXISTS idx_timestamp ON requests(timestamp);
 		CREATE INDEX IF NOT EXISTS idx_provider ON requests(provider);
 		CREATE INDEX IF NOT EXISTS idx_model ON requests(model);
+		CREATE INDEX IF NOT EXISTS idx_request_type ON requests(request_type);
 	`)
 	if err != nil {
 		return err
@@ -368,9 +378,15 @@ func initDB() error {
 	// Add columns for existing databases (migration)
 	db.Exec(`ALTER TABLE requests ADD COLUMN request_body TEXT`)
 	db.Exec(`ALTER TABLE requests ADD COLUMN response_body TEXT`)
+	db.Exec(`ALTER TABLE requests ADD COLUMN request_type TEXT DEFAULT 'llm'`)
+	db.Exec(`ALTER TABLE requests ADD COLUMN voice TEXT`)
+	db.Exec(`ALTER TABLE requests ADD COLUMN audio_duration_ms INTEGER DEFAULT 0`)
+	db.Exec(`ALTER TABLE requests ADD COLUMN input_chars INTEGER DEFAULT 0`)
 
 	// Fix empty provider values from routing failures
 	db.Exec(`UPDATE requests SET provider = 'routing_failed' WHERE provider = '' OR provider IS NULL`)
+	// Default existing rows to 'llm' type
+	db.Exec(`UPDATE requests SET request_type = 'llm' WHERE request_type IS NULL OR request_type = ''`)
 	return nil
 }
 
@@ -378,13 +394,18 @@ func logRequest(entry *RequestLog) {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
+	// Default request type to "llm" if not set
+	if entry.RequestType == "" {
+		entry.RequestType = "llm"
+	}
+
 	_, err := db.Exec(`
-		INSERT INTO requests (timestamp, provider, model, requested_model, sensitive, precision, cached, input_tokens, output_tokens, latency_ms, cost_usd, success, error, cache_key, has_images, request_body, response_body)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, entry.Timestamp.Format(time.RFC3339), entry.Provider, entry.Model, entry.RequestedModel,
+		INSERT INTO requests (timestamp, request_type, provider, model, requested_model, sensitive, precision, cached, input_tokens, output_tokens, latency_ms, cost_usd, success, error, cache_key, has_images, request_body, response_body, voice, audio_duration_ms, input_chars)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, entry.Timestamp.Format(time.RFC3339), entry.RequestType, entry.Provider, entry.Model, entry.RequestedModel,
 		entry.Sensitive, entry.Precision, entry.Cached, entry.InputTokens, entry.OutputTokens,
 		entry.LatencyMs, entry.CostUSD, entry.Success, entry.Error, entry.CacheKey, entry.HasImages,
-		string(entry.RequestBody), string(entry.ResponseBody))
+		string(entry.RequestBody), string(entry.ResponseBody), entry.Voice, entry.AudioDurationMs, entry.InputChars)
 
 	if err != nil {
 		log.Printf("Failed to log request: %v", err)
@@ -545,7 +566,7 @@ func addPendingRequest(req *ChatCompletionRequest, route *RouteConfig, startTime
 		preview = preview[:100] + "..."
 	}
 
-	sensitive := false
+	sensitive := true // Default to sensitive (local Ollama) for privacy
 	if req.Sensitive != nil {
 		sensitive = *req.Sensitive
 	}
@@ -595,9 +616,10 @@ func resolveRoute(req *ChatCompletionRequest) (*RouteConfig, error) {
 	}
 
 	// Use routing table - choose text or vision based on content
-	sensitive := "false"
-	if req.Sensitive != nil && *req.Sensitive {
-		sensitive = "true"
+	// Default to sensitive=true (local Ollama) for privacy
+	sensitive := "true"
+	if req.Sensitive != nil && !*req.Sensitive {
+		sensitive = "false"
 	}
 
 	precision := req.Precision
@@ -917,6 +939,8 @@ func handleWhisperTranscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	startTime := time.Now()
+
 	// Parse multipart form (max 32MB)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		http.Error(w, "Failed to parse form: "+err.Error(), http.StatusBadRequest)
@@ -942,10 +966,16 @@ func handleWhisperTranscription(w http.ResponseWriter, r *http.Request) {
 	model := r.FormValue("model")
 	language := r.FormValue("language")
 
-	startTime := time.Now()
-
 	// Route based on sensitive flag
 	sensitive := isSensitiveRequest(r)
+
+	// Prepare log entry
+	logEntry := &RequestLog{
+		Timestamp:   startTime,
+		RequestType: "stt",
+		Sensitive:   sensitive,
+		InputChars:  len(fileContent), // Store file size in InputChars field
+	}
 
 	var resp *WhisperTranscriptionResponse
 	var provider string
@@ -954,19 +984,32 @@ func handleWhisperTranscription(w http.ResponseWriter, r *http.Request) {
 		// Use local whisper server
 		resp, err = callLocalWhisper(fileContent, header.Filename, model, language)
 		provider = "local"
+		logEntry.Provider = "local"
+		logEntry.Model = "whisper-local"
 	} else {
 		// Use OpenAI Whisper API
 		resp, err = callOpenAIWhisper(fileContent, header.Filename, model, language)
 		provider = "openai"
+		logEntry.Provider = "openai"
+		logEntry.Model = "whisper-1"
 	}
 
 	latencyMs := time.Since(startTime).Milliseconds()
+	logEntry.LatencyMs = latencyMs
 
 	if err != nil {
+		logEntry.Success = false
+		logEntry.Error = err.Error()
+		logRequest(logEntry)
+
 		log.Printf("Whisper transcription failed (%s): %v", provider, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	logEntry.Success = true
+	logEntry.OutputTokens = len(resp.Text) // Store output text length
+	logRequest(logEntry)
 
 	log.Printf("Whisper transcription complete (%s, %dms): %d chars", provider, latencyMs, len(resp.Text))
 
@@ -1100,6 +1143,8 @@ func handleWhisperStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	startTime := time.Now()
+
 	// Check sensitive flag - streaming MUST be local only
 	if !isSensitiveRequest(r) {
 		http.Error(w, "Streaming transcription only available locally (OpenAI API does not support streaming). Set sensitive=true or remove X-Sensitive header.", http.StatusBadRequest)
@@ -1131,6 +1176,16 @@ func handleWhisperStream(w http.ResponseWriter, r *http.Request) {
 	model := r.FormValue("model")
 	language := r.FormValue("language")
 
+	// Prepare log entry
+	logEntry := &RequestLog{
+		Timestamp:   startTime,
+		RequestType: "stt",
+		Provider:    "local",
+		Model:       "whisper-local-stream",
+		Sensitive:   true, // Streaming is always local/sensitive
+		InputChars:  len(fileContent),
+	}
+
 	// Set up SSE
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -1139,6 +1194,10 @@ func handleWhisperStream(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		logEntry.Success = false
+		logEntry.Error = "Streaming not supported"
+		logRequest(logEntry)
 		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
 		return
 	}
@@ -1149,11 +1208,19 @@ func handleWhisperStream(w http.ResponseWriter, r *http.Request) {
 
 	part, err := writer.CreateFormFile("file", header.Filename)
 	if err != nil {
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		logEntry.Success = false
+		logEntry.Error = "failed to create form file"
+		logRequest(logEntry)
 		fmt.Fprintf(w, "data: {\"error\": \"failed to create form file\"}\n\n")
 		flusher.Flush()
 		return
 	}
 	if _, err := part.Write(fileContent); err != nil {
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		logEntry.Success = false
+		logEntry.Error = "failed to write file content"
+		logRequest(logEntry)
 		fmt.Fprintf(w, "data: {\"error\": \"failed to write file content\"}\n\n")
 		flusher.Flush()
 		return
@@ -1168,9 +1235,13 @@ func handleWhisperStream(w http.ResponseWriter, r *http.Request) {
 	writer.Close()
 
 	// Make streaming request to local whisper server
-	url := whisperServerURL + "/v1/audio/transcriptions/stream"
-	req, err := http.NewRequest("POST", url, &buf)
+	whisperURL := whisperServerURL + "/v1/audio/transcriptions/stream"
+	req, err := http.NewRequest("POST", whisperURL, &buf)
 	if err != nil {
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		logEntry.Success = false
+		logEntry.Error = "failed to create request"
+		logRequest(logEntry)
 		fmt.Fprintf(w, "data: {\"error\": \"failed to create request\"}\n\n")
 		flusher.Flush()
 		return
@@ -1180,6 +1251,10 @@ func handleWhisperStream(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{Timeout: 300 * time.Second} // Longer timeout for streaming
 	resp, err := client.Do(req)
 	if err != nil {
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		logEntry.Success = false
+		logEntry.Error = fmt.Sprintf("local whisper stream request failed: %s", err.Error())
+		logRequest(logEntry)
 		fmt.Fprintf(w, "data: {\"error\": \"local whisper stream request failed: %s\"}\n\n", err.Error())
 		flusher.Flush()
 		return
@@ -1188,6 +1263,10 @@ func handleWhisperStream(w http.ResponseWriter, r *http.Request) {
 
 	if resp.StatusCode != 200 {
 		respBody, _ := io.ReadAll(resp.Body)
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		logEntry.Success = false
+		logEntry.Error = fmt.Sprintf("local whisper error %d: %s", resp.StatusCode, string(respBody))
+		logRequest(logEntry)
 		fmt.Fprintf(w, "data: {\"error\": \"local whisper error %d: %s\"}\n\n", resp.StatusCode, string(respBody))
 		flusher.Flush()
 		return
@@ -1210,6 +1289,11 @@ func handleWhisperStream(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+
+	// Log successful stream completion
+	logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+	logEntry.Success = true
+	logRequest(logEntry)
 }
 
 // TTS handler - proxy to local Kokoro TTS server
@@ -1229,6 +1313,8 @@ func handleTTS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	startTime := time.Now()
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -1267,7 +1353,7 @@ func handleTTS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build Kokoro TTS server URL with query params
-	url := fmt.Sprintf("%s/tts?text=%s&voice=%s&format=%s&speed=%.2f",
+	ttsURL := fmt.Sprintf("%s/tts?text=%s&voice=%s&format=%s&speed=%.2f",
 		ttsServerURL,
 		urlEncode(req.Input),
 		kokoroVoice,
@@ -1275,12 +1361,26 @@ func handleTTS(w http.ResponseWriter, r *http.Request) {
 		req.Speed,
 	)
 
-	startTime := time.Now()
+	// Prepare log entry
+	logEntry := &RequestLog{
+		Timestamp:   startTime,
+		RequestType: "tts",
+		Provider:    "kokoro",
+		Model:       "kokoro-tts",
+		Voice:       kokoroVoice,
+		InputChars:  len(req.Input),
+		RequestBody: body,
+	}
 
 	// Forward request to Kokoro TTS server
 	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Get(url)
+	resp, err := client.Get(ttsURL)
 	if err != nil {
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		logEntry.Success = false
+		logEntry.Error = err.Error()
+		logRequest(logEntry)
+
 		log.Printf("TTS request failed: %v", err)
 		http.Error(w, "TTS server unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
@@ -1289,12 +1389,21 @@ func handleTTS(w http.ResponseWriter, r *http.Request) {
 
 	if resp.StatusCode != 200 {
 		respBody, _ := io.ReadAll(resp.Body)
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		logEntry.Success = false
+		logEntry.Error = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		logRequest(logEntry)
+
 		log.Printf("TTS error %d: %s", resp.StatusCode, string(respBody))
 		http.Error(w, fmt.Sprintf("TTS error: %s", string(respBody)), resp.StatusCode)
 		return
 	}
 
 	latencyMs := time.Since(startTime).Milliseconds()
+	logEntry.LatencyMs = latencyMs
+	logEntry.Success = true
+	logRequest(logEntry)
+
 	log.Printf("TTS complete (%dms): voice=%s, len=%d chars", latencyMs, kokoroVoice, len(req.Input))
 
 	// Stream audio response back to client
@@ -2076,13 +2185,134 @@ func handleRoutes(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(routes)
 }
 
+func handleTTSHistory(w http.ResponseWriter, r *http.Request) {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	rows, _ := db.Query(`
+		SELECT id, timestamp, provider, model, latency_ms, success, error, voice, input_chars
+		FROM requests WHERE request_type = 'tts' ORDER BY id DESC LIMIT 50
+	`)
+	defer rows.Close()
+
+	history := []map[string]interface{}{}
+	for rows.Next() {
+		var id int64
+		var timestamp, provider, model string
+		var latencyMs int64
+		var success bool
+		var errStr, voice sql.NullString
+		var inputChars int
+		rows.Scan(&id, &timestamp, &provider, &model, &latencyMs, &success, &errStr, &voice, &inputChars)
+
+		entry := map[string]interface{}{
+			"id":          id,
+			"timestamp":   timestamp,
+			"provider":    provider,
+			"model":       model,
+			"latency_ms":  latencyMs,
+			"success":     success,
+			"input_chars": inputChars,
+		}
+		if errStr.Valid {
+			entry["error"] = errStr.String
+		}
+		if voice.Valid {
+			entry["voice"] = voice.String
+		}
+		history = append(history, entry)
+	}
+
+	// Get stats
+	var totalRequests int
+	db.QueryRow("SELECT COUNT(*) FROM requests WHERE request_type = 'tts'").Scan(&totalRequests)
+	var successCount int
+	db.QueryRow("SELECT COUNT(*) FROM requests WHERE request_type = 'tts' AND success = 1").Scan(&successCount)
+	var avgLatency float64
+	db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM requests WHERE request_type = 'tts'").Scan(&avgLatency)
+	var totalChars int
+	db.QueryRow("SELECT COALESCE(SUM(input_chars), 0) FROM requests WHERE request_type = 'tts'").Scan(&totalChars)
+
+	result := map[string]interface{}{
+		"history":        history,
+		"total_requests": totalRequests,
+		"success_count":  successCount,
+		"avg_latency_ms": avgLatency,
+		"total_chars":    totalChars,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+func handleSTTHistory(w http.ResponseWriter, r *http.Request) {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	rows, _ := db.Query(`
+		SELECT id, timestamp, provider, model, latency_ms, success, error, sensitive, input_chars, output_tokens
+		FROM requests WHERE request_type = 'stt' ORDER BY id DESC LIMIT 50
+	`)
+	defer rows.Close()
+
+	history := []map[string]interface{}{}
+	for rows.Next() {
+		var id int64
+		var timestamp, provider, model string
+		var latencyMs int64
+		var success, sensitive bool
+		var errStr sql.NullString
+		var inputChars, outputTokens int
+		rows.Scan(&id, &timestamp, &provider, &model, &latencyMs, &success, &errStr, &sensitive, &inputChars, &outputTokens)
+
+		entry := map[string]interface{}{
+			"id":           id,
+			"timestamp":    timestamp,
+			"provider":     provider,
+			"model":        model,
+			"latency_ms":   latencyMs,
+			"success":      success,
+			"sensitive":    sensitive,
+			"file_size":    inputChars, // input_chars stores file size for STT
+			"output_chars": outputTokens, // output_tokens stores transcription length
+		}
+		if errStr.Valid {
+			entry["error"] = errStr.String
+		}
+		history = append(history, entry)
+	}
+
+	// Get stats
+	var totalRequests int
+	db.QueryRow("SELECT COUNT(*) FROM requests WHERE request_type = 'stt'").Scan(&totalRequests)
+	var successCount int
+	db.QueryRow("SELECT COUNT(*) FROM requests WHERE request_type = 'stt' AND success = 1").Scan(&successCount)
+	var avgLatency float64
+	db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM requests WHERE request_type = 'stt'").Scan(&avgLatency)
+	var localCount, cloudCount int
+	db.QueryRow("SELECT COUNT(*) FROM requests WHERE request_type = 'stt' AND provider = 'local'").Scan(&localCount)
+	db.QueryRow("SELECT COUNT(*) FROM requests WHERE request_type = 'stt' AND provider = 'openai'").Scan(&cloudCount)
+
+	result := map[string]interface{}{
+		"history":        history,
+		"total_requests": totalRequests,
+		"success_count":  successCount,
+		"avg_latency_ms": avgLatency,
+		"local_count":    localCount,
+		"cloud_count":    cloudCount,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
 // Dashboard HTML
 const dashboardHTML = `<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LLM Proxy Dashboard</title>
+    <title>LLM Proxy</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -2094,7 +2324,35 @@ const dashboardHTML = `<!DOCTYPE html>
         }
         .container { max-width: 1400px; margin: 0 auto; }
         h1 { color: #6366f1; margin-bottom: 8px; font-size: 28px; }
-        .subtitle { color: #888; margin-bottom: 24px; }
+        .subtitle { color: #888; margin-bottom: 16px; }
+        a { color: #6366f1; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        /* Top Navigation Tabs */
+        .nav-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 24px;
+            background: #1a1a2e;
+            padding: 4px;
+            border-radius: 12px;
+        }
+        .nav-tab {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            color: #888;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .nav-tab:hover { color: #e0e0e0; background: #252540; }
+        .nav-tab.active { background: #6366f1; color: #fff; }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
 
         .stats-grid {
             display: grid;
@@ -2141,6 +2399,8 @@ const dashboardHTML = `<!DOCTYPE html>
         .badge.openai { background: #10b981; color: #000; }
         .badge.anthropic { background: #f59e0b; color: #000; }
         .badge.ollama { background: #6366f1; color: #fff; }
+        .badge.local { background: #8b5cf6; color: #fff; }
+        .badge.kokoro { background: #ec4899; color: #fff; }
         .badge.cached { background: #22c55e; color: #000; }
         .badge.error { background: #ef4444; color: #fff; }
         .badge.success { background: #22c55e; color: #000; }
@@ -2161,8 +2421,11 @@ const dashboardHTML = `<!DOCTYPE html>
             border-left: 4px solid #6366f1;
         }
         .route-card.unavailable { border-left-color: #ef4444; opacity: 0.6; }
+        .route-card.text { border-left-color: #6366f1; }
+        .route-card.vision { border-left-color: #06b6d4; }
         .route-flags { font-size: 13px; color: #888; margin-bottom: 8px; }
         .route-target { font-size: 15px; font-weight: 600; }
+        .route-type { font-size: 11px; text-transform: uppercase; margin-bottom: 4px; }
 
         .refresh-btn {
             position: fixed;
@@ -2369,58 +2632,137 @@ const dashboardHTML = `<!DOCTYPE html>
 <body>
     <div class="container">
         <h1>LLM Proxy</h1>
-        <p class="subtitle">Unified AI gateway with routing, caching, and cost tracking | <a href="/test" style="color:#6366f1">Test Playground →</a></p>
+        <p class="subtitle">Unified AI gateway with routing, caching, and cost tracking</p>
 
-        <div class="stats-grid" id="stats-grid">
-            <div class="stat-card">
-                <div class="stat-label">Total Requests</div>
-                <div class="stat-value" id="total-requests">-</div>
+        <!-- Navigation Tabs -->
+        <div class="nav-tabs">
+            <button class="nav-tab active" onclick="switchTab('llm')">LLM Proxy</button>
+            <button class="nav-tab" onclick="window.location.href='/test'">Playground</button>
+            <button class="nav-tab" onclick="switchTab('tts')">TTS</button>
+            <button class="nav-tab" onclick="switchTab('stt')">STT</button>
+            <button class="nav-tab" onclick="switchTab('routing')">Routing</button>
+        </div>
+
+        <!-- LLM Tab -->
+        <div id="tab-llm" class="tab-content active">
+            <div class="stats-grid" id="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Total Requests</div>
+                    <div class="stat-value" id="total-requests">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Cache Hit Rate</div>
+                    <div class="stat-value" id="cache-rate">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total Cost</div>
+                    <div class="stat-value cost" id="total-cost">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Today's Cost</div>
+                    <div class="stat-value cost" id="today-cost">-</div>
+                </div>
             </div>
-            <div class="stat-card">
-                <div class="stat-label">Cache Hit Rate</div>
-                <div class="stat-value" id="cache-rate">-</div>
+
+            <div class="section">
+                <h2 class="section-title">By Provider</h2>
+                <table id="provider-table">
+                    <thead><tr><th>Provider</th><th>Requests</th><th>Avg Latency</th><th>Cost</th></tr></thead>
+                    <tbody></tbody>
+                </table>
             </div>
-            <div class="stat-card">
-                <div class="stat-label">Total Cost</div>
-                <div class="stat-value cost" id="total-cost">-</div>
+
+            <div class="section" id="pending-section" style="display:none">
+                <h2 class="section-title">Pending Requests <span class="pending-count" id="pending-count"></span></h2>
+                <table id="pending-table">
+                    <thead><tr><th>Started</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Elapsed</th><th>Preview</th></tr></thead>
+                    <tbody></tbody>
+                </table>
             </div>
-            <div class="stat-card">
-                <div class="stat-label">Today's Cost</div>
-                <div class="stat-value cost" id="today-cost">-</div>
+
+            <div class="section">
+                <h2 class="section-title">Recent LLM Requests <span style="font-size:12px;color:#888;font-weight:normal">(click row for details)</span></h2>
+                <table id="recent-table">
+                    <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Tokens</th><th>Latency</th><th>Cost</th><th>Status</th></tr></thead>
+                    <tbody></tbody>
+                </table>
             </div>
         </div>
 
-        <div class="section">
-            <h2 class="section-title">Routing Configuration</h2>
-            <div class="routes-grid" id="routes-grid"></div>
+        <!-- TTS Tab -->
+        <div id="tab-tts" class="tab-content">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Total TTS Requests</div>
+                    <div class="stat-value" id="tts-total">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Success Rate</div>
+                    <div class="stat-value" id="tts-success-rate">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Avg Latency</div>
+                    <div class="stat-value latency" id="tts-avg-latency">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total Characters</div>
+                    <div class="stat-value" id="tts-total-chars">-</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">Recent TTS Requests</h2>
+                <table id="tts-table">
+                    <thead><tr><th>Time</th><th>Provider</th><th>Voice</th><th>Characters</th><th>Latency</th><th>Status</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
         </div>
 
-        <div class="section">
-            <h2 class="section-title">By Provider</h2>
-            <table id="provider-table">
-                <thead><tr><th>Provider</th><th>Requests</th><th>Avg Latency</th><th>Cost</th></tr></thead>
-                <tbody></tbody>
-            </table>
+        <!-- STT Tab -->
+        <div id="tab-stt" class="tab-content">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Total STT Requests</div>
+                    <div class="stat-value" id="stt-total">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Success Rate</div>
+                    <div class="stat-value" id="stt-success-rate">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Avg Latency</div>
+                    <div class="stat-value latency" id="stt-avg-latency">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Local / Cloud</div>
+                    <div class="stat-value" id="stt-local-cloud">-</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">Recent STT Requests</h2>
+                <table id="stt-table">
+                    <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>File Size</th><th>Output Chars</th><th>Latency</th><th>Status</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
         </div>
 
-        <div class="section" id="pending-section" style="display:none">
-            <h2 class="section-title">⏳ Pending Requests <span class="pending-count" id="pending-count"></span></h2>
-            <table id="pending-table">
-                <thead><tr><th>Started</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Elapsed</th><th>Preview</th></tr></thead>
-                <tbody></tbody>
-            </table>
-        </div>
-
-        <div class="section">
-            <h2 class="section-title">Recent Requests <span style="font-size:12px;color:#888;font-weight:normal">(click row for details)</span></h2>
-            <table id="recent-table">
-                <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Tokens</th><th>Latency</th><th>Cost</th><th>Status</th></tr></thead>
-                <tbody></tbody>
-            </table>
+        <!-- Routing Tab -->
+        <div id="tab-routing" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">Text Routing</h2>
+                <div class="routes-grid" id="text-routes-grid"></div>
+            </div>
+            <div class="section">
+                <h2 class="section-title">Vision Routing</h2>
+                <div class="routes-grid" id="vision-routes-grid"></div>
+            </div>
         </div>
     </div>
 
-    <button class="refresh-btn" id="refresh-btn" onclick="refresh()">↻</button>
+    <button class="refresh-btn" id="refresh-btn" onclick="refresh()">&#8635;</button>
 
     <!-- Request Detail Modal -->
     <div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
@@ -2489,16 +2831,100 @@ const dashboardHTML = `<!DOCTYPE html>
             const resp = await fetch('/api/routes');
             const routes = await resp.json();
 
-            const grid = document.getElementById('routes-grid');
-            grid.innerHTML = '';
+            const textGrid = document.getElementById('text-routes-grid');
+            const visionGrid = document.getElementById('vision-routes-grid');
+            textGrid.innerHTML = '';
+            visionGrid.innerHTML = '';
 
             for (const route of routes) {
                 const card = document.createElement('div');
-                card.className = 'route-card' + (route.available ? '' : ' unavailable');
-                card.innerHTML = '<div class="route-flags">sensitive: ' + route.sensitive + ', precision: ' + route.precision + '</div>' +
+                const typeClass = route.type === 'vision' ? 'vision' : 'text';
+                card.className = 'route-card ' + typeClass + (route.available ? '' : ' unavailable');
+                card.innerHTML = '<div class="route-type" style="color:' + (route.type === 'vision' ? '#06b6d4' : '#6366f1') + '">' + route.type + '</div>' +
+                    '<div class="route-flags">sensitive: ' + route.sensitive + ', precision: ' + route.precision + '</div>' +
                     '<div class="route-target">' + (route.available ? route.provider + ' / ' + route.model : 'Not Available') + '</div>';
-                grid.appendChild(card);
+                if (route.type === 'vision') {
+                    visionGrid.appendChild(card);
+                } else {
+                    textGrid.appendChild(card);
+                }
             }
+        }
+
+        // Tab switching
+        let currentTab = 'llm';
+        function switchTab(tabName) {
+            currentTab = tabName;
+            // Update tab buttons
+            document.querySelectorAll('.nav-tab').forEach(btn => btn.classList.remove('active'));
+            document.querySelector('.nav-tab[onclick*="' + tabName + '"]')?.classList.add('active');
+            // Update tab content
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.getElementById('tab-' + tabName)?.classList.add('active');
+            // Load data for tab
+            if (tabName === 'tts') loadTTSData();
+            if (tabName === 'stt') loadSTTData();
+            if (tabName === 'routing') loadRoutes();
+        }
+
+        async function loadTTSData() {
+            const resp = await fetch('/api/tts-history');
+            const data = await resp.json();
+
+            document.getElementById('tts-total').textContent = data.total_requests;
+            const successRate = data.total_requests > 0 ? (data.success_count / data.total_requests * 100).toFixed(1) : '0';
+            document.getElementById('tts-success-rate').textContent = successRate + '%';
+            document.getElementById('tts-avg-latency').textContent = Math.round(data.avg_latency_ms) + 'ms';
+            document.getElementById('tts-total-chars').textContent = data.total_chars.toLocaleString();
+
+            const tbody = document.querySelector('#tts-table tbody');
+            tbody.innerHTML = '';
+            for (const req of data.history || []) {
+                const tr = document.createElement('tr');
+                const time = new Date(req.timestamp).toLocaleTimeString();
+                const status = req.success ? '<span class="badge success">ok</span>' : '<span class="badge error">error</span>';
+                tr.innerHTML = '<td>' + time + '</td>' +
+                    '<td><span class="badge kokoro">' + req.provider + '</span></td>' +
+                    '<td>' + (req.voice || '-') + '</td>' +
+                    '<td>' + (req.input_chars || 0) + '</td>' +
+                    '<td>' + req.latency_ms + 'ms</td>' +
+                    '<td>' + status + '</td>';
+                tbody.appendChild(tr);
+            }
+        }
+
+        async function loadSTTData() {
+            const resp = await fetch('/api/stt-history');
+            const data = await resp.json();
+
+            document.getElementById('stt-total').textContent = data.total_requests;
+            const successRate = data.total_requests > 0 ? (data.success_count / data.total_requests * 100).toFixed(1) : '0';
+            document.getElementById('stt-success-rate').textContent = successRate + '%';
+            document.getElementById('stt-avg-latency').textContent = Math.round(data.avg_latency_ms) + 'ms';
+            document.getElementById('stt-local-cloud').textContent = data.local_count + ' / ' + data.cloud_count;
+
+            const tbody = document.querySelector('#stt-table tbody');
+            tbody.innerHTML = '';
+            for (const req of data.history || []) {
+                const tr = document.createElement('tr');
+                const time = new Date(req.timestamp).toLocaleTimeString();
+                const status = req.success ? '<span class="badge success">ok</span>' : '<span class="badge error">error</span>';
+                const fileSize = req.file_size ? formatBytes(req.file_size) : '-';
+                tr.innerHTML = '<td>' + time + '</td>' +
+                    '<td><span class="badge ' + req.provider + '">' + req.provider + '</span></td>' +
+                    '<td>' + req.model + '</td>' +
+                    '<td>' + fileSize + '</td>' +
+                    '<td>' + (req.output_chars || 0) + '</td>' +
+                    '<td>' + req.latency_ms + 'ms</td>' +
+                    '<td>' + status + '</td>';
+                tbody.appendChild(tr);
+            }
+        }
+
+        function formatBytes(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
         }
 
         async function showRequestDetail(id) {
@@ -2705,14 +3131,25 @@ const dashboardHTML = `<!DOCTYPE html>
         async function refresh() {
             const btn = document.getElementById('refresh-btn');
             btn.classList.add('spinning');
-            await Promise.all([loadStats(), loadRoutes(), loadPending()]);
+            // Load data based on current tab
+            if (currentTab === 'llm') {
+                await Promise.all([loadStats(), loadPending()]);
+            } else if (currentTab === 'tts') {
+                await loadTTSData();
+            } else if (currentTab === 'stt') {
+                await loadSTTData();
+            } else if (currentTab === 'routing') {
+                await loadRoutes();
+            }
             btn.classList.remove('spinning');
         }
 
-        refresh();
+        // Initial load
+        loadStats();
+        loadPending();
         setInterval(refresh, 30000);
-        // More frequent updates for pending requests
-        setInterval(loadPending, 2000);
+        // More frequent updates for pending requests (only on LLM tab)
+        setInterval(() => { if (currentTab === 'llm') loadPending(); }, 2000);
     </script>
 </body>
 </html>`
@@ -3699,6 +4136,8 @@ func main() {
 	http.HandleFunc("/api/replay", handleReplayRequest)
 	http.HandleFunc("/api/cache/clear", handleClearCache)
 	http.HandleFunc("/api/pending", handlePendingRequests)
+	http.HandleFunc("/api/tts-history", handleTTSHistory)
+	http.HandleFunc("/api/stt-history", handleSTTHistory)
 	http.HandleFunc("/test", handleTestPlayground)
 	http.HandleFunc("/v1/audio/transcriptions", handleWhisperTranscription)
 	http.HandleFunc("/v1/audio/transcriptions/stream", handleWhisperStream)
