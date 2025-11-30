@@ -989,7 +989,7 @@ func handleWhisperTranscription(w http.ResponseWriter, r *http.Request) {
 		resp, err = callLocalWhisper(fileContent, header.Filename, model, language)
 		provider = "local"
 		logEntry.Provider = "local"
-		logEntry.Model = "whisper-local"
+		logEntry.Model = "whisper-large-v3" // Local server uses whisper-large-v3
 	} else {
 		// Use OpenAI Whisper API
 		resp, err = callOpenAIWhisper(fileContent, header.Filename, model, language)
@@ -1013,6 +1013,8 @@ func handleWhisperTranscription(w http.ResponseWriter, r *http.Request) {
 
 	logEntry.Success = true
 	logEntry.OutputTokens = len(resp.Text) // Store output text length
+	// Store transcribed text in ResponseBody for history display
+	logEntry.ResponseBody = []byte(resp.Text)
 	logRequest(logEntry)
 
 	log.Printf("Whisper transcription complete (%s, %dms): %d chars", provider, latencyMs, len(resp.Text))
@@ -1934,10 +1936,11 @@ func handleReplayRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get original request's cache_key to find cached content
+	// Get original request's cache_key and request_body from database
 	dbMutex.Lock()
 	var cacheKey sql.NullString
-	err := db.QueryRow(`SELECT cache_key FROM requests WHERE id = ?`, replayReq.RequestID).Scan(&cacheKey)
+	var requestBody sql.NullString
+	err := db.QueryRow(`SELECT cache_key, request_body FROM requests WHERE id = ?`, replayReq.RequestID).Scan(&cacheKey, &requestBody)
 	dbMutex.Unlock()
 
 	if err != nil {
@@ -1945,22 +1948,23 @@ func handleReplayRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !cacheKey.Valid {
-		http.Error(w, "Original request has no cache key - cannot replay", http.StatusBadRequest)
-		return
+	// Get the original request body - try cache first, then DB
+	var reqBody []byte
+	if cacheKey.Valid {
+		reqBody, _ = getCachedRequest(cacheKey.String)
 	}
-
-	// Get the original request body from cache
-	cachedReqBody, found := getCachedRequest(cacheKey.String)
-	if !found {
-		http.Error(w, "Original request content not in cache - cannot replay", http.StatusBadRequest)
+	if reqBody == nil && requestBody.Valid {
+		reqBody = []byte(requestBody.String)
+	}
+	if reqBody == nil {
+		http.Error(w, "Original request content not available - cannot replay", http.StatusBadRequest)
 		return
 	}
 
 	// Parse original request
 	var origReq ChatCompletionRequest
-	if err := json.Unmarshal(cachedReqBody, &origReq); err != nil {
-		http.Error(w, "Failed to parse cached request", http.StatusInternalServerError)
+	if err := json.Unmarshal(reqBody, &origReq); err != nil {
+		http.Error(w, "Failed to parse request body", http.StatusInternalServerError)
 		return
 	}
 
@@ -2254,7 +2258,7 @@ func handleSTTHistory(w http.ResponseWriter, r *http.Request) {
 	defer dbMutex.Unlock()
 
 	rows, _ := db.Query(`
-		SELECT id, timestamp, provider, model, latency_ms, success, error, sensitive, input_chars, output_tokens
+		SELECT id, timestamp, provider, model, latency_ms, success, error, sensitive, input_chars, output_tokens, response_body
 		FROM requests WHERE request_type = 'stt' ORDER BY id DESC LIMIT 50
 	`)
 	defer rows.Close()
@@ -2265,9 +2269,9 @@ func handleSTTHistory(w http.ResponseWriter, r *http.Request) {
 		var timestamp, provider, model string
 		var latencyMs int64
 		var success, sensitive bool
-		var errStr sql.NullString
+		var errStr, responseBody sql.NullString
 		var inputChars, outputTokens int
-		rows.Scan(&id, &timestamp, &provider, &model, &latencyMs, &success, &errStr, &sensitive, &inputChars, &outputTokens)
+		rows.Scan(&id, &timestamp, &provider, &model, &latencyMs, &success, &errStr, &sensitive, &inputChars, &outputTokens, &responseBody)
 
 		entry := map[string]interface{}{
 			"id":           id,
@@ -2282,6 +2286,9 @@ func handleSTTHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		if errStr.Valid {
 			entry["error"] = errStr.String
+		}
+		if responseBody.Valid && responseBody.String != "" {
+			entry["transcription"] = responseBody.String
 		}
 		history = append(history, entry)
 	}
@@ -2430,6 +2437,46 @@ const dashboardHTML = `<!DOCTYPE html>
         .route-flags { font-size: 13px; color: #888; margin-bottom: 8px; }
         .route-target { font-size: 15px; font-weight: 600; }
         .route-type { font-size: 11px; text-transform: uppercase; margin-bottom: 4px; }
+
+        /* STT History Cards */
+        .stt-card {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        .stt-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #2d2d44;
+        }
+        .stt-card-meta {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            font-size: 13px;
+        }
+        .stt-card-meta span { color: #888; }
+        .stt-card-meta strong { color: #a5b4fc; }
+        .stt-transcription {
+            background: #252540;
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-size: 14px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        .stt-transcription:empty::before {
+            content: '(No transcription available)';
+            color: #666;
+            font-style: italic;
+        }
 
         .refresh-btn {
             position: fixed;
@@ -2746,10 +2793,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
             <div class="section">
                 <h2 class="section-title">Recent STT Requests</h2>
-                <table id="stt-table">
-                    <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>File Size</th><th>Output Chars</th><th>Latency</th><th>Status</th></tr></thead>
-                    <tbody></tbody>
-                </table>
+                <div id="stt-history"></div>
             </div>
         </div>
 
@@ -2907,21 +2951,34 @@ const dashboardHTML = `<!DOCTYPE html>
             document.getElementById('stt-avg-latency').textContent = Math.round(data.avg_latency_ms) + 'ms';
             document.getElementById('stt-local-cloud').textContent = data.local_count + ' / ' + data.cloud_count;
 
-            const tbody = document.querySelector('#stt-table tbody');
-            tbody.innerHTML = '';
-            for (const req of data.history || []) {
-                const tr = document.createElement('tr');
-                const time = new Date(req.timestamp).toLocaleTimeString();
+            const container = document.getElementById('stt-history');
+            container.innerHTML = '';
+
+            if (!data.history || data.history.length === 0) {
+                container.innerHTML = '<div style="color:#888;text-align:center;padding:40px;">No STT requests yet</div>';
+                return;
+            }
+
+            for (const req of data.history) {
+                const card = document.createElement('div');
+                card.className = 'stt-card';
+                const time = new Date(req.timestamp).toLocaleString();
                 const status = req.success ? '<span class="badge success">ok</span>' : '<span class="badge error">error</span>';
                 const fileSize = req.file_size ? formatBytes(req.file_size) : '-';
-                tr.innerHTML = '<td>' + time + '</td>' +
-                    '<td><span class="badge ' + req.provider + '">' + req.provider + '</span></td>' +
-                    '<td>' + req.model + '</td>' +
-                    '<td>' + fileSize + '</td>' +
-                    '<td>' + (req.output_chars || 0) + '</td>' +
-                    '<td>' + req.latency_ms + 'ms</td>' +
-                    '<td>' + status + '</td>';
-                tbody.appendChild(tr);
+
+                card.innerHTML =
+                    '<div class="stt-card-header">' +
+                        '<div class="stt-card-meta">' +
+                            '<div><span>Time:</span> <strong>' + time + '</strong></div>' +
+                            '<div><span>Model:</span> <strong>' + req.model + '</strong></div>' +
+                            '<div><span>Provider:</span> <span class="badge ' + req.provider + '">' + req.provider + '</span></div>' +
+                            '<div><span>File:</span> <strong>' + fileSize + '</strong></div>' +
+                            '<div><span>Latency:</span> <strong>' + req.latency_ms + 'ms</strong></div>' +
+                        '</div>' +
+                        status +
+                    '</div>' +
+                    '<div class="stt-transcription">' + escapeHtml(req.transcription || '') + '</div>';
+                container.appendChild(card);
             }
         }
 
@@ -2936,6 +2993,7 @@ const dashboardHTML = `<!DOCTYPE html>
             const body = document.getElementById('modal-body');
             overlay.classList.add('active');
             body.innerHTML = '<div style="text-align:center;color:#888;padding:40px;">Loading...</div>';
+            currentRequestId = id;
 
             try {
                 const resp = await fetch('/api/request?id=' + id);
@@ -3025,6 +3083,27 @@ const dashboardHTML = `<!DOCTYPE html>
                 }
             }
 
+            // Replay with different model section
+            if (data.request && data.request.messages) {
+                html += '<div class="modal-section"><h3>Replay with Different Model</h3>';
+                html += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">';
+                html += '<select id="replay-model-select" style="padding:8px 12px;background:#1e1b4b;border:1px solid #4338ca;border-radius:6px;color:#e2e8f0;font-size:14px;min-width:250px">';
+                html += '<option value="">Select a model...</option>';
+                for (const group of availableModels) {
+                    html += '<optgroup label="' + group.group + '">';
+                    for (const model of group.models) {
+                        const selected = model === data.model ? ' selected' : '';
+                        html += '<option value="' + model + '"' + selected + '>' + model + '</option>';
+                    }
+                    html += '</optgroup>';
+                }
+                html += '</select>';
+                html += '<button id="replay-btn" onclick="replayWithModel()" style="padding:8px 16px;background:#4f46e5;border:none;border-radius:6px;color:white;cursor:pointer;font-size:14px">Replay Request</button>';
+                html += '</div>';
+                html += '<div id="replay-result" style="margin-top:12px"></div>';
+                html += '</div>';
+            }
+
             // Cache key
             if (data.cache_key) {
                 html += '<div class="modal-section"><h3>Cache</h3>';
@@ -3079,6 +3158,60 @@ const dashboardHTML = `<!DOCTYPE html>
         function closeModal(event) {
             if (event && event.target !== event.currentTarget) return;
             document.getElementById('modal-overlay').classList.remove('active');
+        }
+
+        // Store current request ID for replay
+        let currentRequestId = null;
+
+        // Available models for replay
+        const availableModels = [
+            { group: 'Anthropic', models: ['claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'] },
+            { group: 'OpenAI', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o1', 'o1-mini'] },
+            { group: 'Ollama (Local)', models: ['llama3.3:70b', 'llama3:latest', 'gemma3:latest', 'qwen3-vl:30b'] }
+        ];
+
+        async function replayWithModel() {
+            const select = document.getElementById('replay-model-select');
+            const model = select.value;
+            if (!model || !currentRequestId) return;
+
+            const btn = document.getElementById('replay-btn');
+            const resultDiv = document.getElementById('replay-result');
+            btn.disabled = true;
+            btn.textContent = 'Replaying...';
+            resultDiv.innerHTML = '<div style="color:#888;padding:10px;">Sending request to ' + model + '...</div>';
+
+            try {
+                const resp = await fetch('/api/replay', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ request_id: currentRequestId, model: model })
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.text();
+                    throw new Error(err);
+                }
+
+                const data = await resp.json();
+                let content = '';
+                if (data.choices && data.choices[0]?.message?.content) {
+                    content = data.choices[0].message.content;
+                } else {
+                    content = JSON.stringify(data, null, 2);
+                }
+
+                resultDiv.innerHTML = '<div class="code-block" style="max-height:400px;overflow-y:auto">' + escapeHtml(content) + '</div>';
+                resultDiv.innerHTML += '<div style="color:#22c55e;margin-top:8px;font-size:12px">Replayed successfully with ' + model + '</div>';
+
+                // Refresh stats after replay
+                loadStats();
+            } catch (err) {
+                resultDiv.innerHTML = '<div style="color:#ef4444;padding:10px;">Error: ' + escapeHtml(err.message) + '</div>';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Replay Request';
+            }
         }
 
         // Close on escape key
@@ -3148,9 +3281,21 @@ const dashboardHTML = `<!DOCTYPE html>
             btn.classList.remove('spinning');
         }
 
+        // Handle URL hash navigation
+        function handleHash() {
+            const hash = window.location.hash.replace('#', '');
+            if (hash && ['llm', 'tts', 'stt', 'routing'].includes(hash)) {
+                switchTab(hash);
+            }
+        }
+        window.addEventListener('hashchange', handleHash);
+
         // Initial load
-        loadStats();
-        loadPending();
+        handleHash(); // Check for hash on page load
+        if (currentTab === 'llm') {
+            loadStats();
+            loadPending();
+        }
         setInterval(refresh, 30000);
         // More frequent updates for pending requests (only on LLM tab)
         setInterval(() => { if (currentTab === 'llm') loadPending(); }, 2000);
@@ -3181,9 +3326,32 @@ const testPlaygroundHTML = `<!DOCTYPE html>
         }
         .container { max-width: 1000px; margin: 0 auto; }
         h1 { color: #6366f1; margin-bottom: 8px; font-size: 28px; }
-        .subtitle { color: #888; margin-bottom: 24px; }
+        .subtitle { color: #888; margin-bottom: 16px; }
         a { color: #6366f1; text-decoration: none; }
         a:hover { text-decoration: underline; }
+
+        /* Top Navigation Tabs */
+        .nav-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 24px;
+            background: #1a1a2e;
+            padding: 4px;
+            border-radius: 12px;
+        }
+        .nav-tab {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            color: #888;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .nav-tab:hover { color: #e0e0e0; background: #252540; }
+        .nav-tab.active { background: #6366f1; color: #fff; }
 
         .tabs {
             display: flex;
@@ -3313,8 +3481,19 @@ const testPlaygroundHTML = `<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        <h1>LLM Proxy Test Playground</h1>
-        <p class="subtitle"><a href="/">← Back to Dashboard</a> | Test routing and model responses</p>
+        <h1>LLM Proxy</h1>
+        <p class="subtitle">Unified AI gateway with routing, caching, and cost tracking</p>
+
+        <!-- Navigation Tabs -->
+        <div class="nav-tabs">
+            <button class="nav-tab" onclick="window.location.href='/'">LLM Proxy</button>
+            <button class="nav-tab active">Playground</button>
+            <button class="nav-tab" onclick="window.location.href='/#tts'">TTS</button>
+            <button class="nav-tab" onclick="window.location.href='/#stt'">STT</button>
+            <button class="nav-tab" onclick="window.location.href='/#routing'">Routing</button>
+        </div>
+
+        <h2 style="color:#a5b4fc;margin-bottom:16px;font-size:20px;">Test Playground</h2>
 
         <div class="tabs">
             <button class="tab active" onclick="switchTab('chat')">Chat Completion</button>
