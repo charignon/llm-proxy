@@ -1124,6 +1124,10 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		logEntry.Success = false
 		logEntry.Error = err.Error()
+
+		// Cache the request even on error so we can debug it later
+		setCache(cacheKey, body, nil)
+
 		logRequest(logEntry)
 
 		// Record error metrics
@@ -1348,22 +1352,8 @@ func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 								if p, ok := part.(map[string]interface{}); ok {
 									partCopy := make(map[string]interface{})
 									for k, v := range p {
-										if k == "image_url" {
-											// Truncate base64 image data
-											if imgUrl, ok := v.(map[string]interface{}); ok {
-												if url, ok := imgUrl["url"].(string); ok {
-													if len(url) > 100 {
-														partCopy[k] = map[string]string{
-															"url": url[:50] + "...[base64 truncated]..." + url[len(url)-20:],
-														}
-													} else {
-														partCopy[k] = v
-													}
-												}
-											}
-										} else {
-											partCopy[k] = v
-										}
+										// Keep full image_url data for preview in dashboard
+									partCopy[k] = v
 									}
 									parts = append(parts, partCopy)
 								}
@@ -1869,6 +1859,55 @@ const dashboardHTML = `<!DOCTYPE html>
             word-break: break-word;
         }
         .tokens-small { font-size: 11px; color: #888; }
+
+        /* Image preview styles */
+        .message-text { margin-bottom: 8px; }
+        .message-text:last-child { margin-bottom: 0; }
+        .message-image-container {
+            margin: 12px 0;
+            text-align: center;
+        }
+        .message-image {
+            max-width: 100%;
+            max-height: 300px;
+            border-radius: 8px;
+            border: 1px solid #3d3d5c;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .message-image:hover {
+            transform: scale(1.02);
+            box-shadow: 0 4px 20px rgba(99, 102, 241, 0.3);
+        }
+        .image-label {
+            color: #888;
+            font-size: 11px;
+            margin-top: 4px;
+        }
+        .image-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.95);
+            z-index: 2000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .full-image {
+            max-width: 95vw;
+            max-height: 90vh;
+            border-radius: 8px;
+        }
+        .image-hint {
+            color: #888;
+            font-size: 12px;
+            margin-top: 16px;
+        }
     </style>
 </head>
 <body>
@@ -2090,9 +2129,17 @@ const dashboardHTML = `<!DOCTYPE html>
                 let result = '';
                 for (const part of content) {
                     if (part.type === 'text') {
-                        result += escapeHtml(part.text || '');
+                        result += '<div class="message-text">' + escapeHtml(part.text || '') + '</div>';
                     } else if (part.type === 'image_url') {
-                        result += '<em style="color:#06b6d4">[Image: ' + escapeHtml(part.image_url?.url || 'base64 data') + ']</em>';
+                        const url = part.image_url?.url || '';
+                        if (url) {
+                            result += '<div class="message-image-container">';
+                            result += '<img class="message-image" src="' + escapeHtml(url) + '" onclick="showFullImage(this.src)" title="Click to view full size">';
+                            result += '<div class="image-label">Image attachment (click to enlarge)</div>';
+                            result += '</div>';
+                        } else {
+                            result += '<em style="color:#06b6d4">[Image: no data]</em>';
+                        }
                     } else {
                         result += escapeHtml(JSON.stringify(part));
                     }
@@ -2100,6 +2147,14 @@ const dashboardHTML = `<!DOCTYPE html>
                 return result;
             }
             return escapeHtml(JSON.stringify(content));
+        }
+
+        function showFullImage(src) {
+            const overlay = document.createElement('div');
+            overlay.className = 'image-overlay';
+            overlay.onclick = () => overlay.remove();
+            overlay.innerHTML = '<img src="' + src + '" class="full-image"><div class="image-hint">Click anywhere to close</div>';
+            document.body.appendChild(overlay);
         }
 
         function escapeHtml(str) {
