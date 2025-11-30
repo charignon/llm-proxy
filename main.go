@@ -472,6 +472,12 @@ func hasImages(req *ChatCompletionRequest) bool {
 					}
 				}
 			}
+		case []ContentPart:
+			for _, part := range c {
+				if part.Type == "image_url" {
+					return true
+				}
+			}
 		}
 	}
 	return false
