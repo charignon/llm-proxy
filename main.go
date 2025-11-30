@@ -681,9 +681,59 @@ func callAnthropic(req *ChatCompletionRequest, model string) (*ChatCompletionRes
 	// Convert messages to Anthropic format
 	var messages []AnthropicMessage
 	for _, msg := range req.Messages {
+		// Convert content from OpenAI format to Anthropic format
+		var anthropicContent interface{}
+		switch c := msg.Content.(type) {
+		case string:
+			anthropicContent = c
+		case []interface{}:
+			// Handle multimodal content - convert image_url to Anthropic image format
+			var contentParts []map[string]interface{}
+			for _, part := range c {
+				if m, ok := part.(map[string]interface{}); ok {
+					if m["type"] == "text" {
+						contentParts = append(contentParts, map[string]interface{}{
+							"type": "text",
+							"text": m["text"],
+						})
+					} else if m["type"] == "image_url" {
+						if imgURL, ok := m["image_url"].(map[string]interface{}); ok {
+							url := imgURL["url"].(string)
+							// Extract base64 and media type from data URL
+							if strings.HasPrefix(url, "data:") {
+								// Format: data:image/png;base64,<data>
+								parts := strings.SplitN(url, ",", 2)
+								if len(parts) == 2 {
+									// Extract media type from first part (data:image/png;base64)
+									mediaType := "image/png" // default
+									if strings.Contains(parts[0], "image/jpeg") {
+										mediaType = "image/jpeg"
+									} else if strings.Contains(parts[0], "image/gif") {
+										mediaType = "image/gif"
+									} else if strings.Contains(parts[0], "image/webp") {
+										mediaType = "image/webp"
+									}
+									contentParts = append(contentParts, map[string]interface{}{
+										"type": "image",
+										"source": map[string]interface{}{
+											"type":       "base64",
+											"media_type": mediaType,
+											"data":       parts[1],
+										},
+									})
+								}
+							}
+						}
+					}
+				}
+			}
+			anthropicContent = contentParts
+		default:
+			anthropicContent = c
+		}
 		messages = append(messages, AnthropicMessage{
 			Role:    msg.Role,
-			Content: msg.Content,
+			Content: anthropicContent,
 		})
 	}
 
