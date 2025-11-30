@@ -2400,6 +2400,9 @@ const testPlaygroundHTML = `<!DOCTYPE html>
                     </button>
                     <span id="recording-status" style="color:#888;"></span>
                 </div>
+                <p id="https-warning" style="display:none; color:#f59e0b; font-size:12px; margin-top:8px;">
+                    ⚠️ Microphone requires HTTPS. Use file upload instead.
+                </p>
             </div>
 
             <div class="row">
@@ -2650,6 +2653,12 @@ const testPlaygroundHTML = `<!DOCTYPE html>
             const status = document.getElementById('recording-status');
 
             if (!isRecording) {
+                // Check if mediaDevices is available (requires HTTPS or localhost)
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    alert('Microphone recording requires HTTPS. Please use file upload instead.');
+                    return;
+                }
+
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     mediaRecorder = new MediaRecorder(stream);
@@ -2814,6 +2823,20 @@ const testPlaygroundHTML = `<!DOCTYPE html>
             btn.disabled = false;
             btn.innerHTML = 'Transcribe';
         }
+
+        // Check HTTPS on page load and disable recording if not available
+        (function() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                const btn = document.getElementById('record-btn');
+                const warning = document.getElementById('https-warning');
+                if (btn) {
+                    btn.disabled = true;
+                    btn.style.opacity = '0.5';
+                    btn.style.cursor = 'not-allowed';
+                }
+                if (warning) warning.style.display = 'block';
+            }
+        })();
     </script>
 </body>
 </html>`
