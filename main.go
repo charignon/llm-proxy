@@ -1180,6 +1180,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Resolve routing
 	route, err := resolveRoute(&req)
 	if err != nil {
+		logEntry.Provider = "routing_failed"
 		logEntry.Success = false
 		logEntry.Error = err.Error()
 		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
@@ -2394,18 +2395,38 @@ const dashboardHTML = `<!DOCTYPE html>
 
             // Response
             if (data.response) {
-                html += '<div class="modal-section"><h3>Response</h3>';
+                let responseContent = '';
                 if (data.response.choices && data.response.choices.length > 0) {
                     const choice = data.response.choices[0];
                     if (choice.message && choice.message.content) {
-                        html += '<div class="code-block">' + escapeHtml(choice.message.content) + '</div>';
-                    } else {
-                        html += '<div class="code-block">' + escapeHtml(JSON.stringify(data.response, null, 2)) + '</div>';
+                        responseContent = choice.message.content;
                     }
-                } else {
-                    html += '<div class="code-block">' + escapeHtml(JSON.stringify(data.response, null, 2)) + '</div>';
                 }
-                html += '</div>';
+
+                // Check for thinking content wrapped in <think> tags
+                const thinkMatch = responseContent.match(/^<think>([\s\S]*?)<\/think>([\s\S]*)$/);
+                if (thinkMatch) {
+                    const thinkingContent = thinkMatch[1];
+                    const actualResponse = thinkMatch[2];
+
+                    // Show thinking section first
+                    html += '<div class="modal-section"><h3>💭 Thinking</h3>';
+                    html += '<div class="code-block" style="background:#1e1b4b;border-left:3px solid #8b5cf6;max-height:300px;overflow-y:auto">' + escapeHtml(thinkingContent) + '</div>';
+                    html += '</div>';
+
+                    // Show actual response
+                    html += '<div class="modal-section"><h3>Response</h3>';
+                    html += '<div class="code-block">' + escapeHtml(actualResponse) + '</div>';
+                    html += '</div>';
+                } else if (responseContent) {
+                    html += '<div class="modal-section"><h3>Response</h3>';
+                    html += '<div class="code-block">' + escapeHtml(responseContent) + '</div>';
+                    html += '</div>';
+                } else {
+                    html += '<div class="modal-section"><h3>Response</h3>';
+                    html += '<div class="code-block">' + escapeHtml(JSON.stringify(data.response, null, 2)) + '</div>';
+                    html += '</div>';
+                }
             }
 
             // Cache key
