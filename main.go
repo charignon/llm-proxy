@@ -357,6 +357,9 @@ func initDB() error {
 	// Add columns for existing databases (migration)
 	db.Exec(`ALTER TABLE requests ADD COLUMN request_body TEXT`)
 	db.Exec(`ALTER TABLE requests ADD COLUMN response_body TEXT`)
+
+	// Fix empty provider values from routing failures
+	db.Exec(`UPDATE requests SET provider = 'routing_failed' WHERE provider = '' OR provider IS NULL`)
 	return nil
 }
 
