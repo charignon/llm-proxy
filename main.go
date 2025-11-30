@@ -275,8 +275,9 @@ type OllamaMessage struct {
 type OllamaResponse struct {
 	Model   string `json:"model"`
 	Message struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
+		Role     string `json:"role"`
+		Content  string `json:"content"`
+		Thinking string `json:"thinking,omitempty"` // Qwen3 thinking mode
 	} `json:"message"`
 	Done bool `json:"done"`
 }
@@ -304,6 +305,8 @@ type RequestLog struct {
 	Error           string    `json:"error,omitempty"`
 	CacheKey        string    `json:"cache_key"`
 	HasImages       bool      `json:"has_images"`
+	RequestBody     []byte    `json:"-"` // Stored in DB for persistence
+	ResponseBody    []byte    `json:"-"` // Stored in DB for persistence
 }
 
 func getEnv(key, fallback string) string {
@@ -339,13 +342,22 @@ func initDB() error {
 			success INTEGER DEFAULT 1,
 			error TEXT,
 			cache_key TEXT,
-			has_images INTEGER DEFAULT 0
+			has_images INTEGER DEFAULT 0,
+			request_body TEXT,
+			response_body TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_timestamp ON requests(timestamp);
 		CREATE INDEX IF NOT EXISTS idx_provider ON requests(provider);
 		CREATE INDEX IF NOT EXISTS idx_model ON requests(model);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Add columns for existing databases (migration)
+	db.Exec(`ALTER TABLE requests ADD COLUMN request_body TEXT`)
+	db.Exec(`ALTER TABLE requests ADD COLUMN response_body TEXT`)
+	return nil
 }
 
 func logRequest(entry *RequestLog) {
@@ -353,11 +365,12 @@ func logRequest(entry *RequestLog) {
 	defer dbMutex.Unlock()
 
 	_, err := db.Exec(`
-		INSERT INTO requests (timestamp, provider, model, requested_model, sensitive, precision, cached, input_tokens, output_tokens, latency_ms, cost_usd, success, error, cache_key, has_images)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO requests (timestamp, provider, model, requested_model, sensitive, precision, cached, input_tokens, output_tokens, latency_ms, cost_usd, success, error, cache_key, has_images, request_body, response_body)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, entry.Timestamp.Format(time.RFC3339), entry.Provider, entry.Model, entry.RequestedModel,
 		entry.Sensitive, entry.Precision, entry.Cached, entry.InputTokens, entry.OutputTokens,
-		entry.LatencyMs, entry.CostUSD, entry.Success, entry.Error, entry.CacheKey, entry.HasImages)
+		entry.LatencyMs, entry.CostUSD, entry.Success, entry.Error, entry.CacheKey, entry.HasImages,
+		string(entry.RequestBody), string(entry.ResponseBody))
 
 	if err != nil {
 		log.Printf("Failed to log request: %v", err)
@@ -786,12 +799,18 @@ func callOllama(req *ChatCompletionRequest, model string) (*ChatCompletionRespon
 		return nil, err
 	}
 
+	// Build response content - include thinking wrapped in <think> tags if present
+	responseContent := ollamaResp.Message.Content
+	if ollamaResp.Message.Thinking != "" {
+		responseContent = "<think>" + ollamaResp.Message.Thinking + "</think>" + responseContent
+	}
+
 	// Estimate tokens (rough approximation)
 	inputTokens := 0
 	for _, m := range messages {
 		inputTokens += len(m.Content) / 4
 	}
-	outputTokens := len(ollamaResp.Message.Content) / 4
+	outputTokens := len(responseContent) / 4
 
 	return &ChatCompletionResponse{
 		ID:      fmt.Sprintf("ollama-%d", time.Now().UnixNano()),
@@ -801,7 +820,7 @@ func callOllama(req *ChatCompletionRequest, model string) (*ChatCompletionRespon
 		Provider: "ollama",
 		Choices: []Choice{{
 			Index:        0,
-			Message:      Message{Role: "assistant", Content: ollamaResp.Message.Content},
+			Message:      Message{Role: "assistant", Content: responseContent},
 			FinishReason: "stop",
 		}},
 		Usage: &Usage{
@@ -1152,6 +1171,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		RequestedModel: req.Model,
 		Precision:      req.Precision,
 		HasImages:      hasImages(&req),
+		RequestBody:    body, // Store for DB persistence
 	}
 	if req.Sensitive != nil {
 		logEntry.Sensitive = *req.Sensitive
@@ -1181,6 +1201,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			logEntry.Cached = true
 			logEntry.LatencyMs = time.Since(startTime).Milliseconds()
 			logEntry.Success = true
+			logEntry.ResponseBody = cached // Store cached response for DB persistence
 			logRequest(logEntry)
 
 			// Record cache hit metrics
@@ -1245,6 +1266,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	respBytes, _ := json.Marshal(resp)
 	setCache(cacheKey, body, respBytes)
 
+	logEntry.ResponseBody = respBytes // Store for DB persistence
 	logRequest(logEntry)
 
 	// Record metrics
