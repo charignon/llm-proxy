@@ -409,10 +409,11 @@ func calculateCost(model string, inputTokens, outputTokens int) float64 {
 	return (float64(inputTokens) * pricing[0] / 1_000_000) + (float64(outputTokens) * pricing[1] / 1_000_000)
 }
 
-func generateCacheKey(req *ChatCompletionRequest) string {
-	// Hash the request content
+func generateCacheKey(req *ChatCompletionRequest, route *RouteConfig) string {
+	// Hash the request content including routed provider/model
 	h := sha256.New()
-	h.Write([]byte(req.Model))
+	h.Write([]byte(route.Provider))
+	h.Write([]byte(route.Model))
 	for _, msg := range req.Messages {
 		h.Write([]byte(msg.Role))
 		switch c := msg.Content.(type) {
@@ -1309,7 +1310,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	logEntry.Model = route.Model
 
 	// Check cache
-	cacheKey := generateCacheKey(&req)
+	cacheKey := generateCacheKey(&req, route)
 	logEntry.CacheKey = cacheKey
 
 	if !req.NoCache {
