@@ -341,6 +341,7 @@ func initDB() error {
 		return err
 	}
 
+	// Create table without indexes first (for existing databases)
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS requests (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -365,17 +366,13 @@ func initDB() error {
 			voice TEXT,
 			audio_duration_ms INTEGER DEFAULT 0,
 			input_chars INTEGER DEFAULT 0
-		);
-		CREATE INDEX IF NOT EXISTS idx_timestamp ON requests(timestamp);
-		CREATE INDEX IF NOT EXISTS idx_provider ON requests(provider);
-		CREATE INDEX IF NOT EXISTS idx_model ON requests(model);
-		CREATE INDEX IF NOT EXISTS idx_request_type ON requests(request_type);
+		)
 	`)
 	if err != nil {
 		return err
 	}
 
-	// Add columns for existing databases (migration)
+	// Add columns for existing databases (migration) - must run BEFORE index creation
 	db.Exec(`ALTER TABLE requests ADD COLUMN request_body TEXT`)
 	db.Exec(`ALTER TABLE requests ADD COLUMN response_body TEXT`)
 	db.Exec(`ALTER TABLE requests ADD COLUMN request_type TEXT DEFAULT 'llm'`)
@@ -387,6 +384,13 @@ func initDB() error {
 	db.Exec(`UPDATE requests SET provider = 'routing_failed' WHERE provider = '' OR provider IS NULL`)
 	// Default existing rows to 'llm' type
 	db.Exec(`UPDATE requests SET request_type = 'llm' WHERE request_type IS NULL OR request_type = ''`)
+
+	// Create indexes AFTER migrations ensure columns exist
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_timestamp ON requests(timestamp)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_provider ON requests(provider)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_model ON requests(model)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_request_type ON requests(request_type)`)
+
 	return nil
 }
 
