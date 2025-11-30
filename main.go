@@ -1512,16 +1512,20 @@ func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 		Error          sql.NullString `json:"-"`
 		CacheKey       sql.NullString `json:"-"`
 		HasImages      bool           `json:"has_images"`
+		RequestBody    sql.NullString `json:"-"`
+		ResponseBody   sql.NullString `json:"-"`
 	}
 
 	err := db.QueryRow(`
 		SELECT id, timestamp, provider, model, requested_model, sensitive, precision,
-		       cached, input_tokens, output_tokens, latency_ms, cost_usd, success, error, cache_key, has_images
+		       cached, input_tokens, output_tokens, latency_ms, cost_usd, success, error, cache_key, has_images,
+		       request_body, response_body
 		FROM requests WHERE id = ?
 	`, id).Scan(&entry.ID, &entry.Timestamp, &entry.Provider, &entry.Model,
 		&entry.RequestedModel, &entry.Sensitive, &entry.Precision, &entry.Cached,
 		&entry.InputTokens, &entry.OutputTokens, &entry.LatencyMs, &entry.CostUSD,
-		&entry.Success, &entry.Error, &entry.CacheKey, &entry.HasImages)
+		&entry.Success, &entry.Error, &entry.CacheKey, &entry.HasImages,
+		&entry.RequestBody, &entry.ResponseBody)
 	dbMutex.Unlock()
 
 	if err == sql.ErrNoRows {
@@ -1559,60 +1563,74 @@ func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 		response["error"] = entry.Error.String
 	}
 
-	// Try to get cached request/response content
+	// Try to get cached request/response content (cache first, then DB fallback)
 	if entry.CacheKey.Valid {
 		response["cache_key"] = entry.CacheKey.String
+	}
 
-		// Get request body from cache
-		if reqBody, found := getCachedRequest(entry.CacheKey.String); found {
-			var req ChatCompletionRequest
-			if json.Unmarshal(reqBody, &req) == nil {
-				// Extract messages for display (but truncate images)
-				var displayMessages []map[string]interface{}
-				for _, msg := range req.Messages {
-					displayMsg := map[string]interface{}{
-						"role": msg.Role,
-					}
-					if msg.Content != nil {
-						// Check if content is a string or array
-						if s, ok := msg.Content.(string); ok {
-							displayMsg["content"] = s
-						} else if arr, ok := msg.Content.([]interface{}); ok {
-							// Array of content parts - handle images
-							var parts []map[string]interface{}
-							for _, part := range arr {
-								if p, ok := part.(map[string]interface{}); ok {
-									partCopy := make(map[string]interface{})
-									for k, v := range p {
-										// Keep full image_url data for preview in dashboard
+	// Get request body - try cache first, then DB
+	var reqBody []byte
+	if entry.CacheKey.Valid {
+		reqBody, _ = getCachedRequest(entry.CacheKey.String)
+	}
+	if reqBody == nil && entry.RequestBody.Valid {
+		reqBody = []byte(entry.RequestBody.String)
+	}
+	if reqBody != nil {
+		var req ChatCompletionRequest
+		if json.Unmarshal(reqBody, &req) == nil {
+			// Extract messages for display (but truncate images)
+			var displayMessages []map[string]interface{}
+			for _, msg := range req.Messages {
+				displayMsg := map[string]interface{}{
+					"role": msg.Role,
+				}
+				if msg.Content != nil {
+					// Check if content is a string or array
+					if s, ok := msg.Content.(string); ok {
+						displayMsg["content"] = s
+					} else if arr, ok := msg.Content.([]interface{}); ok {
+						// Array of content parts - handle images
+						var parts []map[string]interface{}
+						for _, part := range arr {
+							if p, ok := part.(map[string]interface{}); ok {
+								partCopy := make(map[string]interface{})
+								for k, v := range p {
+									// Keep full image_url data for preview in dashboard
 									partCopy[k] = v
-									}
-									parts = append(parts, partCopy)
 								}
+								parts = append(parts, partCopy)
 							}
-							displayMsg["content"] = parts
-						} else {
-							displayMsg["content"] = msg.Content
 						}
+						displayMsg["content"] = parts
+					} else {
+						displayMsg["content"] = msg.Content
 					}
-					displayMessages = append(displayMessages, displayMsg)
 				}
-				response["request"] = map[string]interface{}{
-					"model":     req.Model,
-					"messages":  displayMessages,
-					"sensitive": req.Sensitive,
-					"precision": req.Precision,
-					"no_cache":  req.NoCache,
-				}
+				displayMessages = append(displayMessages, displayMsg)
+			}
+			response["request"] = map[string]interface{}{
+				"model":     req.Model,
+				"messages":  displayMessages,
+				"sensitive": req.Sensitive,
+				"precision": req.Precision,
+				"no_cache":  req.NoCache,
 			}
 		}
+	}
 
-		// Get response from cache
-		if respBody, found := getCachedResponse(entry.CacheKey.String); found {
-			var resp map[string]interface{}
-			if json.Unmarshal(respBody, &resp) == nil {
-				response["response"] = resp
-			}
+	// Get response - try cache first, then DB
+	var respBody []byte
+	if entry.CacheKey.Valid {
+		respBody, _ = getCachedResponse(entry.CacheKey.String)
+	}
+	if respBody == nil && entry.ResponseBody.Valid {
+		respBody = []byte(entry.ResponseBody.String)
+	}
+	if respBody != nil {
+		var resp map[string]interface{}
+		if json.Unmarshal(respBody, &resp) == nil {
+			response["response"] = resp
 		}
 	}
 
