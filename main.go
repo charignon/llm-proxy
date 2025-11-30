@@ -11,6 +11,7 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,6 +31,7 @@ var (
 	dataDir          = getEnv("DATA_DIR", "./data")
 	cacheTTLHours    = 24 * 7 // 1 week cache
 	whisperServerURL = getEnv("WHISPER_SERVER_URL", "http://localhost:8890") // Local whisper server
+	ttsServerURL     = getEnv("TTS_SERVER_URL", "http://localhost:7788")     // Local TTS server (Kokoro)
 )
 
 // Model pricing per 1M tokens (input, output)
@@ -285,6 +287,15 @@ type OllamaResponse struct {
 // Whisper API types (OpenAI-compatible)
 type WhisperTranscriptionResponse struct {
 	Text string `json:"text"`
+}
+
+// TTS API types (OpenAI-compatible)
+type TTSRequest struct {
+	Model          string  `json:"model"`          // tts-1, tts-1-hd (mapped to kokoro)
+	Input          string  `json:"input"`          // Text to synthesize
+	Voice          string  `json:"voice"`          // alloy, echo, fable, onyx, nova, shimmer -> mapped to kokoro voices
+	ResponseFormat string  `json:"response_format"` // mp3 (default), wav
+	Speed          float64 `json:"speed"`           // 0.25 to 4.0, default 1.0
 }
 
 // Request log entry
@@ -1148,6 +1159,107 @@ func handleWhisperStream(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+}
+
+// TTS handler - proxy to local Kokoro TTS server
+
+// Map OpenAI voice names to Kokoro voices
+var ttsVoiceMap = map[string]string{
+	"alloy":   "af_nicole", // American female
+	"echo":    "am_adam",   // American male
+	"fable":   "bf_emma",   // British female
+	"onyx":    "bm_george", // British male
+	"nova":    "af_sky",    // American female
+	"shimmer": "af_bella",  // American female
+}
+
+func handleTTS(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request", http.StatusBadRequest)
+		return
+	}
+
+	var req TTSRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate required fields
+	if req.Input == "" {
+		http.Error(w, "Missing required field: input", http.StatusBadRequest)
+		return
+	}
+
+	// Set defaults
+	if req.Voice == "" {
+		req.Voice = "alloy"
+	}
+	if req.ResponseFormat == "" {
+		req.ResponseFormat = "mp3"
+	}
+	if req.Speed == 0 {
+		req.Speed = 1.0
+	}
+
+	// Map OpenAI voice to Kokoro voice
+	kokoroVoice, ok := ttsVoiceMap[req.Voice]
+	if !ok {
+		// If not in map, use directly (allows passing Kokoro voice names)
+		kokoroVoice = req.Voice
+	}
+
+	// Build Kokoro TTS server URL with query params
+	url := fmt.Sprintf("%s/tts?text=%s&voice=%s&format=%s&speed=%.2f",
+		ttsServerURL,
+		urlEncode(req.Input),
+		kokoroVoice,
+		req.ResponseFormat,
+		req.Speed,
+	)
+
+	startTime := time.Now()
+
+	// Forward request to Kokoro TTS server
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		log.Printf("TTS request failed: %v", err)
+		http.Error(w, "TTS server unavailable: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("TTS error %d: %s", resp.StatusCode, string(respBody))
+		http.Error(w, fmt.Sprintf("TTS error: %s", string(respBody)), resp.StatusCode)
+		return
+	}
+
+	latencyMs := time.Since(startTime).Milliseconds()
+	log.Printf("TTS complete (%dms): voice=%s, len=%d chars", latencyMs, kokoroVoice, len(req.Input))
+
+	// Stream audio response back to client
+	contentType := "audio/mpeg"
+	if req.ResponseFormat == "wav" {
+		contentType = "audio/wav"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=\"speech.%s\"", req.ResponseFormat))
+	io.Copy(w, resp.Body)
+}
+
+// urlEncode encodes a string for use in a URL query parameter
+func urlEncode(s string) string {
+	return url.QueryEscape(s)
 }
 
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -2716,6 +2828,7 @@ const testPlaygroundHTML = `<!DOCTYPE html>
             <button class="tab active" onclick="switchTab('chat')">Chat Completion</button>
             <button class="tab" onclick="switchTab('vision')">Vision Analysis</button>
             <button class="tab" onclick="switchTab('whisper')">Speech to Text</button>
+            <button class="tab" onclick="switchTab('tts')">Text to Speech</button>
         </div>
 
         <!-- Chat Panel -->
@@ -2862,6 +2975,48 @@ const testPlaygroundHTML = `<!DOCTYPE html>
             <div id="whisper-result" class="result-box" style="display:none;">
                 <div class="result-header" id="whisper-result-header"></div>
                 <div class="result-content" id="whisper-result-content"></div>
+            </div>
+        </div>
+
+        <!-- TTS Panel -->
+        <div id="tts-panel" class="panel">
+            <div class="form-group">
+                <label>Text to speak</label>
+                <textarea id="tts-text" placeholder="Enter text to synthesize...">Hello! This is a test of the text to speech system. How does it sound?</textarea>
+            </div>
+
+            <div class="row">
+                <div class="form-group">
+                    <label>Voice</label>
+                    <select id="tts-voice">
+                        <option value="alloy">alloy (American Female)</option>
+                        <option value="echo">echo (American Male)</option>
+                        <option value="fable">fable (British Female)</option>
+                        <option value="onyx" selected>onyx (British Male)</option>
+                        <option value="nova">nova (American Female)</option>
+                        <option value="shimmer">shimmer (American Female)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Speed</label>
+                    <input type="range" id="tts-speed" min="0.5" max="2.0" step="0.1" value="1.0" oninput="document.getElementById('tts-speed-val').textContent=this.value">
+                    <span id="tts-speed-val" style="color:#22c55e; font-weight:600;">1.0</span>x
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Format</label>
+                <select id="tts-format">
+                    <option value="mp3">MP3</option>
+                    <option value="wav">WAV</option>
+                </select>
+            </div>
+
+            <button class="submit-btn" id="tts-submit" onclick="submitTTS()">Speak</button>
+
+            <div id="tts-result" class="result-box" style="display:none;">
+                <div class="result-header" id="tts-result-header"></div>
+                <div id="tts-audio-container"></div>
             </div>
         </div>
     </div>
@@ -3261,6 +3416,70 @@ const testPlaygroundHTML = `<!DOCTYPE html>
                 if (warning) warning.style.display = 'block';
             }
         })();
+
+        // TTS handling
+        async function submitTTS() {
+            const text = document.getElementById('tts-text').value.trim();
+            if (!text) {
+                alert('Please enter some text to speak');
+                return;
+            }
+
+            const btn = document.getElementById('tts-submit');
+            const resultBox = document.getElementById('tts-result');
+            const resultHeader = document.getElementById('tts-result-header');
+            const audioContainer = document.getElementById('tts-audio-container');
+
+            const voice = document.getElementById('tts-voice').value;
+            const speed = parseFloat(document.getElementById('tts-speed').value);
+            const format = document.getElementById('tts-format').value;
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Generating...';
+            resultBox.style.display = 'block';
+            resultHeader.innerHTML = '<div class="result-meta"><span>Status:</span> <strong>Processing...</strong></div>';
+            audioContainer.innerHTML = '';
+
+            const startTime = Date.now();
+
+            try {
+                const resp = await fetch('/v1/audio/speech', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: 'tts-1',
+                        input: text,
+                        voice: voice,
+                        response_format: format,
+                        speed: speed
+                    })
+                });
+
+                const latency = Date.now() - startTime;
+
+                if (resp.ok) {
+                    const blob = await resp.blob();
+                    const url = URL.createObjectURL(blob);
+
+                    resultHeader.innerHTML =
+                        '<div class="result-meta"><span>Voice:</span> <span class="badge ollama">' + voice + '</span></div>' +
+                        '<div class="result-meta"><span>Speed:</span> <strong>' + speed + 'x</strong></div>' +
+                        '<div class="result-meta"><span>Latency:</span> <strong>' + latency + 'ms</strong></div>';
+
+                    audioContainer.innerHTML = '<audio controls autoplay src="' + url + '" style="width:100%; margin-top:12px;"></audio>';
+                } else {
+                    const errorText = await resp.text();
+                    resultHeader.innerHTML = '<div class="result-meta error">Error: ' + resp.status + '</div>';
+                    audioContainer.innerHTML = '<pre style="color:#ef4444;">' + errorText + '</pre>';
+                }
+            } catch (err) {
+                resultHeader.innerHTML = '<div class="result-meta error">Request failed</div>';
+                audioContainer.innerHTML = '<pre style="color:#ef4444;">' + err.message + '</pre>';
+            }
+
+            btn.disabled = false;
+            btn.innerHTML = 'Speak';
+        }
     </script>
 </body>
 </html>`
@@ -3432,9 +3651,11 @@ func main() {
 	http.HandleFunc("/test", handleTestPlayground)
 	http.HandleFunc("/v1/audio/transcriptions", handleWhisperTranscription)
 	http.HandleFunc("/v1/audio/transcriptions/stream", handleWhisperStream)
+	http.HandleFunc("/v1/audio/speech", handleTTS)
 
 	log.Printf("LLM Proxy starting on port %s", port)
 	log.Printf("Whisper server: %s", whisperServerURL)
+	log.Printf("TTS server: %s", ttsServerURL)
 	log.Printf("OpenAI key: %v", openaiKey != "")
 	log.Printf("Anthropic key: %v", anthropicKey != "")
 	log.Printf("Ollama host: %s", ollamaHost)
