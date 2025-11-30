@@ -1199,7 +1199,7 @@ func handleTTS(w http.ResponseWriter, r *http.Request) {
 
 	// Set defaults
 	if req.Voice == "" {
-		req.Voice = "alloy"
+		req.Voice = "af_nicole" // American female - same as appdaemon default
 	}
 	if req.ResponseFormat == "" {
 		req.ResponseFormat = "mp3"
