@@ -115,6 +115,22 @@ type CacheEntry struct {
 	CreatedAt time.Time
 }
 
+// Pending requests tracker
+var pendingRequests = make(map[string]*PendingRequest)
+var pendingMutex sync.RWMutex
+var pendingCounter int64
+
+type PendingRequest struct {
+	ID        string    `json:"id"`
+	StartTime time.Time `json:"start_time"`
+	Provider  string    `json:"provider"`
+	Model     string    `json:"model"`
+	HasImages bool      `json:"has_images"`
+	Sensitive bool      `json:"sensitive"`
+	Precision string    `json:"precision"`
+	Preview   string    `json:"preview"` // First 100 chars of user message
+}
+
 // Prometheus metrics
 type Metrics struct {
 	RequestsTotal    map[string]int64          // provider:model:status -> count
@@ -459,6 +475,76 @@ func hasImages(req *ChatCompletionRequest) bool {
 		}
 	}
 	return false
+}
+
+// Pending request management
+func addPendingRequest(req *ChatCompletionRequest, route *RouteConfig, startTime time.Time) string {
+	pendingMutex.Lock()
+	defer pendingMutex.Unlock()
+
+	pendingCounter++
+	id := fmt.Sprintf("req-%d", pendingCounter)
+
+	// Extract preview from first user message
+	preview := ""
+	for _, msg := range req.Messages {
+		if msg.Role == "user" {
+			switch c := msg.Content.(type) {
+			case string:
+				preview = c
+			case []interface{}:
+				for _, part := range c {
+					if m, ok := part.(map[string]interface{}); ok {
+						if m["type"] == "text" {
+							if text, ok := m["text"].(string); ok {
+								preview = text
+								break
+							}
+						}
+					}
+				}
+			}
+			break
+		}
+	}
+	if len(preview) > 100 {
+		preview = preview[:100] + "..."
+	}
+
+	sensitive := false
+	if req.Sensitive != nil {
+		sensitive = *req.Sensitive
+	}
+
+	pendingRequests[id] = &PendingRequest{
+		ID:        id,
+		StartTime: startTime,
+		Provider:  route.Provider,
+		Model:     route.Model,
+		HasImages: hasImages(req),
+		Sensitive: sensitive,
+		Precision: req.Precision,
+		Preview:   preview,
+	}
+
+	return id
+}
+
+func removePendingRequest(id string) {
+	pendingMutex.Lock()
+	defer pendingMutex.Unlock()
+	delete(pendingRequests, id)
+}
+
+func getPendingRequests() []*PendingRequest {
+	pendingMutex.RLock()
+	defer pendingMutex.RUnlock()
+
+	result := make([]*PendingRequest, 0, len(pendingRequests))
+	for _, req := range pendingRequests {
+		result = append(result, req)
+	}
+	return result
 }
 
 func resolveRoute(req *ChatCompletionRequest) (*RouteConfig, error) {
@@ -1106,6 +1192,10 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Track pending request
+	pendingID := addPendingRequest(&req, route, startTime)
+	defer removePendingRequest(pendingID)
+
 	// Make the actual call
 	var resp *ChatCompletionResponse
 	switch route.Provider {
@@ -1246,6 +1336,29 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(history)
+}
+
+// Pending requests API - returns currently in-flight requests
+func handlePendingRequests(w http.ResponseWriter, r *http.Request) {
+	pending := getPendingRequests()
+
+	// Add elapsed time to each
+	type PendingWithElapsed struct {
+		*PendingRequest
+		ElapsedMs int64 `json:"elapsed_ms"`
+	}
+
+	result := make([]PendingWithElapsed, len(pending))
+	now := time.Now()
+	for i, p := range pending {
+		result[i] = PendingWithElapsed{
+			PendingRequest: p,
+			ElapsedMs:      now.Sub(p.StartTime).Milliseconds(),
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
 }
 
 // Request detail API - returns full request/response data for a specific request
@@ -1908,6 +2021,45 @@ const dashboardHTML = `<!DOCTYPE html>
             font-size: 12px;
             margin-top: 16px;
         }
+
+        /* Pending requests styles */
+        #pending-section {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border: 1px solid #f59e0b;
+            border-radius: 12px;
+            padding: 16px;
+        }
+        #pending-section .section-title {
+            color: #f59e0b;
+        }
+        .pending-count {
+            background: #f59e0b;
+            color: #000;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 12px;
+            margin-left: 8px;
+        }
+        #pending-table tbody tr {
+            background: rgba(245, 158, 11, 0.1);
+            animation: pulse 2s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { background: rgba(245, 158, 11, 0.1); }
+            50% { background: rgba(245, 158, 11, 0.2); }
+        }
+        .elapsed-time {
+            font-family: 'SF Mono', Monaco, 'Consolas', monospace;
+            color: #f59e0b;
+        }
+        .preview-text {
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 12px;
+            color: #888;
+        }
     </style>
 </head>
 <body>
@@ -1943,6 +2095,14 @@ const dashboardHTML = `<!DOCTYPE html>
             <h2 class="section-title">By Provider</h2>
             <table id="provider-table">
                 <thead><tr><th>Provider</th><th>Requests</th><th>Avg Latency</th><th>Cost</th></tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <div class="section" id="pending-section" style="display:none">
+            <h2 class="section-title">⏳ Pending Requests <span class="pending-count" id="pending-count"></span></h2>
+            <table id="pending-table">
+                <thead><tr><th>Started</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Elapsed</th><th>Preview</th></tr></thead>
                 <tbody></tbody>
             </table>
         </div>
@@ -2172,15 +2332,63 @@ const dashboardHTML = `<!DOCTYPE html>
             if (e.key === 'Escape') closeModal();
         });
 
+        async function loadPending() {
+            try {
+                const resp = await fetch('/api/pending');
+                const pending = await resp.json();
+
+                const section = document.getElementById('pending-section');
+                const tbody = document.querySelector('#pending-table tbody');
+                const countBadge = document.getElementById('pending-count');
+
+                if (pending.length === 0) {
+                    section.style.display = 'none';
+                    return;
+                }
+
+                section.style.display = 'block';
+                countBadge.textContent = pending.length;
+                tbody.innerHTML = '';
+
+                for (const req of pending) {
+                    const tr = document.createElement('tr');
+                    const startTime = new Date(req.start_time).toLocaleTimeString();
+                    const sensitiveClass = req.sensitive ? 'sensitive' : 'not-sensitive';
+                    const sensitiveText = req.sensitive ? 'YES' : 'no';
+                    const hasImages = req.has_images ? '<span class="badge images">img</span>' : '';
+                    const elapsed = formatElapsed(req.elapsed_ms);
+
+                    tr.innerHTML = '<td>' + startTime + '</td>' +
+                        '<td><span class="badge ' + req.provider + '">' + req.provider + '</span></td>' +
+                        '<td>' + req.model + ' ' + hasImages + '</td>' +
+                        '<td><span class="badge ' + sensitiveClass + '">' + sensitiveText + '</span></td>' +
+                        '<td><span class="badge precision">' + (req.precision || '-') + '</span></td>' +
+                        '<td class="elapsed-time">' + elapsed + '</td>' +
+                        '<td class="preview-text" title="' + escapeHtml(req.preview) + '">' + escapeHtml(req.preview) + '</td>';
+                    tbody.appendChild(tr);
+                }
+            } catch (err) {
+                console.error('Failed to load pending requests:', err);
+            }
+        }
+
+        function formatElapsed(ms) {
+            if (ms < 1000) return ms + 'ms';
+            if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+            return Math.floor(ms / 60000) + 'm ' + Math.floor((ms % 60000) / 1000) + 's';
+        }
+
         async function refresh() {
             const btn = document.getElementById('refresh-btn');
             btn.classList.add('spinning');
-            await Promise.all([loadStats(), loadRoutes()]);
+            await Promise.all([loadStats(), loadRoutes(), loadPending()]);
             btn.classList.remove('spinning');
         }
 
         refresh();
         setInterval(refresh, 30000);
+        // More frequent updates for pending requests
+        setInterval(loadPending, 2000);
     </script>
 </body>
 </html>`
@@ -3058,6 +3266,7 @@ func main() {
 	http.HandleFunc("/api/request", handleRequestDetail)
 	http.HandleFunc("/api/replay", handleReplayRequest)
 	http.HandleFunc("/api/cache/clear", handleClearCache)
+	http.HandleFunc("/api/pending", handlePendingRequests)
 	http.HandleFunc("/test", handleTestPlayground)
 	http.HandleFunc("/v1/audio/transcriptions", handleWhisperTranscription)
 	http.HandleFunc("/v1/audio/transcriptions/stream", handleWhisperStream)
