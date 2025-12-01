@@ -311,10 +311,11 @@ type AnthropicContentBlock struct {
 
 // Ollama API types
 type OllamaRequest struct {
-	Model    string          `json:"model"`
-	Messages []OllamaMessage `json:"messages"`
-	Stream   bool            `json:"stream"`
-	Tools    []Tool          `json:"tools,omitempty"`
+	Model      string          `json:"model"`
+	Messages   []OllamaMessage `json:"messages"`
+	Stream     bool            `json:"stream"`
+	Tools      []Tool          `json:"tools,omitempty"`
+	ToolChoice interface{}     `json:"tool_choice,omitempty"` // "auto", "none", "required", or specific tool
 }
 
 type OllamaMessage struct {
@@ -1204,10 +1205,11 @@ func callOllama(req *ChatCompletionRequest, model string) (*ChatCompletionRespon
 	}
 
 	ollamaReq := OllamaRequest{
-		Model:    model,
-		Messages: messages,
-		Stream:   false,
-		Tools:    req.Tools,
+		Model:      model,
+		Messages:   messages,
+		Stream:     false,
+		Tools:      req.Tools,
+		ToolChoice: req.ToolChoice,
 	}
 
 	body, _ := json.Marshal(ollamaReq)
