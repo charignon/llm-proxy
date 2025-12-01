@@ -907,6 +907,12 @@ func callOpenAI(req *ChatCompletionRequest, model string) (*ChatCompletionRespon
 	if req.Temperature > 0 {
 		openaiReq["temperature"] = req.Temperature
 	}
+	if len(req.Tools) > 0 {
+		openaiReq["tools"] = req.Tools
+	}
+	if req.ToolChoice != nil {
+		openaiReq["tool_choice"] = req.ToolChoice
+	}
 
 	body, _ := json.Marshal(openaiReq)
 
