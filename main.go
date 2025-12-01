@@ -2320,13 +2320,14 @@ func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 				displayMessages = append(displayMessages, displayMsg)
 			}
 			response["request"] = map[string]interface{}{
-				"model":     req.Model,
-				"messages":  displayMessages,
-				"sensitive": req.Sensitive,
-				"precision": req.Precision,
-				"usecase":   req.Usecase,
-				"no_cache":  req.NoCache,
-				"tools":     req.Tools,
+				"model":       req.Model,
+				"messages":    displayMessages,
+				"sensitive":   req.Sensitive,
+				"precision":   req.Precision,
+				"usecase":     req.Usecase,
+				"no_cache":    req.NoCache,
+				"tools":       req.Tools,
+				"tool_choice": req.ToolChoice,
 			}
 		}
 	}
@@ -3889,6 +3890,7 @@ const dashboardHTML = `<!DOCTYPE html>
             try {
                 const resp = await fetch('/api/request?id=' + id);
                 const data = await resp.json();
+                currentRequestData = data;
                 renderRequestDetail(data);
             } catch (err) {
                 body.innerHTML = '<div style="color:#ef4444;padding:40px;">Error loading request details: ' + err.message + '</div>';
@@ -3901,7 +3903,10 @@ const dashboardHTML = `<!DOCTYPE html>
             const sensitiveClass = data.sensitive ? 'sensitive' : 'not-sensitive';
             const sensitiveText = data.sensitive ? 'YES (local only)' : 'No (cloud OK)';
 
-            let html = '<div class="modal-section"><h3>Request Metadata</h3><div class="detail-grid">';
+            let html = '<div style="display:flex;justify-content:flex-end;margin-bottom:12px">';
+            html += '<button onclick="copyRequestJson()" style="padding:8px 16px;background:#374151;border:none;border-radius:6px;color:#e2e8f0;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px"><span style="font-size:16px">📋</span> Copy Full JSON</button>';
+            html += '</div>';
+            html += '<div class="modal-section"><h3>Request Metadata</h3><div class="detail-grid">';
             html += '<div class="detail-item"><div class="detail-label">ID</div><div class="detail-value">#' + data.id + '</div></div>';
             html += '<div class="detail-item"><div class="detail-label">Timestamp</div><div class="detail-value">' + time + '</div></div>';
             html += '<div class="detail-item"><div class="detail-label">Provider</div><div class="detail-value"><span class="badge ' + data.provider + '">' + data.provider + '</span></div></div>';
@@ -4052,8 +4057,27 @@ const dashboardHTML = `<!DOCTYPE html>
             document.getElementById('modal-overlay').classList.remove('active');
         }
 
-        // Store current request ID for replay
+        async function copyRequestJson() {
+            if (!currentRequestData) return;
+            try {
+                await navigator.clipboard.writeText(JSON.stringify(currentRequestData, null, 2));
+                // Visual feedback
+                const btn = event.target.closest('button');
+                const originalHtml = btn.innerHTML;
+                btn.innerHTML = '<span style="font-size:16px">✓</span> Copied!';
+                btn.style.background = '#22c55e';
+                setTimeout(() => {
+                    btn.innerHTML = originalHtml;
+                    btn.style.background = '#374151';
+                }, 1500);
+            } catch (err) {
+                alert('Failed to copy: ' + err.message);
+            }
+        }
+
+        // Store current request ID and data for replay/copy
         let currentRequestId = null;
+        let currentRequestData = null;
 
         // Available models for replay
         const replayModelOptions = [
