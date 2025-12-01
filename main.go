@@ -616,7 +616,7 @@ func getUsecaseRoute(usecase, routeType, sensitive, precision string) *RouteConf
 	return nil
 }
 
-func logRequest(entry *RequestLog) {
+func logRequest(entry *RequestLog) int64 {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
@@ -625,7 +625,7 @@ func logRequest(entry *RequestLog) {
 		entry.RequestType = "llm"
 	}
 
-	_, err := db.Exec(`
+	result, err := db.Exec(`
 		INSERT INTO requests (timestamp, request_type, provider, model, requested_model, sensitive, precision, usecase, cached, input_tokens, output_tokens, latency_ms, cost_usd, success, error, cache_key, has_images, request_body, response_body, voice, audio_duration_ms, input_chars, is_replay)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, entry.Timestamp.Format(time.RFC3339), entry.RequestType, entry.Provider, entry.Model, entry.RequestedModel,
@@ -635,7 +635,15 @@ func logRequest(entry *RequestLog) {
 
 	if err != nil {
 		log.Printf("Failed to log request: %v", err)
+		return 0
 	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		log.Printf("Failed to get last insert ID: %v", err)
+		return 0
+	}
+	return id
 }
 
 func calculateCost(model string, inputTokens, outputTokens int) float64 {
@@ -1864,7 +1872,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			logEntry.LatencyMs = time.Since(startTime).Milliseconds()
 			logEntry.Success = true
 			logEntry.ResponseBody = cached // Store cached response for DB persistence
-			logRequest(logEntry)
+			requestID := logRequest(logEntry)
 
 			// Record cache hit metrics
 			metrics.recordRequest(route.Provider, route.Model, "success", logEntry.LatencyMs, 0, 0, 0, true)
@@ -1875,6 +1883,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			resp.Cached = true
 
 			w.Header().Set("Content-Type", "application/json")
+			if requestID > 0 {
+				w.Header().Set("X-LLM-Proxy-Request-ID", fmt.Sprintf("%d", requestID))
+			}
 			w.Header().Set("X-LLM-Proxy-Cached", "true")
 			json.NewEncoder(w).Encode(resp)
 			return
@@ -1929,7 +1940,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	setCache(cacheKey, body, respBytes)
 
 	logEntry.ResponseBody = respBytes // Store for DB persistence
-	logRequest(logEntry)
+	requestID := logRequest(logEntry)
 
 	// Record metrics
 	metrics.recordRequest(route.Provider, route.Model, "success", logEntry.LatencyMs, logEntry.InputTokens, logEntry.OutputTokens, logEntry.CostUSD, false)
@@ -1939,6 +1950,9 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-LLM-Proxy-Model", route.Model)
 	w.Header().Set("X-LLM-Proxy-Latency-Ms", fmt.Sprintf("%d", logEntry.LatencyMs))
 	w.Header().Set("X-LLM-Proxy-Cost-USD", fmt.Sprintf("%.6f", logEntry.CostUSD))
+	if requestID > 0 {
+		w.Header().Set("X-LLM-Proxy-Request-ID", fmt.Sprintf("%d", requestID))
+	}
 	json.NewEncoder(w).Encode(resp)
 }
 
