@@ -4095,10 +4095,8 @@ const testPlaygroundHTML = `<!DOCTYPE html>
 
         <!-- Navigation Tabs -->
         <div class="nav-tabs">
-            <button class="nav-tab" onclick="window.location.href='/'">LLM Proxy</button>
+            <button class="nav-tab" onclick="window.location.href='/'">Requests</button>
             <button class="nav-tab active">Playground</button>
-            <button class="nav-tab" onclick="window.location.href='/#tts'">TTS</button>
-            <button class="nav-tab" onclick="window.location.href='/#stt'">STT</button>
             <button class="nav-tab" onclick="window.location.href='/#routing'">Routing</button>
         </div>
 
