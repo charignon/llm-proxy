@@ -193,6 +193,8 @@ type ChatCompletionRequest struct {
 	MaxTokens        int            `json:"max_tokens,omitempty"`
 	Temperature      float64        `json:"temperature,omitempty"`
 	Stream           bool           `json:"stream,omitempty"`
+	Tools            []Tool         `json:"tools,omitempty"`
+	ToolChoice       interface{}    `json:"tool_choice,omitempty"` // "auto", "none", or specific tool
 	// Custom routing fields (non-OpenAI)
 	Sensitive        *bool          `json:"sensitive,omitempty"`
 	Precision        string         `json:"precision,omitempty"`
@@ -202,9 +204,33 @@ type ChatCompletionRequest struct {
 	IsReplay         bool           `json:"-"` // Set internally for replay requests
 }
 
+type Tool struct {
+	Type     string       `json:"type"` // "function"
+	Function ToolFunction `json:"function"`
+}
+
+type ToolFunction struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	Parameters  map[string]interface{} `json:"parameters,omitempty"`
+}
+
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"` // "function"
+	Function ToolCallFunction `json:"function"`
+}
+
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // JSON string
+}
+
 type Message struct {
-	Role    string      `json:"role"`
-	Content interface{} `json:"content"` // string or []ContentPart
+	Role       string      `json:"role"`
+	Content    interface{} `json:"content"` // string or []ContentPart
+	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
+	ToolCallID string      `json:"tool_call_id,omitempty"` // For tool response messages
 }
 
 type ContentPart struct {
@@ -248,6 +274,13 @@ type AnthropicRequest struct {
 	MaxTokens int                `json:"max_tokens"`
 	System    string             `json:"system,omitempty"`
 	Messages  []AnthropicMessage `json:"messages"`
+	Tools     []AnthropicTool    `json:"tools,omitempty"`
+}
+
+type AnthropicTool struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	InputSchema map[string]interface{} `json:"input_schema"`
 }
 
 type AnthropicMessage struct {
@@ -256,19 +289,24 @@ type AnthropicMessage struct {
 }
 
 type AnthropicResponse struct {
-	ID      string `json:"id"`
-	Type    string `json:"type"`
-	Role    string `json:"role"`
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-	Model     string `json:"model"`
-	StopReason string `json:"stop_reason"`
-	Usage     struct {
+	ID         string                   `json:"id"`
+	Type       string                   `json:"type"`
+	Role       string                   `json:"role"`
+	Content    []AnthropicContentBlock  `json:"content"`
+	Model      string                   `json:"model"`
+	StopReason string                   `json:"stop_reason"`
+	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
+}
+
+type AnthropicContentBlock struct {
+	Type  string                 `json:"type"`            // "text" or "tool_use"
+	Text  string                 `json:"text,omitempty"`  // For text blocks
+	ID    string                 `json:"id,omitempty"`    // For tool_use blocks
+	Name  string                 `json:"name,omitempty"`  // For tool_use blocks
+	Input map[string]interface{} `json:"input,omitempty"` // For tool_use blocks
 }
 
 // Ollama API types
@@ -903,6 +941,50 @@ func callAnthropic(req *ChatCompletionRequest, model string) (*ChatCompletionRes
 			}
 			continue
 		}
+
+		// Handle tool response messages (OpenAI role: "tool" -> Anthropic role: "user" with tool_result)
+		if msg.Role == "tool" {
+			content, _ := msg.Content.(string)
+			toolResult := []map[string]interface{}{{
+				"type":        "tool_result",
+				"tool_use_id": msg.ToolCallID,
+				"content":     content,
+			}}
+			messages = append(messages, AnthropicMessage{
+				Role:    "user",
+				Content: toolResult,
+			})
+			continue
+		}
+
+		// Handle assistant messages with tool_calls
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			var contentParts []map[string]interface{}
+			// Add text content if present
+			if content, ok := msg.Content.(string); ok && content != "" {
+				contentParts = append(contentParts, map[string]interface{}{
+					"type": "text",
+					"text": content,
+				})
+			}
+			// Add tool_use blocks
+			for _, tc := range msg.ToolCalls {
+				var inputArgs map[string]interface{}
+				json.Unmarshal([]byte(tc.Function.Arguments), &inputArgs)
+				contentParts = append(contentParts, map[string]interface{}{
+					"type":  "tool_use",
+					"id":    tc.ID,
+					"name":  tc.Function.Name,
+					"input": inputArgs,
+				})
+			}
+			messages = append(messages, AnthropicMessage{
+				Role:    "assistant",
+				Content: contentParts,
+			})
+			continue
+		}
+
 		// Convert content from OpenAI format to Anthropic format
 		var anthropicContent interface{}
 		switch c := msg.Content.(type) {
@@ -971,6 +1053,24 @@ func callAnthropic(req *ChatCompletionRequest, model string) (*ChatCompletionRes
 		Messages:  messages,
 	}
 
+	// Convert OpenAI tools to Anthropic format
+	if len(req.Tools) > 0 {
+		for _, tool := range req.Tools {
+			if tool.Type == "function" {
+				anthropicTool := AnthropicTool{
+					Name:        tool.Function.Name,
+					Description: tool.Function.Description,
+					InputSchema: tool.Function.Parameters,
+				}
+				// Ensure input_schema has type: object if parameters exist
+				if anthropicTool.InputSchema == nil {
+					anthropicTool.InputSchema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+				}
+				anthropicReq.Tools = append(anthropicReq.Tools, anthropicTool)
+			}
+		}
+	}
+
 	body, _ := json.Marshal(anthropicReq)
 
 	httpReq, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
@@ -997,9 +1097,38 @@ func callAnthropic(req *ChatCompletionRequest, model string) (*ChatCompletionRes
 
 	// Convert to OpenAI format
 	content := ""
+	var toolCalls []ToolCall
 	for _, c := range anthropicResp.Content {
 		if c.Type == "text" {
 			content += c.Text
+		} else if c.Type == "tool_use" {
+			// Convert Anthropic tool_use to OpenAI tool_calls format
+			argsJSON, _ := json.Marshal(c.Input)
+			toolCalls = append(toolCalls, ToolCall{
+				ID:   c.ID,
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      c.Name,
+					Arguments: string(argsJSON),
+				},
+			})
+		}
+	}
+
+	// Map Anthropic stop reasons to OpenAI format
+	finishReason := anthropicResp.StopReason
+	if finishReason == "end_turn" {
+		finishReason = "stop"
+	} else if finishReason == "tool_use" {
+		finishReason = "tool_calls"
+	}
+
+	msg := Message{Role: "assistant", Content: content}
+	if len(toolCalls) > 0 {
+		msg.ToolCalls = toolCalls
+		// OpenAI sets content to null when there are tool calls
+		if content == "" {
+			msg.Content = nil
 		}
 	}
 
@@ -1011,8 +1140,8 @@ func callAnthropic(req *ChatCompletionRequest, model string) (*ChatCompletionRes
 		Provider: "anthropic",
 		Choices: []Choice{{
 			Index:        0,
-			Message:      Message{Role: "assistant", Content: content},
-			FinishReason: anthropicResp.StopReason,
+			Message:      msg,
+			FinishReason: finishReason,
 		}},
 		Usage: &Usage{
 			PromptTokens:     anthropicResp.Usage.InputTokens,
