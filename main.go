@@ -2517,6 +2517,29 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	stats["by_model"] = byModel
 
+	// By usecase
+	rows, _ = db.Query(`
+		SELECT COALESCE(usecase, ''), COUNT(*), COALESCE(SUM(cost_usd), 0), AVG(latency_ms)
+		FROM requests WHERE usecase IS NOT NULL AND usecase != '' GROUP BY usecase ORDER BY COUNT(*) DESC LIMIT 20
+	`)
+	defer rows.Close()
+
+	byUsecase := []map[string]interface{}{}
+	for rows.Next() {
+		var usecase string
+		var count int
+		var cost float64
+		var avgLatency float64
+		rows.Scan(&usecase, &count, &cost, &avgLatency)
+		byUsecase = append(byUsecase, map[string]interface{}{
+			"usecase":        usecase,
+			"count":          count,
+			"cost_usd":       cost,
+			"avg_latency_ms": avgLatency,
+		})
+	}
+	stats["by_usecase"] = byUsecase
+
 	// Recent requests
 	rows, _ = db.Query(`
 		SELECT id, timestamp, provider, model, cached, latency_ms, cost_usd, success, error,
