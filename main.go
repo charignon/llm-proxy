@@ -3933,7 +3933,7 @@ const testPlaygroundHTML = `<!DOCTYPE html>
             min-height: 100vh;
             padding: 20px;
         }
-        .container { max-width: 1000px; margin: 0 auto; }
+        .container { max-width: 1400px; margin: 0 auto; }
         h1 { color: #6366f1; margin-bottom: 8px; font-size: 28px; }
         .subtitle { color: #888; margin-bottom: 16px; }
         a { color: #6366f1; text-decoration: none; }
