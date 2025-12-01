@@ -244,8 +244,9 @@ type Usage struct {
 
 // Anthropic API types
 type AnthropicRequest struct {
-	Model     string            `json:"model"`
-	MaxTokens int               `json:"max_tokens"`
+	Model     string             `json:"model"`
+	MaxTokens int                `json:"max_tokens"`
+	System    string             `json:"system,omitempty"`
 	Messages  []AnthropicMessage `json:"messages"`
 }
 
@@ -891,8 +892,17 @@ func callAnthropic(req *ChatCompletionRequest, model string) (*ChatCompletionRes
 	}
 
 	// Convert messages to Anthropic format
+	// Extract system messages for top-level system parameter
+	var systemParts []string
 	var messages []AnthropicMessage
 	for _, msg := range req.Messages {
+		// Handle system messages separately - Anthropic requires top-level system param
+		if msg.Role == "system" {
+			if content, ok := msg.Content.(string); ok {
+				systemParts = append(systemParts, content)
+			}
+			continue
+		}
 		// Convert content from OpenAI format to Anthropic format
 		var anthropicContent interface{}
 		switch c := msg.Content.(type) {
@@ -957,6 +967,7 @@ func callAnthropic(req *ChatCompletionRequest, model string) (*ChatCompletionRes
 	anthropicReq := AnthropicRequest{
 		Model:     model,
 		MaxTokens: maxTokens,
+		System:    strings.Join(systemParts, "\n\n"),
 		Messages:  messages,
 	}
 
@@ -3686,7 +3697,7 @@ const dashboardHTML = `<!DOCTYPE html>
                 html += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">';
                 html += '<select id="replay-model-select" style="padding:8px 12px;background:#1e1b4b;border:1px solid #4338ca;border-radius:6px;color:#e2e8f0;font-size:14px;min-width:250px">';
                 html += '<option value="">Select a model...</option>';
-                for (const group of availableModels) {
+                for (const group of replayModelOptions) {
                     html += '<optgroup label="' + group.group + '">';
                     for (const model of group.models) {
                         const selected = model === data.model ? ' selected' : '';
@@ -3761,7 +3772,7 @@ const dashboardHTML = `<!DOCTYPE html>
         let currentRequestId = null;
 
         // Available models for replay
-        const availableModels = [
+        const replayModelOptions = [
             { group: 'Anthropic', models: ['claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'] },
             { group: 'OpenAI', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o1', 'o1-mini'] },
             { group: 'Ollama (Local)', models: ['llama3.3:70b', 'llama3:latest', 'gemma3:latest', 'qwen3-vl:30b'] }
