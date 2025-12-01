@@ -1213,6 +1213,7 @@ func callOllama(req *ChatCompletionRequest, model string) (*ChatCompletionRespon
 	}
 
 	body, _ := json.Marshal(ollamaReq)
+	log.Printf("Ollama request - tools: %d, tool_choice: %v", len(req.Tools), req.ToolChoice)
 
 	httpReq, _ := http.NewRequest("POST", "http://"+ollamaHost+"/api/chat", bytes.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
