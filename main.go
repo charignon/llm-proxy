@@ -2318,6 +2318,7 @@ func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 				"precision": req.Precision,
 				"usecase":   req.Usecase,
 				"no_cache":  req.NoCache,
+				"tools":     req.Tools,
 			}
 		}
 	}
