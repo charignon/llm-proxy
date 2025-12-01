@@ -103,6 +103,11 @@ var visionRoutingTable = map[string]map[string]*RouteConfig{
 	},
 }
 
+// Usecase routing overrides: usecase -> type -> sensitive -> precision -> RouteConfig
+// type is "text" or "vision"
+var usecaseRoutes = make(map[string]map[string]map[string]map[string]*RouteConfig)
+var usecaseRoutesMutex sync.RWMutex
+
 // Database
 var db *sql.DB
 var dbMutex sync.Mutex
@@ -130,6 +135,7 @@ type PendingRequest struct {
 	HasImages bool      `json:"has_images"`
 	Sensitive bool      `json:"sensitive"`
 	Precision string    `json:"precision"`
+	Usecase   string    `json:"usecase"`
 	Preview   string    `json:"preview"` // First 100 chars of user message
 }
 
@@ -190,7 +196,10 @@ type ChatCompletionRequest struct {
 	// Custom routing fields (non-OpenAI)
 	Sensitive        *bool          `json:"sensitive,omitempty"`
 	Precision        string         `json:"precision,omitempty"`
+	Usecase          string         `json:"usecase,omitempty"`
 	NoCache          bool           `json:"no_cache,omitempty"`
+	// Internal fields (not from JSON)
+	IsReplay         bool           `json:"-"` // Set internally for replay requests
 }
 
 type Message struct {
@@ -308,6 +317,7 @@ type RequestLog struct {
 	RequestedModel  string    `json:"requested_model"`
 	Sensitive       bool      `json:"sensitive"`
 	Precision       string    `json:"precision"`
+	Usecase         string    `json:"usecase"`
 	Cached          bool      `json:"cached"`
 	InputTokens     int       `json:"input_tokens"`
 	OutputTokens    int       `json:"output_tokens"`
@@ -323,6 +333,8 @@ type RequestLog struct {
 	Voice           string    `json:"voice,omitempty"`      // TTS voice used
 	AudioDurationMs int64     `json:"audio_duration_ms,omitempty"` // STT audio duration
 	InputChars      int       `json:"input_chars,omitempty"` // TTS input character count
+	// Replay tracking
+	IsReplay        bool      `json:"is_replay,omitempty"`  // True if this is a replay of another request
 }
 
 func getEnv(key, fallback string) string {
@@ -379,6 +391,29 @@ func initDB() error {
 	db.Exec(`ALTER TABLE requests ADD COLUMN voice TEXT`)
 	db.Exec(`ALTER TABLE requests ADD COLUMN audio_duration_ms INTEGER DEFAULT 0`)
 	db.Exec(`ALTER TABLE requests ADD COLUMN input_chars INTEGER DEFAULT 0`)
+	db.Exec(`ALTER TABLE requests ADD COLUMN usecase TEXT`)
+	db.Exec(`ALTER TABLE requests ADD COLUMN is_replay INTEGER DEFAULT 0`)
+
+	// Create route_overrides table for usecase-specific routing
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS route_overrides (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			usecase TEXT NOT NULL,
+			route_type TEXT NOT NULL,
+			sensitive INTEGER NOT NULL,
+			precision TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			model TEXT NOT NULL,
+			UNIQUE(usecase, route_type, sensitive, precision)
+		)
+	`)
+	if err != nil {
+		return err
+	}
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_route_overrides_usecase ON route_overrides(usecase)`)
+
+	// Load existing route overrides into memory
+	loadRouteOverrides()
 
 	// Fix empty provider values from routing failures
 	db.Exec(`UPDATE requests SET provider = 'routing_failed' WHERE provider = '' OR provider IS NULL`)
@@ -394,6 +429,143 @@ func initDB() error {
 	return nil
 }
 
+func loadRouteOverrides() {
+	rows, err := db.Query(`SELECT usecase, route_type, sensitive, precision, provider, model FROM route_overrides`)
+	if err != nil {
+		log.Printf("Failed to load route overrides: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	usecaseRoutesMutex.Lock()
+	defer usecaseRoutesMutex.Unlock()
+
+	// Clear existing overrides
+	usecaseRoutes = make(map[string]map[string]map[string]map[string]*RouteConfig)
+
+	for rows.Next() {
+		var usecase, routeType, precision, provider, model string
+		var sensitive int
+		if err := rows.Scan(&usecase, &routeType, &sensitive, &precision, &provider, &model); err != nil {
+			log.Printf("Failed to scan route override: %v", err)
+			continue
+		}
+
+		sensitiveStr := "false"
+		if sensitive == 1 {
+			sensitiveStr = "true"
+		}
+
+		// Initialize nested maps as needed
+		if usecaseRoutes[usecase] == nil {
+			usecaseRoutes[usecase] = make(map[string]map[string]map[string]*RouteConfig)
+		}
+		if usecaseRoutes[usecase][routeType] == nil {
+			usecaseRoutes[usecase][routeType] = make(map[string]map[string]*RouteConfig)
+		}
+		if usecaseRoutes[usecase][routeType][sensitiveStr] == nil {
+			usecaseRoutes[usecase][routeType][sensitiveStr] = make(map[string]*RouteConfig)
+		}
+
+		usecaseRoutes[usecase][routeType][sensitiveStr][precision] = &RouteConfig{
+			Provider: provider,
+			Model:    model,
+		}
+	}
+
+	log.Printf("Loaded %d usecase route configurations", len(usecaseRoutes))
+}
+
+func saveRouteOverride(usecase, routeType string, sensitive bool, precision, provider, model string) error {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	sensitiveInt := 0
+	if sensitive {
+		sensitiveInt = 1
+	}
+
+	_, err := db.Exec(`
+		INSERT OR REPLACE INTO route_overrides (usecase, route_type, sensitive, precision, provider, model)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, usecase, routeType, sensitiveInt, precision, provider, model)
+	if err != nil {
+		return err
+	}
+
+	// Update in-memory cache
+	usecaseRoutesMutex.Lock()
+	defer usecaseRoutesMutex.Unlock()
+
+	sensitiveStr := "false"
+	if sensitive {
+		sensitiveStr = "true"
+	}
+
+	if usecaseRoutes[usecase] == nil {
+		usecaseRoutes[usecase] = make(map[string]map[string]map[string]*RouteConfig)
+	}
+	if usecaseRoutes[usecase][routeType] == nil {
+		usecaseRoutes[usecase][routeType] = make(map[string]map[string]*RouteConfig)
+	}
+	if usecaseRoutes[usecase][routeType][sensitiveStr] == nil {
+		usecaseRoutes[usecase][routeType][sensitiveStr] = make(map[string]*RouteConfig)
+	}
+
+	usecaseRoutes[usecase][routeType][sensitiveStr][precision] = &RouteConfig{
+		Provider: provider,
+		Model:    model,
+	}
+
+	return nil
+}
+
+func deleteRouteOverride(usecase, routeType string, sensitive bool, precision string) error {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	sensitiveInt := 0
+	if sensitive {
+		sensitiveInt = 1
+	}
+
+	_, err := db.Exec(`
+		DELETE FROM route_overrides WHERE usecase = ? AND route_type = ? AND sensitive = ? AND precision = ?
+	`, usecase, routeType, sensitiveInt, precision)
+	if err != nil {
+		return err
+	}
+
+	// Update in-memory cache
+	usecaseRoutesMutex.Lock()
+	defer usecaseRoutesMutex.Unlock()
+
+	sensitiveStr := "false"
+	if sensitive {
+		sensitiveStr = "true"
+	}
+
+	if usecaseRoutes[usecase] != nil &&
+		usecaseRoutes[usecase][routeType] != nil &&
+		usecaseRoutes[usecase][routeType][sensitiveStr] != nil {
+		delete(usecaseRoutes[usecase][routeType][sensitiveStr], precision)
+	}
+
+	return nil
+}
+
+func getUsecaseRoute(usecase, routeType, sensitive, precision string) *RouteConfig {
+	usecaseRoutesMutex.RLock()
+	defer usecaseRoutesMutex.RUnlock()
+
+	if usecaseRoutes[usecase] != nil &&
+		usecaseRoutes[usecase][routeType] != nil &&
+		usecaseRoutes[usecase][routeType][sensitive] != nil {
+		return usecaseRoutes[usecase][routeType][sensitive][precision]
+	}
+	return nil
+}
+
 func logRequest(entry *RequestLog) {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
@@ -404,12 +576,12 @@ func logRequest(entry *RequestLog) {
 	}
 
 	_, err := db.Exec(`
-		INSERT INTO requests (timestamp, request_type, provider, model, requested_model, sensitive, precision, cached, input_tokens, output_tokens, latency_ms, cost_usd, success, error, cache_key, has_images, request_body, response_body, voice, audio_duration_ms, input_chars)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO requests (timestamp, request_type, provider, model, requested_model, sensitive, precision, usecase, cached, input_tokens, output_tokens, latency_ms, cost_usd, success, error, cache_key, has_images, request_body, response_body, voice, audio_duration_ms, input_chars, is_replay)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, entry.Timestamp.Format(time.RFC3339), entry.RequestType, entry.Provider, entry.Model, entry.RequestedModel,
-		entry.Sensitive, entry.Precision, entry.Cached, entry.InputTokens, entry.OutputTokens,
+		entry.Sensitive, entry.Precision, entry.Usecase, entry.Cached, entry.InputTokens, entry.OutputTokens,
 		entry.LatencyMs, entry.CostUSD, entry.Success, entry.Error, entry.CacheKey, entry.HasImages,
-		string(entry.RequestBody), string(entry.ResponseBody), entry.Voice, entry.AudioDurationMs, entry.InputChars)
+		string(entry.RequestBody), string(entry.ResponseBody), entry.Voice, entry.AudioDurationMs, entry.InputChars, entry.IsReplay)
 
 	if err != nil {
 		log.Printf("Failed to log request: %v", err)
@@ -583,6 +755,7 @@ func addPendingRequest(req *ChatCompletionRequest, route *RouteConfig, startTime
 		HasImages: hasImages(req),
 		Sensitive: sensitive,
 		Precision: req.Precision,
+		Usecase:   req.Usecase,
 		Preview:   preview,
 	}
 
@@ -631,9 +804,22 @@ func resolveRoute(req *ChatCompletionRequest) (*RouteConfig, error) {
 		precision = "medium"
 	}
 
-	// Select appropriate routing table
-	var selectedTable map[string]map[string]*RouteConfig
+	// Determine route type
+	routeType := "text"
 	if hasImages(req) {
+		routeType = "vision"
+	}
+
+	// Check for usecase-specific override first
+	if req.Usecase != "" {
+		if override := getUsecaseRoute(req.Usecase, routeType, sensitive, precision); override != nil {
+			return override, nil
+		}
+	}
+
+	// Select appropriate base routing table
+	var selectedTable map[string]map[string]*RouteConfig
+	if routeType == "vision" {
 		selectedTable = visionRoutingTable
 	} else {
 		selectedTable = routingTable
@@ -1451,11 +1637,16 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Timestamp:      startTime,
 		RequestedModel: req.Model,
 		Precision:      req.Precision,
+		Usecase:        req.Usecase,
 		HasImages:      hasImages(&req),
 		RequestBody:    body, // Store for DB persistence
 	}
 	if req.Sensitive != nil {
 		logEntry.Sensitive = *req.Sensitive
+	}
+	// Check if this is a replay request (set by handleReplayRequest)
+	if r.Header.Get("X-LLM-Proxy-Replay") == "true" {
+		logEntry.IsReplay = true
 	}
 
 	// Resolve routing
@@ -1593,6 +1784,7 @@ type EstimateRequest struct {
 	Model     string `json:"model"`
 	Sensitive *bool  `json:"sensitive,omitempty"`
 	Precision string `json:"precision,omitempty"`
+	Usecase   string `json:"usecase,omitempty"`
 	HasImages bool   `json:"has_images,omitempty"`
 }
 
@@ -1622,6 +1814,7 @@ func handleEstimate(w http.ResponseWriter, r *http.Request) {
 		Model:     req.Model,
 		Sensitive: req.Sensitive,
 		Precision: req.Precision,
+		Usecase:   req.Usecase,
 	}
 
 	// If has_images is true, add a dummy image message to trigger vision routing
@@ -1681,19 +1874,26 @@ func handleEstimate(w http.ResponseWriter, r *http.Request) {
 
 // Request history for replay feature
 type RequestHistoryEntry struct {
-	ID           int64  `json:"id"`
-	Timestamp    string `json:"timestamp"`
-	Provider     string `json:"provider"`
-	Model        string `json:"model"`
-	Sensitive    bool   `json:"sensitive"`
-	Precision    string `json:"precision"`
-	HasImages    bool   `json:"has_images"`
-	LatencyMs    int64  `json:"latency_ms"`
+	ID           int64   `json:"id"`
+	Timestamp    string  `json:"timestamp"`
+	RequestType  string  `json:"request_type"` // "llm", "tts", "stt"
+	Provider     string  `json:"provider"`
+	Model        string  `json:"model"`
+	Sensitive    bool    `json:"sensitive"`
+	Precision    string  `json:"precision"`
+	Usecase      string  `json:"usecase"`
+	HasImages    bool    `json:"has_images"`
+	LatencyMs    int64   `json:"latency_ms"`
 	CostUSD      float64 `json:"cost_usd"`
-	Success      bool   `json:"success"`
-	CacheKey     string `json:"cache_key"`
-	InputTokens  int    `json:"input_tokens"`
-	OutputTokens int    `json:"output_tokens"`
+	Success      bool    `json:"success"`
+	CacheKey     string  `json:"cache_key"`
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	IsReplay     bool    `json:"is_replay"`
+	// TTS/STT specific
+	Voice           string `json:"voice,omitempty"`
+	AudioDurationMs int64  `json:"audio_duration_ms,omitempty"`
+	InputChars      int    `json:"input_chars,omitempty"`
 }
 
 func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
@@ -1705,13 +1905,30 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 		fmt.Sscanf(l, "%d", &limit)
 	}
 
-	rows, err := db.Query(`
-		SELECT id, timestamp, provider, model, sensitive, precision, has_images,
-		       latency_ms, cost_usd, success, cache_key, input_tokens, output_tokens
+	// Build query with optional filtering
+	query := `
+		SELECT id, timestamp, request_type, provider, model, sensitive, precision, usecase, has_images,
+		       latency_ms, cost_usd, success, cache_key, input_tokens, output_tokens, is_replay,
+		       voice, audio_duration_ms, input_chars
 		FROM requests
-		ORDER BY id DESC
-		LIMIT ?
-	`, limit)
+	`
+	var args []interface{}
+
+	// Filter by request_type if specified (can be comma-separated like "llm,tts")
+	if typeFilter := r.URL.Query().Get("type"); typeFilter != "" {
+		types := strings.Split(typeFilter, ",")
+		placeholders := make([]string, len(types))
+		for i, t := range types {
+			placeholders[i] = "?"
+			args = append(args, strings.TrimSpace(t))
+		}
+		query += " WHERE request_type IN (" + strings.Join(placeholders, ",") + ")"
+	}
+
+	query += " ORDER BY id DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1721,16 +1938,35 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 	var history []RequestHistoryEntry
 	for rows.Next() {
 		var entry RequestHistoryEntry
+		var requestType sql.NullString
 		var precision sql.NullString
+		var usecase sql.NullString
 		var cacheKey sql.NullString
-		rows.Scan(&entry.ID, &entry.Timestamp, &entry.Provider, &entry.Model,
-			&entry.Sensitive, &precision, &entry.HasImages, &entry.LatencyMs,
-			&entry.CostUSD, &entry.Success, &cacheKey, &entry.InputTokens, &entry.OutputTokens)
+		var voice sql.NullString
+		var isReplay sql.NullBool
+		rows.Scan(&entry.ID, &entry.Timestamp, &requestType, &entry.Provider, &entry.Model,
+			&entry.Sensitive, &precision, &usecase, &entry.HasImages, &entry.LatencyMs,
+			&entry.CostUSD, &entry.Success, &cacheKey, &entry.InputTokens, &entry.OutputTokens,
+			&isReplay, &voice, &entry.AudioDurationMs, &entry.InputChars)
+		if requestType.Valid {
+			entry.RequestType = requestType.String
+		} else {
+			entry.RequestType = "llm" // Default for old entries
+		}
 		if precision.Valid {
 			entry.Precision = precision.String
 		}
+		if usecase.Valid {
+			entry.Usecase = usecase.String
+		}
 		if cacheKey.Valid {
 			entry.CacheKey = cacheKey.String
+		}
+		if voice.Valid {
+			entry.Voice = voice.String
+		}
+		if isReplay.Valid {
+			entry.IsReplay = isReplay.Bool
 		}
 		history = append(history, entry)
 	}
@@ -1785,6 +2021,7 @@ func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 		RequestedModel sql.NullString `json:"-"`
 		Sensitive      bool           `json:"sensitive"`
 		Precision      sql.NullString `json:"-"`
+		Usecase        sql.NullString `json:"-"`
 		Cached         bool           `json:"cached"`
 		InputTokens    int            `json:"input_tokens"`
 		OutputTokens   int            `json:"output_tokens"`
@@ -1799,12 +2036,12 @@ func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err := db.QueryRow(`
-		SELECT id, timestamp, provider, model, requested_model, sensitive, precision,
+		SELECT id, timestamp, provider, model, requested_model, sensitive, precision, usecase,
 		       cached, input_tokens, output_tokens, latency_ms, cost_usd, success, error, cache_key, has_images,
 		       request_body, response_body
 		FROM requests WHERE id = ?
 	`, id).Scan(&entry.ID, &entry.Timestamp, &entry.Provider, &entry.Model,
-		&entry.RequestedModel, &entry.Sensitive, &entry.Precision, &entry.Cached,
+		&entry.RequestedModel, &entry.Sensitive, &entry.Precision, &entry.Usecase, &entry.Cached,
 		&entry.InputTokens, &entry.OutputTokens, &entry.LatencyMs, &entry.CostUSD,
 		&entry.Success, &entry.Error, &entry.CacheKey, &entry.HasImages,
 		&entry.RequestBody, &entry.ResponseBody)
@@ -1840,6 +2077,9 @@ func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	if entry.Precision.Valid {
 		response["precision"] = entry.Precision.String
+	}
+	if entry.Usecase.Valid {
+		response["usecase"] = entry.Usecase.String
 	}
 	if entry.Error.Valid && entry.Error.String != "" {
 		response["error"] = entry.Error.String
@@ -1896,6 +2136,7 @@ func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 				"messages":  displayMessages,
 				"sensitive": req.Sensitive,
 				"precision": req.Precision,
+				"usecase":   req.Usecase,
 				"no_cache":  req.NoCache,
 			}
 		}
@@ -1980,6 +2221,7 @@ func handleReplayRequest(w http.ResponseWriter, r *http.Request) {
 	reqBytes, _ := json.Marshal(origReq)
 	internalReq, _ := http.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(reqBytes))
 	internalReq.Header.Set("Content-Type", "application/json")
+	internalReq.Header.Set("X-LLM-Proxy-Replay", "true")
 
 	// Use response recorder to capture the response
 	recorder := &responseRecorder{
@@ -2146,6 +2388,7 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleRoutes(w http.ResponseWriter, r *http.Request) {
+	usecase := r.URL.Query().Get("usecase")
 	routes := []map[string]interface{}{}
 
 	// Text routes
@@ -2157,9 +2400,20 @@ func handleRoutes(w http.ResponseWriter, r *http.Request) {
 				"precision":  precision,
 				"available":  config != nil,
 			}
+			// Store base config
 			if config != nil {
+				entry["base_provider"] = config.Provider
+				entry["base_model"] = config.Model
 				entry["provider"] = config.Provider
 				entry["model"] = config.Model
+			}
+			// Check for usecase override
+			if usecase != "" {
+				if override := getUsecaseRoute(usecase, "text", sensitive, precision); override != nil {
+					entry["provider"] = override.Provider
+					entry["model"] = override.Model
+					entry["overridden"] = true
+				}
 			}
 			routes = append(routes, entry)
 		}
@@ -2174,13 +2428,64 @@ func handleRoutes(w http.ResponseWriter, r *http.Request) {
 				"precision":  precision,
 				"available":  config != nil,
 			}
+			// Store base config
 			if config != nil {
+				entry["base_provider"] = config.Provider
+				entry["base_model"] = config.Model
 				entry["provider"] = config.Provider
 				entry["model"] = config.Model
+			}
+			// Check for usecase override
+			if usecase != "" {
+				if override := getUsecaseRoute(usecase, "vision", sensitive, precision); override != nil {
+					entry["provider"] = override.Provider
+					entry["model"] = override.Model
+					entry["overridden"] = true
+				}
 			}
 			routes = append(routes, entry)
 		}
 	}
+
+	// TTS routes (always local Kokoro for now)
+	routes = append(routes, map[string]interface{}{
+		"type":          "tts",
+		"sensitive":     true,
+		"provider":      "kokoro",
+		"model":         "kokoro-tts",
+		"base_provider": "kokoro",
+		"base_model":    "kokoro-tts",
+		"available":     true,
+	})
+	routes = append(routes, map[string]interface{}{
+		"type":          "tts",
+		"sensitive":     false,
+		"provider":      "kokoro",
+		"model":         "kokoro-tts",
+		"base_provider": "kokoro",
+		"base_model":    "kokoro-tts",
+		"available":     true,
+	})
+
+	// STT routes
+	routes = append(routes, map[string]interface{}{
+		"type":          "stt",
+		"sensitive":     true,
+		"provider":      "local",
+		"model":         "whisper-large-v3",
+		"base_provider": "local",
+		"base_model":    "whisper-large-v3",
+		"available":     true,
+	})
+	routes = append(routes, map[string]interface{}{
+		"type":          "stt",
+		"sensitive":     false,
+		"provider":      "openai",
+		"model":         "whisper-1",
+		"base_provider": "openai",
+		"base_model":    "whisper-1",
+		"available":     true,
+	})
 
 	// Sort for consistent output
 	sort.Slice(routes, func(i, j int) bool {
@@ -2191,6 +2496,115 @@ func handleRoutes(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(routes)
+}
+
+// handleRouteOverride handles setting/deleting route overrides for usecases
+func handleRouteOverride(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "POST" {
+		var req struct {
+			Usecase   string `json:"usecase"`
+			Type      string `json:"type"`      // text, vision
+			Sensitive bool   `json:"sensitive"`
+			Precision string `json:"precision"`
+			Provider  string `json:"provider"`
+			Model     string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if req.Usecase == "" {
+			http.Error(w, "usecase is required", http.StatusBadRequest)
+			return
+		}
+		if req.Type != "text" && req.Type != "vision" {
+			http.Error(w, "type must be 'text' or 'vision'", http.StatusBadRequest)
+			return
+		}
+		if req.Precision == "" {
+			http.Error(w, "precision is required", http.StatusBadRequest)
+			return
+		}
+		if req.Provider == "" || req.Model == "" {
+			http.Error(w, "provider and model are required", http.StatusBadRequest)
+			return
+		}
+
+		if err := saveRouteOverride(req.Usecase, req.Type, req.Sensitive, req.Precision, req.Provider, req.Model); err != nil {
+			http.Error(w, "Failed to save override: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		return
+	}
+
+	if r.Method == "DELETE" {
+		usecase := r.URL.Query().Get("usecase")
+		routeType := r.URL.Query().Get("type")
+		sensitiveStr := r.URL.Query().Get("sensitive")
+		precision := r.URL.Query().Get("precision")
+
+		if usecase == "" || routeType == "" || precision == "" {
+			http.Error(w, "usecase, type, and precision are required", http.StatusBadRequest)
+			return
+		}
+
+		sensitive := sensitiveStr == "true"
+
+		if err := deleteRouteOverride(usecase, routeType, sensitive, precision); err != nil {
+			http.Error(w, "Failed to delete override: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		return
+	}
+
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+// handleUsecases returns list of usecases that have route overrides
+func handleUsecases(w http.ResponseWriter, r *http.Request) {
+	usecaseRoutesMutex.RLock()
+	defer usecaseRoutesMutex.RUnlock()
+
+	usecases := []string{}
+	for usecase := range usecaseRoutes {
+		usecases = append(usecases, usecase)
+	}
+	sort.Strings(usecases)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(usecases)
+}
+
+// handleAvailableModels returns list of available models for each provider
+func handleAvailableModels(w http.ResponseWriter, r *http.Request) {
+	models := map[string][]string{
+		"anthropic": {
+			"claude-sonnet-4-20250514",
+			"claude-opus-4-20250514",
+		},
+		"openai": {
+			"gpt-4o",
+			"gpt-4o-mini",
+			"gpt-4-turbo",
+			"gpt-3.5-turbo",
+		},
+		"ollama": {
+			"llama3:latest",
+			"llama3.3:70b",
+			"gemma3:latest",
+			"qwen3-vl:30b",
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(models)
 }
 
 func handleTTSHistory(w http.ResponseWriter, r *http.Request) {
@@ -2418,7 +2832,24 @@ const dashboardHTML = `<!DOCTYPE html>
         .badge.sensitive { background: #ef4444; color: #fff; }
         .badge.not-sensitive { background: #374151; color: #9ca3af; }
         .badge.precision { background: #8b5cf6; color: #fff; }
+        .badge.usecase { background: #f59e0b; color: #000; }
         .badge.images { background: #06b6d4; color: #000; }
+        .badge.replay { background: #ec4899; color: #fff; }
+        .badge.type-llm { background: #6366f1; color: #fff; }
+        .badge.type-tts { background: #ec4899; color: #fff; }
+        .badge.type-stt { background: #14b8a6; color: #000; }
+
+        .type-filter {
+            padding: 6px 12px;
+            border-radius: 6px;
+            border: 1px solid #374151;
+            background: #1a1a2e;
+            color: #888;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .type-filter:hover { border-color: #6366f1; color: #fff; }
+        .type-filter.active { background: #6366f1; color: #fff; border-color: #6366f1; }
 
         .routes-grid {
             display: grid;
@@ -2434,6 +2865,12 @@ const dashboardHTML = `<!DOCTYPE html>
         .route-card.unavailable { border-left-color: #ef4444; opacity: 0.6; }
         .route-card.text { border-left-color: #6366f1; }
         .route-card.vision { border-left-color: #06b6d4; }
+        .route-card.tts { border-left-color: #ec4899; }
+        .route-card.stt { border-left-color: #22c55e; }
+        .route-card.overridden { border-left-color: #ef4444 !important; background: rgba(239, 68, 68, 0.1); }
+        .route-card.overridden .route-target { color: #ef4444; }
+        .route-card.editable { cursor: pointer; transition: transform 0.1s, box-shadow 0.1s; }
+        .route-card.editable:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
         .route-flags { font-size: 13px; color: #888; margin-bottom: 8px; }
         .route-target { font-size: 15px; font-weight: 600; }
         .route-type { font-size: 11px; text-transform: uppercase; margin-bottom: 4px; }
@@ -2687,10 +3124,8 @@ const dashboardHTML = `<!DOCTYPE html>
 
         <!-- Navigation Tabs -->
         <div class="nav-tabs">
-            <button class="nav-tab active" onclick="switchTab('llm')">LLM Proxy</button>
+            <button class="nav-tab active" onclick="switchTab('llm')">Requests</button>
             <button class="nav-tab" onclick="window.location.href='/test'">Playground</button>
-            <button class="nav-tab" onclick="switchTab('tts')">TTS</button>
-            <button class="nav-tab" onclick="switchTab('stt')">STT</button>
             <button class="nav-tab" onclick="switchTab('routing')">Routing</button>
         </div>
 
@@ -2726,79 +3161,40 @@ const dashboardHTML = `<!DOCTYPE html>
             <div class="section" id="pending-section" style="display:none">
                 <h2 class="section-title">Pending Requests <span class="pending-count" id="pending-count"></span></h2>
                 <table id="pending-table">
-                    <thead><tr><th>Started</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Elapsed</th><th>Preview</th></tr></thead>
+                    <thead><tr><th>Started</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Usecase</th><th>Elapsed</th><th>Preview</th></tr></thead>
                     <tbody></tbody>
                 </table>
             </div>
 
             <div class="section">
-                <h2 class="section-title">Recent LLM Requests <span style="font-size:12px;color:#888;font-weight:normal">(click row for details)</span></h2>
+                <h2 class="section-title">Recent Requests <span style="font-size:12px;color:#888;font-weight:normal">(click row for details)</span></h2>
+                <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">
+                    <button class="type-filter active" data-type="" onclick="filterByType('')">All</button>
+                    <button class="type-filter" data-type="llm" onclick="filterByType('llm')">LLM</button>
+                    <button class="type-filter" data-type="tts" onclick="filterByType('tts')">TTS</button>
+                    <button class="type-filter" data-type="stt" onclick="filterByType('stt')">STT</button>
+                </div>
                 <table id="recent-table">
-                    <thead><tr><th>Time</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Tokens</th><th>Latency</th><th>Cost</th><th>Status</th></tr></thead>
+                    <thead><tr><th>Time</th><th>Type</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Usecase</th><th>Info</th><th>Latency</th><th>Cost</th><th>Status</th></tr></thead>
                     <tbody></tbody>
                 </table>
-            </div>
-        </div>
-
-        <!-- TTS Tab -->
-        <div id="tab-tts" class="tab-content">
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-label">Total TTS Requests</div>
-                    <div class="stat-value" id="tts-total">-</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Success Rate</div>
-                    <div class="stat-value" id="tts-success-rate">-</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Avg Latency</div>
-                    <div class="stat-value latency" id="tts-avg-latency">-</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Total Characters</div>
-                    <div class="stat-value" id="tts-total-chars">-</div>
-                </div>
-            </div>
-
-            <div class="section">
-                <h2 class="section-title">Recent TTS Requests</h2>
-                <table id="tts-table">
-                    <thead><tr><th>Time</th><th>Provider</th><th>Voice</th><th>Characters</th><th>Latency</th><th>Status</th></tr></thead>
-                    <tbody></tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- STT Tab -->
-        <div id="tab-stt" class="tab-content">
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-label">Total STT Requests</div>
-                    <div class="stat-value" id="stt-total">-</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Success Rate</div>
-                    <div class="stat-value" id="stt-success-rate">-</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Avg Latency</div>
-                    <div class="stat-value latency" id="stt-avg-latency">-</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-label">Local / Cloud</div>
-                    <div class="stat-value" id="stt-local-cloud">-</div>
-                </div>
-            </div>
-
-            <div class="section">
-                <h2 class="section-title">Recent STT Requests</h2>
-                <div id="stt-history"></div>
             </div>
         </div>
 
         <!-- Routing Tab -->
         <div id="tab-routing" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">Usecase Routing Configuration</h2>
+                <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 20px;">
+                    <label style="color: #a5b4fc;">Usecase:</label>
+                    <select id="usecase-select" onchange="loadRoutes()" style="padding: 8px 12px; border-radius: 8px; background: #1e1e2e; border: 1px solid #374151; color: #fff; min-width: 200px;">
+                        <option value="">(base config - no overrides)</option>
+                    </select>
+                    <input type="text" id="new-usecase-input" placeholder="New usecase name..." style="padding: 8px 12px; border-radius: 8px; background: #1e1e2e; border: 1px solid #374151; color: #fff;">
+                    <button onclick="addNewUsecase()" style="padding: 8px 16px; border-radius: 8px; background: #6366f1; border: none; color: #fff; cursor: pointer;">Add</button>
+                </div>
+                <p style="color: #888; font-size: 13px; margin-bottom: 20px;">Click on a route card to change its model. Overridden routes are shown in <span style="color: #ef4444;">red</span>.</p>
+            </div>
             <div class="section">
                 <h2 class="section-title">Text Routing</h2>
                 <div class="routes-grid" id="text-routes-grid"></div>
@@ -2806,6 +3202,52 @@ const dashboardHTML = `<!DOCTYPE html>
             <div class="section">
                 <h2 class="section-title">Vision Routing</h2>
                 <div class="routes-grid" id="vision-routes-grid"></div>
+            </div>
+            <div class="section">
+                <h2 class="section-title">TTS Routing</h2>
+                <div class="routes-grid" id="tts-routes-grid"></div>
+            </div>
+            <div class="section">
+                <h2 class="section-title">STT Routing</h2>
+                <div class="routes-grid" id="stt-routes-grid"></div>
+            </div>
+        </div>
+
+        <!-- Route Edit Modal -->
+        <div class="modal-overlay" id="route-modal-overlay" onclick="closeRouteModal(event)" style="display:none">
+            <div class="modal" onclick="event.stopPropagation()" style="max-width: 500px;">
+                <div class="modal-header">
+                    <h2>Edit Route</h2>
+                    <button class="modal-close" onclick="closeRouteModal()">&times;</button>
+                </div>
+                <div class="modal-body" id="route-modal-body">
+                    <div style="margin-bottom: 16px;">
+                        <div style="color: #888; font-size: 13px;">Route</div>
+                        <div id="route-edit-info" style="color: #fff; font-size: 15px;"></div>
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <div style="color: #888; font-size: 13px; margin-bottom: 4px;">Base Model</div>
+                        <div id="route-base-model" style="color: #6366f1; font-size: 14px;"></div>
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="color: #888; font-size: 13px; display: block; margin-bottom: 4px;">Provider</label>
+                        <select id="route-edit-provider" onchange="updateModelOptions()" style="width: 100%; padding: 10px; border-radius: 8px; background: #1e1e2e; border: 1px solid #374151; color: #fff;">
+                            <option value="anthropic">anthropic</option>
+                            <option value="openai">openai</option>
+                            <option value="ollama">ollama</option>
+                        </select>
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="color: #888; font-size: 13px; display: block; margin-bottom: 4px;">Model</label>
+                        <select id="route-edit-model" style="width: 100%; padding: 10px; border-radius: 8px; background: #1e1e2e; border: 1px solid #374151; color: #fff;">
+                        </select>
+                    </div>
+                    <div style="display: flex; gap: 12px; margin-top: 20px;">
+                        <button onclick="saveRouteOverride()" style="flex: 1; padding: 12px; border-radius: 8px; background: #22c55e; border: none; color: #000; font-weight: 600; cursor: pointer;">Save Override</button>
+                        <button onclick="resetRouteToBase()" id="reset-route-btn" style="flex: 1; padding: 12px; border-radius: 8px; background: #ef4444; border: none; color: #fff; font-weight: 600; cursor: pointer; display: none;">Reset to Base</button>
+                        <button onclick="closeRouteModal()" style="flex: 1; padding: 12px; border-radius: 8px; background: #374151; border: none; color: #fff; font-weight: 600; cursor: pointer;">Cancel</button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -2826,6 +3268,8 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
 
     <script>
+        let currentTypeFilter = '';
+
         async function loadStats() {
             const resp = await fetch('/api/stats');
             const stats = await resp.json();
@@ -2847,10 +3291,21 @@ const dashboardHTML = `<!DOCTYPE html>
                 providerBody.appendChild(tr);
             }
 
-            // Recent requests
+            // Load recent requests via history API
+            await loadRecentRequests();
+        }
+
+        async function loadRecentRequests() {
+            let url = '/api/history?limit=50';
+            if (currentTypeFilter) {
+                url += '&type=' + encodeURIComponent(currentTypeFilter);
+            }
+            const resp = await fetch(url);
+            const requests = await resp.json();
+
             const recentBody = document.querySelector('#recent-table tbody');
             recentBody.innerHTML = '';
-            for (const req of stats.recent_requests || []) {
+            for (const req of requests || []) {
                 const tr = document.createElement('tr');
                 tr.className = 'clickable';
                 tr.onclick = () => showRequestDetail(req.id);
@@ -2860,14 +3315,31 @@ const dashboardHTML = `<!DOCTYPE html>
                 const sensitiveClass = req.sensitive ? 'sensitive' : 'not-sensitive';
                 const sensitiveText = req.sensitive ? 'YES' : 'no';
                 const precision = req.precision || '-';
+                const usecase = req.usecase ? '<span class="badge usecase">' + req.usecase + '</span>' : '-';
                 const hasImages = req.has_images ? '<span class="badge images">img</span>' : '';
-                const tokens = (req.input_tokens || 0) + (req.output_tokens || 0);
+                const replayBadge = req.is_replay ? '<span class="badge replay">replay</span>' : '';
+                const reqType = req.request_type || 'llm';
+                const typeBadge = '<span class="badge type-' + reqType + '">' + reqType.toUpperCase() + '</span>';
+
+                // Info column: tokens for LLM, voice for TTS, duration for STT
+                let info = '';
+                if (reqType === 'llm') {
+                    const tokens = (req.input_tokens || 0) + (req.output_tokens || 0);
+                    info = '<span class="tokens-small">' + tokens + ' tok</span>';
+                } else if (reqType === 'tts') {
+                    info = req.voice || '-';
+                } else if (reqType === 'stt') {
+                    info = req.audio_duration_ms ? (req.audio_duration_ms / 1000).toFixed(1) + 's' : '-';
+                }
+
                 tr.innerHTML = '<td>' + time + '</td>' +
+                    '<td>' + typeBadge + ' ' + replayBadge + '</td>' +
                     '<td><span class="badge ' + req.provider + '">' + req.provider + '</span></td>' +
                     '<td>' + req.model + ' ' + hasImages + '</td>' +
                     '<td><span class="badge ' + sensitiveClass + '">' + sensitiveText + '</span></td>' +
                     '<td><span class="badge precision">' + precision + '</span></td>' +
-                    '<td class="tokens-small">' + tokens + '</td>' +
+                    '<td>' + usecase + '</td>' +
+                    '<td>' + info + '</td>' +
                     '<td>' + req.latency_ms + 'ms</td>' +
                     '<td>$' + req.cost_usd.toFixed(6) + '</td>' +
                     '<td>' + status + '</td>';
@@ -2875,27 +3347,222 @@ const dashboardHTML = `<!DOCTYPE html>
             }
         }
 
+        function filterByType(type) {
+            currentTypeFilter = type;
+            // Update button states
+            document.querySelectorAll('.type-filter').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.type === type);
+            });
+            loadRecentRequests();
+        }
+
+        let availableModels = {};
+        let currentEditRoute = null;
+
+        async function loadUsecases() {
+            const resp = await fetch('/api/usecases');
+            const usecases = await resp.json();
+            const select = document.getElementById('usecase-select');
+            const currentValue = select.value;
+
+            // Keep the first option (base config)
+            select.innerHTML = '<option value="">(base config - no overrides)</option>';
+            for (const usecase of usecases) {
+                const opt = document.createElement('option');
+                opt.value = usecase;
+                opt.textContent = usecase;
+                select.appendChild(opt);
+            }
+
+            // Restore selection if it still exists
+            if (currentValue && usecases.includes(currentValue)) {
+                select.value = currentValue;
+            }
+        }
+
+        async function loadAvailableModels() {
+            const resp = await fetch('/api/models');
+            availableModels = await resp.json();
+        }
+
+        function addNewUsecase() {
+            const input = document.getElementById('new-usecase-input');
+            const name = input.value.trim();
+            if (!name) return;
+
+            const select = document.getElementById('usecase-select');
+            // Check if already exists
+            for (const opt of select.options) {
+                if (opt.value === name) {
+                    select.value = name;
+                    input.value = '';
+                    loadRoutes();
+                    return;
+                }
+            }
+
+            // Add new option
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            select.appendChild(opt);
+            select.value = name;
+            input.value = '';
+            loadRoutes();
+        }
+
         async function loadRoutes() {
-            const resp = await fetch('/api/routes');
+            const usecase = document.getElementById('usecase-select').value;
+            const url = usecase ? '/api/routes?usecase=' + encodeURIComponent(usecase) : '/api/routes';
+            const resp = await fetch(url);
             const routes = await resp.json();
 
             const textGrid = document.getElementById('text-routes-grid');
             const visionGrid = document.getElementById('vision-routes-grid');
+            const ttsGrid = document.getElementById('tts-routes-grid');
+            const sttGrid = document.getElementById('stt-routes-grid');
             textGrid.innerHTML = '';
             visionGrid.innerHTML = '';
+            ttsGrid.innerHTML = '';
+            sttGrid.innerHTML = '';
+
+            const typeColors = {
+                'text': '#6366f1',
+                'vision': '#06b6d4',
+                'tts': '#ec4899',
+                'stt': '#22c55e'
+            };
 
             for (const route of routes) {
                 const card = document.createElement('div');
-                const typeClass = route.type === 'vision' ? 'vision' : 'text';
-                card.className = 'route-card ' + typeClass + (route.available ? '' : ' unavailable');
-                card.innerHTML = '<div class="route-type" style="color:' + (route.type === 'vision' ? '#06b6d4' : '#6366f1') + '">' + route.type + '</div>' +
-                    '<div class="route-flags">sensitive: ' + route.sensitive + ', precision: ' + route.precision + '</div>' +
-                    '<div class="route-target">' + (route.available ? route.provider + ' / ' + route.model : 'Not Available') + '</div>';
+                const isEditable = (route.type === 'text' || route.type === 'vision') && route.available && usecase;
+                const isOverridden = route.overridden;
+
+                let classes = 'route-card ' + route.type;
+                if (!route.available) classes += ' unavailable';
+                if (isOverridden) classes += ' overridden';
+                if (isEditable) classes += ' editable';
+                card.className = classes;
+
+                const flags = route.precision
+                    ? 'sensitive: ' + route.sensitive + ', precision: ' + route.precision
+                    : 'sensitive: ' + route.sensitive;
+
+                let targetText = route.available ? route.provider + ' / ' + route.model : 'Not Available';
+                if (isOverridden) {
+                    targetText += ' <span style="font-size:11px;opacity:0.7">(override)</span>';
+                }
+
+                card.innerHTML = '<div class="route-type" style="color:' + (typeColors[route.type] || '#6366f1') + '">' + route.type + '</div>' +
+                    '<div class="route-flags">' + flags + '</div>' +
+                    '<div class="route-target">' + targetText + '</div>';
+
+                if (isEditable) {
+                    card.onclick = () => openRouteEditModal(route, usecase);
+                }
+
                 if (route.type === 'vision') {
                     visionGrid.appendChild(card);
+                } else if (route.type === 'tts') {
+                    ttsGrid.appendChild(card);
+                } else if (route.type === 'stt') {
+                    sttGrid.appendChild(card);
                 } else {
                     textGrid.appendChild(card);
                 }
+            }
+        }
+
+        function openRouteEditModal(route, usecase) {
+            currentEditRoute = { ...route, usecase };
+
+            document.getElementById('route-edit-info').textContent =
+                route.type.toUpperCase() + ' | sensitive=' + route.sensitive + ' | precision=' + route.precision;
+            document.getElementById('route-base-model').textContent =
+                (route.base_provider || route.provider) + ' / ' + (route.base_model || route.model);
+
+            // Set current values
+            document.getElementById('route-edit-provider').value = route.provider;
+            updateModelOptions();
+            document.getElementById('route-edit-model').value = route.model;
+
+            // Show reset button if overridden
+            document.getElementById('reset-route-btn').style.display = route.overridden ? 'block' : 'none';
+
+            document.getElementById('route-modal-overlay').style.display = 'flex';
+        }
+
+        function closeRouteModal(event) {
+            if (event && event.target !== event.currentTarget) return;
+            document.getElementById('route-modal-overlay').style.display = 'none';
+            currentEditRoute = null;
+        }
+
+        function updateModelOptions() {
+            const provider = document.getElementById('route-edit-provider').value;
+            const modelSelect = document.getElementById('route-edit-model');
+            const currentModel = modelSelect.value;
+
+            modelSelect.innerHTML = '';
+            const models = availableModels[provider] || [];
+            for (const model of models) {
+                const opt = document.createElement('option');
+                opt.value = model;
+                opt.textContent = model;
+                modelSelect.appendChild(opt);
+            }
+
+            // Try to keep current selection
+            if (models.includes(currentModel)) {
+                modelSelect.value = currentModel;
+            }
+        }
+
+        async function saveRouteOverride() {
+            if (!currentEditRoute) return;
+
+            const provider = document.getElementById('route-edit-provider').value;
+            const model = document.getElementById('route-edit-model').value;
+
+            const resp = await fetch('/api/routes/override', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    usecase: currentEditRoute.usecase,
+                    type: currentEditRoute.type,
+                    sensitive: currentEditRoute.sensitive,
+                    precision: currentEditRoute.precision,
+                    provider: provider,
+                    model: model
+                })
+            });
+
+            if (resp.ok) {
+                closeRouteModal();
+                loadRoutes();
+                loadUsecases();
+            } else {
+                const err = await resp.text();
+                alert('Failed to save: ' + err);
+            }
+        }
+
+        async function resetRouteToBase() {
+            if (!currentEditRoute) return;
+
+            const resp = await fetch('/api/routes/override?usecase=' + encodeURIComponent(currentEditRoute.usecase) +
+                '&type=' + currentEditRoute.type +
+                '&sensitive=' + currentEditRoute.sensitive +
+                '&precision=' + currentEditRoute.precision, {
+                method: 'DELETE'
+            });
+
+            if (resp.ok) {
+                closeRouteModal();
+                loadRoutes();
+            } else {
+                const err = await resp.text();
+                alert('Failed to reset: ' + err);
             }
         }
 
@@ -2910,82 +3577,11 @@ const dashboardHTML = `<!DOCTYPE html>
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             document.getElementById('tab-' + tabName)?.classList.add('active');
             // Load data for tab
-            if (tabName === 'tts') loadTTSData();
-            if (tabName === 'stt') loadSTTData();
-            if (tabName === 'routing') loadRoutes();
-        }
-
-        async function loadTTSData() {
-            const resp = await fetch('/api/tts-history');
-            const data = await resp.json();
-
-            document.getElementById('tts-total').textContent = data.total_requests;
-            const successRate = data.total_requests > 0 ? (data.success_count / data.total_requests * 100).toFixed(1) : '0';
-            document.getElementById('tts-success-rate').textContent = successRate + '%';
-            document.getElementById('tts-avg-latency').textContent = Math.round(data.avg_latency_ms) + 'ms';
-            document.getElementById('tts-total-chars').textContent = data.total_chars.toLocaleString();
-
-            const tbody = document.querySelector('#tts-table tbody');
-            tbody.innerHTML = '';
-            for (const req of data.history || []) {
-                const tr = document.createElement('tr');
-                const time = new Date(req.timestamp).toLocaleTimeString();
-                const status = req.success ? '<span class="badge success">ok</span>' : '<span class="badge error">error</span>';
-                tr.innerHTML = '<td>' + time + '</td>' +
-                    '<td><span class="badge kokoro">' + req.provider + '</span></td>' +
-                    '<td>' + (req.voice || '-') + '</td>' +
-                    '<td>' + (req.input_chars || 0) + '</td>' +
-                    '<td>' + req.latency_ms + 'ms</td>' +
-                    '<td>' + status + '</td>';
-                tbody.appendChild(tr);
+            if (tabName === 'routing') {
+                loadUsecases();
+                loadAvailableModels();
+                loadRoutes();
             }
-        }
-
-        async function loadSTTData() {
-            const resp = await fetch('/api/stt-history');
-            const data = await resp.json();
-
-            document.getElementById('stt-total').textContent = data.total_requests;
-            const successRate = data.total_requests > 0 ? (data.success_count / data.total_requests * 100).toFixed(1) : '0';
-            document.getElementById('stt-success-rate').textContent = successRate + '%';
-            document.getElementById('stt-avg-latency').textContent = Math.round(data.avg_latency_ms) + 'ms';
-            document.getElementById('stt-local-cloud').textContent = data.local_count + ' / ' + data.cloud_count;
-
-            const container = document.getElementById('stt-history');
-            container.innerHTML = '';
-
-            if (!data.history || data.history.length === 0) {
-                container.innerHTML = '<div style="color:#888;text-align:center;padding:40px;">No STT requests yet</div>';
-                return;
-            }
-
-            for (const req of data.history) {
-                const card = document.createElement('div');
-                card.className = 'stt-card';
-                const time = new Date(req.timestamp).toLocaleString();
-                const status = req.success ? '<span class="badge success">ok</span>' : '<span class="badge error">error</span>';
-                const fileSize = req.file_size ? formatBytes(req.file_size) : '-';
-
-                card.innerHTML =
-                    '<div class="stt-card-header">' +
-                        '<div class="stt-card-meta">' +
-                            '<div><span>Time:</span> <strong>' + time + '</strong></div>' +
-                            '<div><span>Model:</span> <strong>' + req.model + '</strong></div>' +
-                            '<div><span>Provider:</span> <span class="badge ' + req.provider + '">' + req.provider + '</span></div>' +
-                            '<div><span>File:</span> <strong>' + fileSize + '</strong></div>' +
-                            '<div><span>Latency:</span> <strong>' + req.latency_ms + 'ms</strong></div>' +
-                        '</div>' +
-                        status +
-                    '</div>' +
-                    '<div class="stt-transcription">' + escapeHtml(req.transcription || '') + '</div>';
-                container.appendChild(card);
-            }
-        }
-
-        function formatBytes(bytes) {
-            if (bytes < 1024) return bytes + ' B';
-            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
         }
 
         async function showRequestDetail(id) {
@@ -3020,6 +3616,7 @@ const dashboardHTML = `<!DOCTYPE html>
             }
             html += '<div class="detail-item"><div class="detail-label">Sensitive</div><div class="detail-value"><span class="badge ' + sensitiveClass + '">' + sensitiveText + '</span></div></div>';
             html += '<div class="detail-item"><div class="detail-label">Precision</div><div class="detail-value"><span class="badge precision">' + (data.precision || '-') + '</span></div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Usecase</div><div class="detail-value"><span class="badge usecase">' + (data.usecase || '-') + '</span></div></div>';
             html += '<div class="detail-item"><div class="detail-label">Has Images</div><div class="detail-value">' + (data.has_images ? '<span class="badge images">Yes</span>' : 'No') + '</div></div>';
             html += '<div class="detail-item"><div class="detail-label">Cached</div><div class="detail-value">' + (data.cached ? '<span class="badge cached">Yes</span>' : 'No') + '</div></div>';
             html += '</div></div>';
@@ -3250,6 +3847,7 @@ const dashboardHTML = `<!DOCTYPE html>
                         '<td>' + req.model + ' ' + hasImages + '</td>' +
                         '<td><span class="badge ' + sensitiveClass + '">' + sensitiveText + '</span></td>' +
                         '<td><span class="badge precision">' + (req.precision || '-') + '</span></td>' +
+                        '<td><span class="badge usecase">' + (req.usecase || '-') + '</span></td>' +
                         '<td class="elapsed-time">' + elapsed + '</td>' +
                         '<td class="preview-text" title="' + escapeHtml(req.preview) + '">' + escapeHtml(req.preview) + '</td>';
                     tbody.appendChild(tr);
@@ -4314,6 +4912,9 @@ func main() {
 	http.HandleFunc("/v1/models", handleModels)
 	http.HandleFunc("/api/stats", handleStats)
 	http.HandleFunc("/api/routes", handleRoutes)
+	http.HandleFunc("/api/routes/override", handleRouteOverride)
+	http.HandleFunc("/api/usecases", handleUsecases)
+	http.HandleFunc("/api/models", handleAvailableModels)
 	http.HandleFunc("/api/history", handleRequestHistory)
 	http.HandleFunc("/api/request", handleRequestDetail)
 	http.HandleFunc("/api/replay", handleReplayRequest)
