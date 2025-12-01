@@ -2398,6 +2398,93 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
+// handleTiming returns timing estimates for requests, useful for progress bars
+func handleTiming(w http.ResponseWriter, r *http.Request) {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	timing := map[string]interface{}{}
+
+	// Vision requests by precision (for screenshot description)
+	rows, _ := db.Query(`
+		SELECT precision, AVG(latency_ms), COUNT(*), MIN(latency_ms), MAX(latency_ms)
+		FROM requests
+		WHERE has_images = 1 AND success = 1 AND cached = 0 AND precision IS NOT NULL
+		GROUP BY precision
+	`)
+	defer rows.Close()
+
+	visionByPrecision := map[string]interface{}{}
+	for rows.Next() {
+		var precision string
+		var avgLatency, minLatency, maxLatency float64
+		var count int
+		rows.Scan(&precision, &avgLatency, &count, &minLatency, &maxLatency)
+		visionByPrecision[precision] = map[string]interface{}{
+			"avg_ms":   int64(avgLatency),
+			"min_ms":   int64(minLatency),
+			"max_ms":   int64(maxLatency),
+			"count":    count,
+			"avg_secs": avgLatency / 1000.0,
+		}
+	}
+	timing["vision_by_precision"] = visionByPrecision
+
+	// Vision requests by sensitive flag
+	rows, _ = db.Query(`
+		SELECT sensitive, AVG(latency_ms), COUNT(*)
+		FROM requests
+		WHERE has_images = 1 AND success = 1 AND cached = 0
+		GROUP BY sensitive
+	`)
+	defer rows.Close()
+
+	visionBySensitive := map[string]interface{}{}
+	for rows.Next() {
+		var sensitive bool
+		var avgLatency float64
+		var count int
+		rows.Scan(&sensitive, &avgLatency, &count)
+		key := "cloud"
+		if sensitive {
+			key = "local"
+		}
+		visionBySensitive[key] = map[string]interface{}{
+			"avg_ms":   int64(avgLatency),
+			"count":    count,
+			"avg_secs": avgLatency / 1000.0,
+		}
+	}
+	timing["vision_by_sensitive"] = visionBySensitive
+
+	// Overall vision average
+	var overallAvg float64
+	var overallCount int
+	db.QueryRow(`
+		SELECT AVG(latency_ms), COUNT(*)
+		FROM requests
+		WHERE has_images = 1 AND success = 1 AND cached = 0
+	`).Scan(&overallAvg, &overallCount)
+	timing["vision_overall"] = map[string]interface{}{
+		"avg_ms":   int64(overallAvg),
+		"count":    overallCount,
+		"avg_secs": overallAvg / 1000.0,
+	}
+
+	// Default estimates if no data
+	timing["defaults"] = map[string]interface{}{
+		"low":       map[string]interface{}{"avg_secs": 15.0},
+		"medium":    map[string]interface{}{"avg_secs": 20.0},
+		"high":      map[string]interface{}{"avg_secs": 30.0},
+		"very_high": map[string]interface{}{"avg_secs": 45.0},
+	}
+
+	json.NewEncoder(w).Encode(timing)
+}
+
 func handleRoutes(w http.ResponseWriter, r *http.Request) {
 	usecase := r.URL.Query().Get("usecase")
 	routes := []map[string]interface{}{}
@@ -4920,6 +5007,7 @@ func main() {
 	http.HandleFunc("/v1/estimate", handleEstimate)
 	http.HandleFunc("/v1/models", handleModels)
 	http.HandleFunc("/api/stats", handleStats)
+	http.HandleFunc("/api/timing", handleTiming)
 	http.HandleFunc("/api/routes", handleRoutes)
 	http.HandleFunc("/api/routes/override", handleRouteOverride)
 	http.HandleFunc("/api/usecases", handleUsecases)
