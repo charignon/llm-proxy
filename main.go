@@ -314,6 +314,7 @@ type OllamaRequest struct {
 	Model    string          `json:"model"`
 	Messages []OllamaMessage `json:"messages"`
 	Stream   bool            `json:"stream"`
+	Tools    []Tool          `json:"tools,omitempty"`
 }
 
 type OllamaMessage struct {
@@ -325,11 +326,20 @@ type OllamaMessage struct {
 type OllamaResponse struct {
 	Model   string `json:"model"`
 	Message struct {
-		Role     string `json:"role"`
-		Content  string `json:"content"`
-		Thinking string `json:"thinking,omitempty"` // Qwen3 thinking mode
+		Role      string           `json:"role"`
+		Content   string           `json:"content"`
+		Thinking  string           `json:"thinking,omitempty"` // Qwen3 thinking mode
+		ToolCalls []OllamaToolCall `json:"tool_calls,omitempty"`
 	} `json:"message"`
 	Done bool `json:"done"`
+}
+
+type OllamaToolCall struct {
+	ID       string `json:"id,omitempty"`
+	Function struct {
+		Name      string                 `json:"name"`
+		Arguments map[string]interface{} `json:"arguments"`
+	} `json:"function"`
 }
 
 // Whisper API types (OpenAI-compatible)
@@ -1191,6 +1201,7 @@ func callOllama(req *ChatCompletionRequest, model string) (*ChatCompletionRespon
 		Model:    model,
 		Messages: messages,
 		Stream:   false,
+		Tools:    req.Tools,
 	}
 
 	body, _ := json.Marshal(ollamaReq)
@@ -1229,6 +1240,35 @@ func callOllama(req *ChatCompletionRequest, model string) (*ChatCompletionRespon
 	}
 	outputTokens := len(responseContent) / 4
 
+	// Build response message
+	respMsg := Message{Role: "assistant", Content: responseContent}
+	finishReason := "stop"
+
+	// Convert Ollama tool calls to OpenAI format
+	if len(ollamaResp.Message.ToolCalls) > 0 {
+		finishReason = "tool_calls"
+		for _, tc := range ollamaResp.Message.ToolCalls {
+			// Convert arguments map to JSON string (OpenAI format)
+			argsJSON, _ := json.Marshal(tc.Function.Arguments)
+			toolCallID := tc.ID
+			if toolCallID == "" {
+				toolCallID = fmt.Sprintf("call_%d", time.Now().UnixNano())
+			}
+			respMsg.ToolCalls = append(respMsg.ToolCalls, ToolCall{
+				ID:   toolCallID,
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      tc.Function.Name,
+					Arguments: string(argsJSON),
+				},
+			})
+		}
+		// Tool calls typically have empty content
+		if responseContent == "" {
+			respMsg.Content = nil
+		}
+	}
+
 	return &ChatCompletionResponse{
 		ID:      fmt.Sprintf("ollama-%d", time.Now().UnixNano()),
 		Object:  "chat.completion",
@@ -1237,8 +1277,8 @@ func callOllama(req *ChatCompletionRequest, model string) (*ChatCompletionRespon
 		Provider: "ollama",
 		Choices: []Choice{{
 			Index:        0,
-			Message:      Message{Role: "assistant", Content: responseContent},
-			FinishReason: "stop",
+			Message:      respMsg,
+			FinishReason: finishReason,
 		}},
 		Usage: &Usage{
 			PromptTokens:     inputTokens,
@@ -2538,6 +2578,7 @@ func handleTiming(w http.ResponseWriter, r *http.Request) {
 	timing := map[string]interface{}{}
 
 	// Vision requests by precision (for screenshot description)
+	// Use p75 percentile for better estimates (not skewed by outliers)
 	rows, _ := db.Query(`
 		SELECT precision, AVG(latency_ms), COUNT(*), MIN(latency_ms), MAX(latency_ms)
 		FROM requests
@@ -2552,12 +2593,30 @@ func handleTiming(w http.ResponseWriter, r *http.Request) {
 		var avgLatency, minLatency, maxLatency float64
 		var count int
 		rows.Scan(&precision, &avgLatency, &count, &minLatency, &maxLatency)
+
+		// Get p75 percentile for this precision (better estimate than mean)
+		var p75Latency float64
+		db.QueryRow(`
+			SELECT latency_ms FROM (
+				SELECT latency_ms, ROW_NUMBER() OVER (ORDER BY latency_ms) as rn,
+				       COUNT(*) OVER () as total
+				FROM requests
+				WHERE has_images = 1 AND success = 1 AND cached = 0 AND precision = ?
+			) WHERE rn = CAST(total * 0.75 AS INTEGER) + 1
+		`, precision).Scan(&p75Latency)
+
+		if p75Latency == 0 {
+			p75Latency = avgLatency // Fallback to average
+		}
+
 		visionByPrecision[precision] = map[string]interface{}{
 			"avg_ms":   int64(avgLatency),
+			"p75_ms":   int64(p75Latency),
 			"min_ms":   int64(minLatency),
 			"max_ms":   int64(maxLatency),
 			"count":    count,
 			"avg_secs": avgLatency / 1000.0,
+			"p75_secs": p75Latency / 1000.0,
 		}
 	}
 	timing["vision_by_precision"] = visionByPrecision
