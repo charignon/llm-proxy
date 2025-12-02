@@ -1829,6 +1829,12 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate usecase is provided
+	if req.Usecase == "" {
+		http.Error(w, "Missing required field: usecase. Please provide a usecase to identify the caller.", http.StatusBadRequest)
+		return
+	}
+
 	startTime := time.Now()
 	logEntry := &RequestLog{
 		Timestamp:      startTime,
