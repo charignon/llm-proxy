@@ -29,7 +29,7 @@ var (
 	anthropicKey     = getEnv("ANTHROPIC_API_KEY", "")
 	ollamaHost       = getEnv("OLLAMA_HOST", "localhost:11434")
 	dataDir          = getEnv("DATA_DIR", "./data")
-	cacheTTLHours    = 24 * 7 // 1 week cache
+	cacheTTLHours    = 24 * 7                                                // 1 week cache
 	whisperServerURL = getEnv("WHISPER_SERVER_URL", "http://localhost:8890") // Local whisper server
 	ttsServerURL     = getEnv("TTS_SERVER_URL", "http://localhost:7788")     // Local TTS server (Kokoro)
 )
@@ -37,13 +37,13 @@ var (
 // Model pricing per 1M tokens (input, output)
 var modelPricing = map[string][2]float64{
 	// OpenAI
-	"gpt-4o":            {2.50, 10.00},
-	"gpt-4o-mini":       {0.15, 0.60},
-	"gpt-4-turbo":       {10.00, 30.00},
-	"gpt-4":             {30.00, 60.00},
-	"gpt-3.5-turbo":     {0.50, 1.50},
-	"o1":                {15.00, 60.00},
-	"o1-mini":           {3.00, 12.00},
+	"gpt-4o":        {2.50, 10.00},
+	"gpt-4o-mini":   {0.15, 0.60},
+	"gpt-4-turbo":   {10.00, 30.00},
+	"gpt-4":         {30.00, 60.00},
+	"gpt-3.5-turbo": {0.50, 1.50},
+	"o1":            {15.00, 60.00},
+	"o1-mini":       {3.00, 12.00},
 	// Anthropic
 	"claude-3-5-sonnet-20241022": {3.00, 15.00},
 	"claude-3-5-haiku-20241022":  {0.80, 4.00},
@@ -51,11 +51,11 @@ var modelPricing = map[string][2]float64{
 	"claude-sonnet-4-20250514":   {3.00, 15.00},
 	"claude-opus-4-20250514":     {15.00, 75.00},
 	// Ollama (free)
-	"qwen3-vl:30b":   {0, 0},
-	"llama3:latest":  {0, 0},
-	"llama3.3:70b":   {0, 0},
-	"gemma3:latest":  {0, 0},
-	"llava":          {0, 0},
+	"qwen3-vl:30b":  {0, 0},
+	"llama3:latest": {0, 0},
+	"llama3.3:70b":  {0, 0},
+	"gemma3:latest": {0, 0},
+	"llava":         {0, 0},
 }
 
 // Routing configuration
@@ -66,7 +66,9 @@ type RouteConfig struct {
 
 // Route based on sensitive + precision + hasImages flags
 // Format: routingTable[sensitive][precision] for text
-//         visionRoutingTable[sensitive][precision] for vision
+//
+//	visionRoutingTable[sensitive][precision] for vision
+//
 // Precision levels: very_high > high > medium > low
 var routingTable = map[string]map[string]*RouteConfig{
 	// sensitive: false (text only)
@@ -117,7 +119,7 @@ var cache = make(map[string]*CacheEntry)
 var cacheMutex sync.RWMutex
 
 type CacheEntry struct {
-	Request   []byte    // Original request body for replay
+	Request   []byte // Original request body for replay
 	Response  []byte
 	CreatedAt time.Time
 }
@@ -141,14 +143,14 @@ type PendingRequest struct {
 
 // Prometheus metrics
 type Metrics struct {
-	RequestsTotal    map[string]int64          // provider:model:status -> count
-	TokensTotal      map[string]int64          // provider:model:direction -> count
-	DurationSumMs    map[string]int64          // provider:model -> sum of ms
-	DurationCount    map[string]int64          // provider:model -> count
-	CostTotal        float64
-	CacheHits        int64
-	CacheMisses      int64
-	mutex            sync.RWMutex
+	RequestsTotal map[string]int64 // provider:model:status -> count
+	TokensTotal   map[string]int64 // provider:model:direction -> count
+	DurationSumMs map[string]int64 // provider:model -> sum of ms
+	DurationCount map[string]int64 // provider:model -> count
+	CostTotal     float64
+	CacheHits     int64
+	CacheMisses   int64
+	mutex         sync.RWMutex
 }
 
 var metrics = &Metrics{
@@ -188,20 +190,20 @@ func (m *Metrics) recordRequest(provider, model, status string, durationMs int64
 
 // OpenAI API types
 type ChatCompletionRequest struct {
-	Model            string         `json:"model"`
-	Messages         []Message      `json:"messages"`
-	MaxTokens        int            `json:"max_tokens,omitempty"`
-	Temperature      float64        `json:"temperature,omitempty"`
-	Stream           bool           `json:"stream,omitempty"`
-	Tools            []Tool         `json:"tools,omitempty"`
-	ToolChoice       interface{}    `json:"tool_choice,omitempty"` // "auto", "none", or specific tool
+	Model       string      `json:"model"`
+	Messages    []Message   `json:"messages"`
+	MaxTokens   int         `json:"max_tokens,omitempty"`
+	Temperature float64     `json:"temperature,omitempty"`
+	Stream      bool        `json:"stream,omitempty"`
+	Tools       []Tool      `json:"tools,omitempty"`
+	ToolChoice  interface{} `json:"tool_choice,omitempty"` // "auto", "none", or specific tool
 	// Custom routing fields (non-OpenAI)
-	Sensitive        *bool          `json:"sensitive,omitempty"`
-	Precision        string         `json:"precision,omitempty"`
-	Usecase          string         `json:"usecase,omitempty"`
-	NoCache          bool           `json:"no_cache,omitempty"`
+	Sensitive *bool  `json:"sensitive,omitempty"`
+	Precision string `json:"precision,omitempty"`
+	Usecase   string `json:"usecase,omitempty"`
+	NoCache   bool   `json:"no_cache,omitempty"`
 	// Internal fields (not from JSON)
-	IsReplay         bool           `json:"-"` // Set internally for replay requests
+	IsReplay bool `json:"-"` // Set internally for replay requests
 }
 
 type Tool struct {
@@ -257,9 +259,9 @@ type ChatCompletionResponse struct {
 }
 
 type Choice struct {
-	Index        int      `json:"index"`
-	Message      Message  `json:"message"`
-	FinishReason string   `json:"finish_reason"`
+	Index        int     `json:"index"`
+	Message      Message `json:"message"`
+	FinishReason string  `json:"finish_reason"`
 }
 
 type Usage struct {
@@ -289,12 +291,12 @@ type AnthropicMessage struct {
 }
 
 type AnthropicResponse struct {
-	ID         string                   `json:"id"`
-	Type       string                   `json:"type"`
-	Role       string                   `json:"role"`
-	Content    []AnthropicContentBlock  `json:"content"`
-	Model      string                   `json:"model"`
-	StopReason string                   `json:"stop_reason"`
+	ID         string                  `json:"id"`
+	Type       string                  `json:"type"`
+	Role       string                  `json:"role"`
+	Content    []AnthropicContentBlock `json:"content"`
+	Model      string                  `json:"model"`
+	StopReason string                  `json:"stop_reason"`
 	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
@@ -350,41 +352,41 @@ type WhisperTranscriptionResponse struct {
 
 // TTS API types (OpenAI-compatible)
 type TTSRequest struct {
-	Model          string  `json:"model"`          // tts-1, tts-1-hd (mapped to kokoro)
-	Input          string  `json:"input"`          // Text to synthesize
-	Voice          string  `json:"voice"`          // alloy, echo, fable, onyx, nova, shimmer -> mapped to kokoro voices
+	Model          string  `json:"model"`           // tts-1, tts-1-hd (mapped to kokoro)
+	Input          string  `json:"input"`           // Text to synthesize
+	Voice          string  `json:"voice"`           // alloy, echo, fable, onyx, nova, shimmer -> mapped to kokoro voices
 	ResponseFormat string  `json:"response_format"` // mp3 (default), wav
 	Speed          float64 `json:"speed"`           // 0.25 to 4.0, default 1.0
 }
 
 // Request log entry
 type RequestLog struct {
-	ID              int64     `json:"id"`
-	Timestamp       time.Time `json:"timestamp"`
-	RequestType     string    `json:"request_type"` // "llm", "tts", "stt"
-	Provider        string    `json:"provider"`
-	Model           string    `json:"model"`
-	RequestedModel  string    `json:"requested_model"`
-	Sensitive       bool      `json:"sensitive"`
-	Precision       string    `json:"precision"`
-	Usecase         string    `json:"usecase"`
-	Cached          bool      `json:"cached"`
-	InputTokens     int       `json:"input_tokens"`
-	OutputTokens    int       `json:"output_tokens"`
-	LatencyMs       int64     `json:"latency_ms"`
-	CostUSD         float64   `json:"cost_usd"`
-	Success         bool      `json:"success"`
-	Error           string    `json:"error,omitempty"`
-	CacheKey        string    `json:"cache_key"`
-	HasImages       bool      `json:"has_images"`
-	RequestBody     []byte    `json:"-"` // Stored in DB for persistence
-	ResponseBody    []byte    `json:"-"` // Stored in DB for persistence
+	ID             int64     `json:"id"`
+	Timestamp      time.Time `json:"timestamp"`
+	RequestType    string    `json:"request_type"` // "llm", "tts", "stt"
+	Provider       string    `json:"provider"`
+	Model          string    `json:"model"`
+	RequestedModel string    `json:"requested_model"`
+	Sensitive      bool      `json:"sensitive"`
+	Precision      string    `json:"precision"`
+	Usecase        string    `json:"usecase"`
+	Cached         bool      `json:"cached"`
+	InputTokens    int       `json:"input_tokens"`
+	OutputTokens   int       `json:"output_tokens"`
+	LatencyMs      int64     `json:"latency_ms"`
+	CostUSD        float64   `json:"cost_usd"`
+	Success        bool      `json:"success"`
+	Error          string    `json:"error,omitempty"`
+	CacheKey       string    `json:"cache_key"`
+	HasImages      bool      `json:"has_images"`
+	RequestBody    []byte    `json:"-"` // Stored in DB for persistence
+	ResponseBody   []byte    `json:"-"` // Stored in DB for persistence
 	// TTS/STT specific fields
-	Voice           string    `json:"voice,omitempty"`      // TTS voice used
-	AudioDurationMs int64     `json:"audio_duration_ms,omitempty"` // STT audio duration
-	InputChars      int       `json:"input_chars,omitempty"` // TTS input character count
+	Voice           string `json:"voice,omitempty"`             // TTS voice used
+	AudioDurationMs int64  `json:"audio_duration_ms,omitempty"` // STT audio duration
+	InputChars      int    `json:"input_chars,omitempty"`       // TTS input character count
 	// Replay tracking
-	IsReplay        bool      `json:"is_replay,omitempty"`  // True if this is a replay of another request
+	IsReplay bool `json:"is_replay,omitempty"` // True if this is a replay of another request
 }
 
 func getEnv(key, fallback string) string {
@@ -1158,10 +1160,10 @@ func callAnthropic(req *ChatCompletionRequest, model string) (*ChatCompletionRes
 	}
 
 	return &ChatCompletionResponse{
-		ID:      anthropicResp.ID,
-		Object:  "chat.completion",
-		Created: time.Now().Unix(),
-		Model:   anthropicResp.Model,
+		ID:       anthropicResp.ID,
+		Object:   "chat.completion",
+		Created:  time.Now().Unix(),
+		Model:    anthropicResp.Model,
 		Provider: "anthropic",
 		Choices: []Choice{{
 			Index:        0,
@@ -1287,10 +1289,10 @@ func callOllama(req *ChatCompletionRequest, model string) (*ChatCompletionRespon
 	}
 
 	return &ChatCompletionResponse{
-		ID:      fmt.Sprintf("ollama-%d", time.Now().UnixNano()),
-		Object:  "chat.completion",
-		Created: time.Now().Unix(),
-		Model:   ollamaResp.Model,
+		ID:       fmt.Sprintf("ollama-%d", time.Now().UnixNano()),
+		Object:   "chat.completion",
+		Created:  time.Now().Unix(),
+		Model:    ollamaResp.Model,
 		Provider: "ollama",
 		Choices: []Choice{{
 			Index:        0,
@@ -2547,8 +2549,8 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		var avgLatency float64
 		rows.Scan(&provider, &count, &cost, &avgLatency)
 		byProvider[provider] = map[string]interface{}{
-			"count":      count,
-			"cost_usd":   cost,
+			"count":          count,
+			"cost_usd":       cost,
 			"avg_latency_ms": avgLatency,
 		}
 	}
@@ -2775,10 +2777,10 @@ func handleRoutes(w http.ResponseWriter, r *http.Request) {
 	for sensitive, precisions := range routingTable {
 		for precision, config := range precisions {
 			entry := map[string]interface{}{
-				"type":       "text",
-				"sensitive":  sensitive == "true",
-				"precision":  precision,
-				"available":  config != nil,
+				"type":      "text",
+				"sensitive": sensitive == "true",
+				"precision": precision,
+				"available": config != nil,
 			}
 			// Store base config
 			if config != nil {
@@ -2803,10 +2805,10 @@ func handleRoutes(w http.ResponseWriter, r *http.Request) {
 	for sensitive, precisions := range visionRoutingTable {
 		for precision, config := range precisions {
 			entry := map[string]interface{}{
-				"type":       "vision",
-				"sensitive":  sensitive == "true",
-				"precision":  precision,
-				"available":  config != nil,
+				"type":      "vision",
+				"sensitive": sensitive == "true",
+				"precision": precision,
+				"available": config != nil,
 			}
 			// Store base config
 			if config != nil {
@@ -2883,7 +2885,7 @@ func handleRouteOverride(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		var req struct {
 			Usecase   string `json:"usecase"`
-			Type      string `json:"type"`      // text, vision
+			Type      string `json:"type"` // text, vision
 			Sensitive bool   `json:"sensitive"`
 			Precision string `json:"precision"`
 			Provider  string `json:"provider"`
@@ -3075,7 +3077,7 @@ func handleSTTHistory(w http.ResponseWriter, r *http.Request) {
 			"latency_ms":   latencyMs,
 			"success":      success,
 			"sensitive":    sensitive,
-			"file_size":    inputChars, // input_chars stores file size for STT
+			"file_size":    inputChars,   // input_chars stores file size for STT
 			"output_chars": outputTokens, // output_tokens stores transcription length
 		}
 		if errStr.Valid {
@@ -4769,6 +4771,7 @@ const testPlaygroundHTML = `<!DOCTYPE html>
     </div>
 
     <script>
+        const PLAYGROUND_USECASE = 'test_playground';
         let selectedImageBase64 = null;
 
         // Helper to escape HTML
@@ -4801,6 +4804,16 @@ const testPlaygroundHTML = `<!DOCTYPE html>
             } else {
                 // No thinking tags, just display normally
                 resultContent.textContent = content;
+            }
+        }
+
+        // Safely parse JSON but preserve raw text for error display
+        async function parseJsonSafe(resp) {
+            const raw = await resp.text();
+            try {
+                return { data: JSON.parse(raw), raw };
+            } catch (e) {
+                return { data: null, raw };
             }
         }
 
@@ -4860,6 +4873,7 @@ const testPlaygroundHTML = `<!DOCTYPE html>
                 messages: [{role: 'user', content: prompt}],
                 sensitive: sensitive,
                 precision: precision,
+                usecase: PLAYGROUND_USECASE,
                 no_cache: true
             };
 
@@ -4872,9 +4886,9 @@ const testPlaygroundHTML = `<!DOCTYPE html>
                 });
 
                 const latency = Date.now() - startTime;
-                const data = await resp.json();
+                const {data, raw} = await parseJsonSafe(resp);
 
-                if (resp.ok) {
+                if (resp.ok && data) {
                     const provider = resp.headers.get('X-LLM-Proxy-Provider') || data.provider || 'unknown';
                     const model = resp.headers.get('X-LLM-Proxy-Model') || data.model || 'unknown';
                     const cost = resp.headers.get('X-LLM-Proxy-Cost-USD') || '0';
@@ -4889,9 +4903,12 @@ const testPlaygroundHTML = `<!DOCTYPE html>
                         (data.usage ? '<div class="result-meta"><span>Tokens:</span> <strong>' + data.usage.total_tokens + '</strong></div>' : '');
 
                     renderResponseWithThinking(data.choices[0].message.content, resultContent);
+                } else if (resp.ok) {
+                    resultHeader.innerHTML = '<div class="result-meta error">Invalid response</div>';
+                    resultContent.textContent = raw || 'Empty response from server';
                 } else {
                     resultHeader.innerHTML = '<div class="result-meta error">Error: ' + resp.status + '</div>';
-                    resultContent.textContent = JSON.stringify(data, null, 2);
+                    resultContent.textContent = data ? JSON.stringify(data, null, 2) : (raw || 'Unknown error');
                 }
             } catch (err) {
                 resultHeader.innerHTML = '<div class="result-meta error">Request failed</div>';
@@ -4934,6 +4951,7 @@ const testPlaygroundHTML = `<!DOCTYPE html>
                 }],
                 sensitive: sensitive,
                 precision: precision,
+                usecase: PLAYGROUND_USECASE,
                 no_cache: true
             };
 
@@ -4946,9 +4964,9 @@ const testPlaygroundHTML = `<!DOCTYPE html>
                 });
 
                 const latency = Date.now() - startTime;
-                const data = await resp.json();
+                const {data, raw} = await parseJsonSafe(resp);
 
-                if (resp.ok) {
+                if (resp.ok && data) {
                     const provider = resp.headers.get('X-LLM-Proxy-Provider') || data.provider || 'unknown';
                     const model = resp.headers.get('X-LLM-Proxy-Model') || data.model || 'unknown';
                     const cost = resp.headers.get('X-LLM-Proxy-Cost-USD') || '0';
@@ -4963,9 +4981,12 @@ const testPlaygroundHTML = `<!DOCTYPE html>
                         (data.usage ? '<div class="result-meta"><span>Tokens:</span> <strong>' + data.usage.total_tokens + '</strong></div>' : '');
 
                     renderResponseWithThinking(data.choices[0].message.content, resultContent);
+                } else if (resp.ok) {
+                    resultHeader.innerHTML = '<div class="result-meta error">Invalid response</div>';
+                    resultContent.textContent = raw || 'Empty response from server';
                 } else {
                     resultHeader.innerHTML = '<div class="result-meta error">Error: ' + resp.status + '</div>';
-                    resultContent.textContent = JSON.stringify(data, null, 2);
+                    resultContent.textContent = data ? JSON.stringify(data, null, 2) : (raw || 'Unknown error');
                 }
             } catch (err) {
                 resultHeader.innerHTML = '<div class="result-meta error">Request failed</div>';
