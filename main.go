@@ -2123,6 +2123,9 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 	`
 	var args []interface{}
 
+	// Build WHERE conditions
+	var conditions []string
+
 	// Filter by request_type if specified (can be comma-separated like "llm,tts")
 	if typeFilter := r.URL.Query().Get("type"); typeFilter != "" {
 		types := strings.Split(typeFilter, ",")
@@ -2131,7 +2134,17 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 			placeholders[i] = "?"
 			args = append(args, strings.TrimSpace(t))
 		}
-		query += " WHERE request_type IN (" + strings.Join(placeholders, ",") + ")"
+		conditions = append(conditions, "request_type IN ("+strings.Join(placeholders, ",")+")")
+	}
+
+	// Filter by usecase if specified
+	if usecaseFilter := r.URL.Query().Get("usecase"); usecaseFilter != "" {
+		conditions = append(conditions, "usecase = ?")
+		args = append(args, usecaseFilter)
+	}
+
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
 
 	query += " ORDER BY id DESC LIMIT ?"
@@ -2205,6 +2218,33 @@ func handlePendingRequests(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+// Usecases history API - returns list of all distinct usecases from requests history
+func handleUsecasesHistory(w http.ResponseWriter, r *http.Request) {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	rows, err := db.Query(`
+		SELECT DISTINCT usecase FROM requests
+		WHERE usecase IS NOT NULL AND usecase != ''
+		ORDER BY usecase
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var usecases []string
+	for rows.Next() {
+		var usecase string
+		rows.Scan(&usecase)
+		usecases = append(usecases, usecase)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(usecases)
 }
 
 // Request detail API - returns full request/response data for a specific request
@@ -3508,11 +3548,15 @@ const dashboardHTML = `<!DOCTYPE html>
 
             <div class="section">
                 <h2 class="section-title">Recent Requests <span style="font-size:12px;color:#888;font-weight:normal">(click row for details)</span></h2>
-                <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">
+                <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center;">
                     <button class="type-filter active" data-type="" onclick="filterByType('')">All</button>
                     <button class="type-filter" data-type="llm" onclick="filterByType('llm')">LLM</button>
                     <button class="type-filter" data-type="tts" onclick="filterByType('tts')">TTS</button>
                     <button class="type-filter" data-type="stt" onclick="filterByType('stt')">STT</button>
+                    <span style="margin-left: 16px; color: #888;">Usecase:</span>
+                    <select id="usecase-filter" onchange="filterByUsecase(this.value)" style="padding: 6px 12px; border-radius: 6px; border: 1px solid #374151; background: #1a1a2e; color: #888; cursor: pointer; font-size: 13px;">
+                        <option value="">All</option>
+                    </select>
                 </div>
                 <table id="recent-table">
                     <thead><tr><th>Time</th><th>Type</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Usecase</th><th>Info</th><th>Latency</th><th>Cost</th><th>Status</th></tr></thead>
@@ -3640,6 +3684,9 @@ const dashboardHTML = `<!DOCTYPE html>
             if (currentTypeFilter) {
                 url += '&type=' + encodeURIComponent(currentTypeFilter);
             }
+            if (currentUsecaseFilter) {
+                url += '&usecase=' + encodeURIComponent(currentUsecaseFilter);
+            }
             const resp = await fetch(url);
             const requests = await resp.json();
 
@@ -3694,6 +3741,34 @@ const dashboardHTML = `<!DOCTYPE html>
                 btn.classList.toggle('active', btn.dataset.type === type);
             });
             loadRecentRequests();
+        }
+
+        let currentUsecaseFilter = '';
+
+        function filterByUsecase(usecase) {
+            currentUsecaseFilter = usecase;
+            loadRecentRequests();
+        }
+
+        async function loadUsecaseFilter() {
+            const resp = await fetch('/api/usecases/history');
+            const usecases = await resp.json();
+            const select = document.getElementById('usecase-filter');
+            const currentValue = select.value;
+
+            // Keep the first option (All)
+            select.innerHTML = '<option value="">All</option>';
+            for (const usecase of usecases || []) {
+                const opt = document.createElement('option');
+                opt.value = usecase;
+                opt.textContent = usecase;
+                select.appendChild(opt);
+            }
+
+            // Restore selection if it still exists
+            if (currentValue && usecases && usecases.includes(currentValue)) {
+                select.value = currentValue;
+            }
         }
 
         let availableModels = {};
@@ -4231,7 +4306,7 @@ const dashboardHTML = `<!DOCTYPE html>
             btn.classList.add('spinning');
             // Load data based on current tab
             if (currentTab === 'llm') {
-                await Promise.all([loadStats(), loadPending()]);
+                await Promise.all([loadStats(), loadPending(), loadUsecaseFilter()]);
             } else if (currentTab === 'tts') {
                 await loadTTSData();
             } else if (currentTab === 'stt') {
@@ -4264,6 +4339,7 @@ const dashboardHTML = `<!DOCTYPE html>
         if (currentTab === 'llm') {
             loadStats();
             loadPending();
+            loadUsecaseFilter();
         }
         setInterval(refresh, 30000);
         // More frequent updates for pending requests (only on LLM tab)
@@ -5297,6 +5373,7 @@ func main() {
 	http.HandleFunc("/api/routes", handleRoutes)
 	http.HandleFunc("/api/routes/override", handleRouteOverride)
 	http.HandleFunc("/api/usecases", handleUsecases)
+	http.HandleFunc("/api/usecases/history", handleUsecasesHistory)
 	http.HandleFunc("/api/models", handleAvailableModels)
 	http.HandleFunc("/api/history", handleRequestHistory)
 	http.HandleFunc("/api/request", handleRequestDetail)
