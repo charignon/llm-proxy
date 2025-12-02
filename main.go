@@ -4520,6 +4520,27 @@ const testPlaygroundHTML = `<!DOCTYPE html>
             overflow-y: auto;
         }
 
+        .thinking-box {
+            background: #1e1b4b;
+            border-left: 3px solid #8b5cf6;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .thinking-box h4 {
+            color: #a78bfa;
+            margin: 0 0 12px 0;
+            font-size: 14px;
+        }
+        .thinking-content {
+            white-space: pre-wrap;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 13px;
+            color: #c4b5fd;
+        }
+
         .loading { opacity: 0.6; pointer-events: none; }
         .spinner {
             display: inline-block;
@@ -4750,6 +4771,39 @@ const testPlaygroundHTML = `<!DOCTYPE html>
     <script>
         let selectedImageBase64 = null;
 
+        // Helper to escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Parse <think> tags from response and render properly
+        function renderResponseWithThinking(content, resultContent) {
+            const thinkMatch = content.match(/^<think>([\s\S]*?)<\/think>([\s\S]*)$/);
+            if (thinkMatch) {
+                const thinkingContent = thinkMatch[1].trim();
+                const actualResponse = thinkMatch[2].trim();
+
+                // Clear existing content
+                resultContent.innerHTML = '';
+
+                // Add thinking box
+                const thinkingBox = document.createElement('div');
+                thinkingBox.className = 'thinking-box';
+                thinkingBox.innerHTML = '<h4>💭 Thinking</h4><div class="thinking-content">' + escapeHtml(thinkingContent) + '</div>';
+                resultContent.appendChild(thinkingBox);
+
+                // Add actual response
+                const responseDiv = document.createElement('div');
+                responseDiv.textContent = actualResponse;
+                resultContent.appendChild(responseDiv);
+            } else {
+                // No thinking tags, just display normally
+                resultContent.textContent = content;
+            }
+        }
+
         function switchTab(tab) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
@@ -4834,7 +4888,7 @@ const testPlaygroundHTML = `<!DOCTYPE html>
                         '<div class="result-meta"><span>Cost:</span> <strong>$' + parseFloat(cost).toFixed(6) + '</strong></div>' +
                         (data.usage ? '<div class="result-meta"><span>Tokens:</span> <strong>' + data.usage.total_tokens + '</strong></div>' : '');
 
-                    resultContent.textContent = data.choices[0].message.content;
+                    renderResponseWithThinking(data.choices[0].message.content, resultContent);
                 } else {
                     resultHeader.innerHTML = '<div class="result-meta error">Error: ' + resp.status + '</div>';
                     resultContent.textContent = JSON.stringify(data, null, 2);
@@ -4908,7 +4962,7 @@ const testPlaygroundHTML = `<!DOCTYPE html>
                         '<div class="result-meta"><span>Cost:</span> <strong>$' + parseFloat(cost).toFixed(6) + '</strong></div>' +
                         (data.usage ? '<div class="result-meta"><span>Tokens:</span> <strong>' + data.usage.total_tokens + '</strong></div>' : '');
 
-                    resultContent.textContent = data.choices[0].message.content;
+                    renderResponseWithThinking(data.choices[0].message.content, resultContent);
                 } else {
                     resultHeader.innerHTML = '<div class="result-meta error">Error: ' + resp.status + '</div>';
                     resultContent.textContent = JSON.stringify(data, null, 2);
