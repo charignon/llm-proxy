@@ -2602,6 +2602,34 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	stats["by_usecase"] = byUsecase
 
+	// By usecase + sensitivity + precision
+	rows, _ = db.Query(`
+		SELECT COALESCE(usecase, ''), sensitive, COALESCE(precision, ''), COUNT(*), AVG(latency_ms)
+		FROM requests
+		WHERE usecase IS NOT NULL AND usecase != ''
+		GROUP BY usecase, sensitive, precision
+		ORDER BY COUNT(*) DESC
+	`)
+	defer rows.Close()
+
+	byUsecaseDetail := []map[string]interface{}{}
+	for rows.Next() {
+		var usecase string
+		var sensitive bool
+		var precision string
+		var count int
+		var avgLatency float64
+		rows.Scan(&usecase, &sensitive, &precision, &count, &avgLatency)
+		byUsecaseDetail = append(byUsecaseDetail, map[string]interface{}{
+			"usecase":        usecase,
+			"sensitive":      sensitive,
+			"precision":      precision,
+			"count":          count,
+			"avg_latency_ms": avgLatency,
+		})
+	}
+	stats["by_usecase_detail"] = byUsecaseDetail
+
 	// Recent requests
 	rows, _ = db.Query(`
 		SELECT id, timestamp, provider, model, cached, latency_ms, cost_usd, success, error,
