@@ -4247,6 +4247,14 @@ const dashboardHTML = `<!DOCTYPE html>
 
         // Initial load
         handleHash(); // Check for hash on page load
+
+        // Check for ?request= param to open a specific request detail
+        const urlParams = new URLSearchParams(window.location.search);
+        const requestId = urlParams.get('request');
+        if (requestId) {
+            showRequestDetail(parseInt(requestId));
+        }
+
         if (currentTab === 'llm') {
             loadStats();
             loadPending();
@@ -4261,6 +4269,18 @@ const dashboardHTML = `<!DOCTYPE html>
 func handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(dashboardHTML))
+}
+
+// handleRequestPage handles /request/{id} URLs and redirects to /?request={id}
+func handleRequestPage(w http.ResponseWriter, r *http.Request) {
+	// Extract ID from path like /request/123
+	path := strings.TrimPrefix(r.URL.Path, "/request/")
+	if path == "" || path == r.URL.Path {
+		http.Error(w, "Request ID required", http.StatusBadRequest)
+		return
+	}
+	// Redirect to dashboard with request param
+	http.Redirect(w, r, "/?request="+path, http.StatusFound)
 }
 
 // Test playground HTML
@@ -5260,6 +5280,7 @@ func main() {
 
 	// Routes
 	http.HandleFunc("/", handleDashboard)
+	http.HandleFunc("/request/", handleRequestPage)
 	http.HandleFunc("/health", handleHealth)
 	http.HandleFunc("/metrics", handleMetrics)
 	http.HandleFunc("/v1/chat/completions", handleChatCompletions)
