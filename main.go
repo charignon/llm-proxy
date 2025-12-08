@@ -50,6 +50,9 @@ var modelPricing = map[string][2]float64{
 	"claude-3-opus-20240229":     {15.00, 75.00},
 	"claude-sonnet-4-20250514":   {3.00, 15.00},
 	"claude-opus-4-20250514":     {15.00, 75.00},
+	// Claude 4.5 models
+	"claude-opus-4-5-20251101":   {15.00, 75.00},
+	"claude-sonnet-4-5-20250514": {3.00, 15.00},
 	// Ollama (free)
 	"qwen3-vl:30b":  {0, 0},
 	"llama3:latest": {0, 0},
@@ -2996,6 +2999,8 @@ func handleUsecases(w http.ResponseWriter, r *http.Request) {
 func handleAvailableModels(w http.ResponseWriter, r *http.Request) {
 	models := map[string][]string{
 		"anthropic": {
+			"claude-opus-4-5-20251101",
+			"claude-sonnet-4-5-20250514",
 			"claude-sonnet-4-20250514",
 			"claude-opus-4-20250514",
 		},
@@ -4230,7 +4235,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
         // Available models for replay
         const replayModelOptions = [
-            { group: 'Anthropic', models: ['claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'] },
+            { group: 'Anthropic', models: ['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250514', 'claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'] },
             { group: 'OpenAI', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o1', 'o1-mini'] },
             { group: 'Ollama (Local)', models: ['llama3.3:70b', 'llama3:latest', 'gemma3:latest', 'qwen3-vl:30b'] }
         ];
