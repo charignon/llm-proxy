@@ -1744,18 +1744,19 @@ func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 		HasImages      bool           `json:"has_images"`
 		RequestBody    sql.NullString `json:"-"`
 		ResponseBody   sql.NullString `json:"-"`
+		ClientIP       sql.NullString `json:"-"`
 	}
 
 	err := db.QueryRow(`
 		SELECT id, timestamp, provider, model, requested_model, sensitive, precision, usecase,
 		       cached, input_tokens, output_tokens, latency_ms, cost_usd, success, error, cache_key, has_images,
-		       request_body, response_body
+		       request_body, response_body, client_ip
 		FROM requests WHERE id = ?
 	`, id).Scan(&entry.ID, &entry.Timestamp, &entry.Provider, &entry.Model,
 		&entry.RequestedModel, &entry.Sensitive, &entry.Precision, &entry.Usecase, &entry.Cached,
 		&entry.InputTokens, &entry.OutputTokens, &entry.LatencyMs, &entry.CostUSD,
 		&entry.Success, &entry.Error, &entry.CacheKey, &entry.HasImages,
-		&entry.RequestBody, &entry.ResponseBody)
+		&entry.RequestBody, &entry.ResponseBody, &entry.ClientIP)
 	dbMutex.Unlock()
 
 	if err == sql.ErrNoRows {
@@ -1794,6 +1795,9 @@ func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	if entry.Error.Valid && entry.Error.String != "" {
 		response["error"] = entry.Error.String
+	}
+	if entry.ClientIP.Valid {
+		response["client_ip"] = entry.ClientIP.String
 	}
 
 	// Try to get cached request/response content (cache first, then DB fallback)
@@ -5240,6 +5244,7 @@ const dashboardHTML = `<!DOCTYPE html>
             html += '<div class="detail-item"><div class="detail-label">Usecase</div><div class="detail-value"><span class="badge usecase">' + (data.usecase || '-') + '</span></div></div>';
             html += '<div class="detail-item"><div class="detail-label">Has Images</div><div class="detail-value">' + (data.has_images ? '<span class="badge images">Yes</span>' : 'No') + '</div></div>';
             html += '<div class="detail-item"><div class="detail-label">Cached</div><div class="detail-value">' + (data.cached ? '<span class="badge cached">Yes</span>' : 'No') + '</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Client IP</div><div class="detail-value"><span class="client-ip">' + (data.client_ip || 'unknown') + '</span></div></div>';
             html += '</div></div>';
 
             html += '<div class="modal-section"><h3>Performance</h3><div class="detail-grid">';
