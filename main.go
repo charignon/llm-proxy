@@ -95,10 +95,10 @@ var visionRoutingTable = map[string]map[string]*RouteConfig{
 		"medium":    {Provider: "ollama", Model: "qwen3-vl:30b"},
 		"low":       {Provider: "ollama", Model: "qwen3-vl:30b"},
 	},
-	// sensitive: true (local only - no high-quality vision locally)
+	// sensitive: true (local only)
 	"true": {
-		"very_high": nil, // Not available - requires cloud
-		"high":      nil, // Not available - no local model matches gpt-4o vision quality
+		"very_high": {Provider: "ollama", Model: "qwen3-vl:30b"}, // Best local vision model
+		"high":      {Provider: "ollama", Model: "qwen3-vl:30b"},
 		"medium":    {Provider: "ollama", Model: "qwen3-vl:30b"},
 		"low":       {Provider: "ollama", Model: "qwen3-vl:30b"},
 	},
