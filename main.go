@@ -37,6 +37,7 @@ var (
 // Model pricing per 1M tokens (input, output)
 var modelPricing = map[string][2]float64{
 	// OpenAI
+	"gpt-5.1":       {5.00, 20.00},  // GPT-5.1
 	"gpt-4o":        {2.50, 10.00},
 	"gpt-4o-mini":   {0.15, 0.60},
 	"gpt-4-turbo":   {10.00, 30.00},
@@ -346,6 +347,36 @@ type OllamaToolCall struct {
 		Name      string                 `json:"name"`
 		Arguments map[string]interface{} `json:"arguments"`
 	} `json:"function"`
+}
+
+// OllamaTagsResponse is the response from Ollama /api/tags
+type OllamaTagsResponse struct {
+	Models []struct {
+		Name string `json:"name"`
+	} `json:"models"`
+}
+
+// getOllamaModels fetches the list of available models from Ollama
+func getOllamaModels() []string {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("http://" + ollamaHost + "/api/tags")
+	if err != nil {
+		log.Printf("Failed to fetch Ollama models: %v", err)
+		return []string{"llama3:latest", "gemma3:latest"} // fallback
+	}
+	defer resp.Body.Close()
+
+	var tagsResp OllamaTagsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tagsResp); err != nil {
+		log.Printf("Failed to decode Ollama models: %v", err)
+		return []string{"llama3:latest", "gemma3:latest"} // fallback
+	}
+
+	models := make([]string, 0, len(tagsResp.Models))
+	for _, m := range tagsResp.Models {
+		models = append(models, m.Name)
+	}
+	return models
 }
 
 // Whisper API types (OpenAI-compatible)
@@ -1969,6 +2000,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 func handleModels(w http.ResponseWriter, r *http.Request) {
 	models := []map[string]interface{}{}
+	seen := make(map[string]bool)
 
 	// Add routing models
 	models = append(models, map[string]interface{}{
@@ -1976,14 +2008,30 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 		"object":   "model",
 		"owned_by": "llm-proxy",
 	})
+	seen["auto"] = true
 
-	// Add known models
+	// Add known models from pricing
 	for model := range modelPricing {
-		models = append(models, map[string]interface{}{
-			"id":       model,
-			"object":   "model",
-			"owned_by": "llm-proxy",
-		})
+		if !seen[model] {
+			models = append(models, map[string]interface{}{
+				"id":       model,
+				"object":   "model",
+				"owned_by": "llm-proxy",
+			})
+			seen[model] = true
+		}
+	}
+
+	// Add all Ollama models dynamically
+	for _, model := range getOllamaModels() {
+		if !seen[model] {
+			models = append(models, map[string]interface{}{
+				"id":       model,
+				"object":   "model",
+				"owned_by": "llm-proxy",
+			})
+			seen[model] = true
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -2250,6 +2298,79 @@ func handleUsecasesHistory(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(usecases)
+}
+
+// handleUsecaseDistribution returns the distribution of sensitivity/precision combinations for a usecase
+func handleUsecaseDistribution(w http.ResponseWriter, r *http.Request) {
+	usecase := r.URL.Query().Get("usecase")
+
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	type Distribution struct {
+		Sensitive string `json:"sensitive"`
+		Precision string `json:"precision"`
+		RouteType string `json:"route_type"`
+		Model     string `json:"model"`
+		Count     int    `json:"count"`
+	}
+
+	var rows *sql.Rows
+	var err error
+
+	// Get distribution for the last 30 days, grouped by model to show overrides
+	if usecase == "" {
+		// Base config: show all requests (gives overall distribution)
+		rows, err = db.Query(`
+			SELECT
+				CASE WHEN sensitive = 1 THEN 'true' ELSE 'false' END as sensitive,
+				COALESCE(precision, 'medium') as precision,
+				CASE WHEN has_images = 1 THEN 'vision' ELSE 'text' END as route_type,
+				model,
+				COUNT(*) as count
+			FROM requests
+			WHERE timestamp >= datetime('now', '-30 days')
+			GROUP BY sensitive, precision, route_type, model
+			ORDER BY count DESC
+		`)
+	} else {
+		// Specific usecase: show distribution for that usecase
+		rows, err = db.Query(`
+			SELECT
+				CASE WHEN sensitive = 1 THEN 'true' ELSE 'false' END as sensitive,
+				COALESCE(precision, 'medium') as precision,
+				CASE WHEN has_images = 1 THEN 'vision' ELSE 'text' END as route_type,
+				model,
+				COUNT(*) as count
+			FROM requests
+			WHERE usecase = ?
+				AND timestamp >= datetime('now', '-30 days')
+			GROUP BY sensitive, precision, route_type, model
+			ORDER BY count DESC
+		`, usecase)
+	}
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var distribution []Distribution
+	totalCount := 0
+	for rows.Next() {
+		var d Distribution
+		rows.Scan(&d.Sensitive, &d.Precision, &d.RouteType, &d.Model, &d.Count)
+		distribution = append(distribution, d)
+		totalCount += d.Count
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"usecase":      usecase,
+		"distribution": distribution,
+		"total_30d":    totalCount,
+	})
 }
 
 // Request detail API - returns full request/response data for a specific request
@@ -3231,17 +3352,15 @@ func handleAvailableModels(w http.ResponseWriter, r *http.Request) {
 			"claude-opus-4-20250514",
 		},
 		"openai": {
+			"gpt-5.1",
 			"gpt-4o",
 			"gpt-4o-mini",
 			"gpt-4-turbo",
 			"gpt-3.5-turbo",
+			"o1",
+			"o1-mini",
 		},
-		"ollama": {
-			"llama3:latest",
-			"llama3.3:70b",
-			"gemma3:latest",
-			"qwen3-vl:30b",
-		},
+		"ollama": getOllamaModels(), // Fetch dynamically from Ollama
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -3514,6 +3633,13 @@ const analyticsHTML = `<!DOCTYPE html>
         }
         .matrix-cell.cell-not-sensitive:hover {
             background: rgba(34, 197, 94, 0.2);
+        }
+        .matrix-cell.clickable-cell {
+            cursor: pointer;
+        }
+        .matrix-cell.clickable-cell:hover {
+            transform: scale(1.05);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
         }
         .matrix-count {
             font-size: 16px;
@@ -4026,8 +4152,9 @@ const analyticsHTML = `<!DOCTYPE html>
                     activePrecisions.forEach(prec => {
                         const item = data.find(d => d.model === model && d.sensitive === sensitive && d.precision === prec);
                         const bgClass = sensitive ? 'cell-sensitive' : 'cell-not-sensitive';
-                        if (item) {
-                            html += '<td class="matrix-cell ' + bgClass + '" title="' + model + ' (' + (sensitive ? 'sensitive' : 'not sensitive') + ', ' + prec + ')">';
+                        if (item && item.count > 0) {
+                            const clickHandler = 'showMatrixRequests(\'' + encodeURIComponent(model) + '\',' + sensitive + ',\'' + prec + '\')';
+                            html += '<td class="matrix-cell ' + bgClass + ' clickable-cell" onclick="' + clickHandler + '" title="Click to view ' + item.count + ' requests">';
                             html += '<div class="matrix-count">' + item.count.toLocaleString() + '</div>';
                             if (item.cost > 0) {
                                 html += '<div class="matrix-cost">$' + item.cost.toFixed(4) + '</div>';
@@ -4202,6 +4329,17 @@ const analyticsHTML = `<!DOCTYPE html>
                     }
                 }
             });
+        }
+
+        function showMatrixRequests(model, sensitive, precision) {
+            // Redirect to the main dashboard with filters applied
+            const params = new URLSearchParams();
+            params.set('model', decodeURIComponent(model));
+            params.set('sensitive', sensitive ? '1' : '0');
+            if (precision && precision !== 'unspecified') {
+                params.set('precision', precision);
+            }
+            window.location.href = '/?matrix=' + params.toString();
         }
 
         async function showModelDetail(model) {
@@ -4812,6 +4950,12 @@ const dashboardHTML = `<!DOCTYPE html>
                 <h2 class="section-title">STT Routing</h2>
                 <div class="routes-grid" id="stt-routes-grid"></div>
             </div>
+            <div class="section" id="usecase-distribution-section" style="display: none;">
+                <h2 class="section-title">Traffic Distribution (Last 30d)</h2>
+                <p style="color: #888; font-size: 13px; margin-bottom: 12px;">Shows which sensitivity/precision combinations are used - helps identify what routes matter most</p>
+                <div id="usecase-distribution-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px;"></div>
+                <div id="usecase-distribution-empty" style="display: none; color: #888; font-style: italic; padding: 20px; text-align: center;">No requests in the last 30 days for this usecase</div>
+            </div>
             <div class="section">
                 <h2 class="section-title">Model Traffic Volume</h2>
                 <p style="color: #888; font-size: 13px; margin-bottom: 12px;">Request counts by model - helps identify high-traffic routes to optimize</p>
@@ -4834,6 +4978,15 @@ const dashboardHTML = `<!DOCTYPE html>
                     <div style="margin-bottom: 16px;">
                         <div style="color: #888; font-size: 13px; margin-bottom: 4px;">Base Model</div>
                         <div id="route-base-model" style="color: #6366f1; font-size: 14px;"></div>
+                    </div>
+                    <div id="route-traffic-info" style="margin-bottom: 16px; padding: 10px; background: #1e1e2e; border-radius: 8px; display: none;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 18px;">⚠️</span>
+                            <div>
+                                <div style="color: #f59e0b; font-size: 13px; font-weight: 600;">Route Traffic (24h)</div>
+                                <div id="route-traffic-count" style="color: #fff; font-size: 14px;"></div>
+                            </div>
+                        </div>
                     </div>
                     <div style="margin-bottom: 16px;">
                         <label style="color: #888; font-size: 13px; display: block; margin-bottom: 4px;">Provider</label>
@@ -5109,9 +5262,70 @@ const dashboardHTML = `<!DOCTYPE html>
                     textGrid.appendChild(card);
                 }
             }
+
+            // Load distribution when a usecase is selected
+            loadUsecaseDistribution(usecase);
         }
 
-        function openRouteEditModal(route, usecase) {
+        async function loadUsecaseDistribution(usecase) {
+            const section = document.getElementById('usecase-distribution-section');
+            const grid = document.getElementById('usecase-distribution-grid');
+            const emptyMsg = document.getElementById('usecase-distribution-empty');
+
+            section.style.display = 'block';
+            grid.innerHTML = '';
+            emptyMsg.style.display = 'none';
+
+            const url = usecase
+                ? '/api/usecases/distribution?usecase=' + encodeURIComponent(usecase)
+                : '/api/usecases/distribution';
+            const resp = await fetch(url);
+            const data = await resp.json();
+
+            if (!data.distribution || data.distribution.length === 0) {
+                emptyMsg.style.display = 'block';
+                return;
+            }
+
+            const typeColors = {
+                'text': '#6366f1',
+                'vision': '#06b6d4'
+            };
+
+            const maxCount = Math.max(...data.distribution.map(d => d.count));
+
+            for (const d of data.distribution) {
+                const card = document.createElement('div');
+                card.style.cssText = 'background: #1e1e2e; border: 1px solid #374151; border-radius: 8px; padding: 12px;';
+
+                const barWidth = (d.count / maxCount) * 100;
+                const color = typeColors[d.route_type] || '#6366f1';
+                const pct = ((d.count / data.total_30d) * 100).toFixed(1);
+
+                card.innerHTML =
+                    '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">' +
+                        '<span style="font-size: 12px; color: ' + color + '; font-weight: 600;">' + d.route_type.toUpperCase() + '</span>' +
+                        '<span style="font-size: 14px; font-weight: 600; color: #fff;">' + d.count + ' <span style="font-size: 11px; color: #888;">(' + pct + '%)</span></span>' +
+                    '</div>' +
+                    '<div style="font-size: 11px; color: #888; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="' + d.model + '">' + d.model + '</div>' +
+                    '<div style="font-size: 12px; color: #a5b4fc; margin-bottom: 8px;">' +
+                        'sensitive: ' + d.sensitive + ', precision: ' + d.precision +
+                    '</div>' +
+                    '<div style="background: #374151; border-radius: 4px; height: 6px; overflow: hidden;">' +
+                        '<div style="width: ' + barWidth + '%; height: 100%; background: ' + color + '; border-radius: 4px;"></div>' +
+                    '</div>';
+
+                grid.appendChild(card);
+            }
+
+            // Add total summary
+            const summary = document.createElement('div');
+            summary.style.cssText = 'background: #1e1e2e; border: 1px solid #22c55e; border-radius: 8px; padding: 12px; display: flex; align-items: center; justify-content: center;';
+            summary.innerHTML = '<span style="font-size: 14px; color: #22c55e; font-weight: 600;">Total: ' + data.total_30d + ' requests (30d)</span>';
+            grid.appendChild(summary);
+        }
+
+        async function openRouteEditModal(route, usecase) {
             currentEditRoute = { ...route, usecase };
 
             document.getElementById('route-edit-info').textContent =
@@ -5126,6 +5340,29 @@ const dashboardHTML = `<!DOCTYPE html>
 
             // Show reset button if overridden
             document.getElementById('reset-route-btn').style.display = route.overridden ? 'block' : 'none';
+
+            // Load traffic count for this specific route
+            const trafficInfo = document.getElementById('route-traffic-info');
+            const trafficCount = document.getElementById('route-traffic-count');
+            trafficInfo.style.display = 'none';
+
+            if (usecase) {
+                const resp = await fetch('/api/usecases/distribution?usecase=' + encodeURIComponent(usecase));
+                const data = await resp.json();
+
+                // Find the count for this specific route
+                const match = (data.distribution || []).find(d =>
+                    d.sensitive === route.sensitive &&
+                    d.precision === route.precision &&
+                    d.route_type === route.type
+                );
+
+                if (match && match.count > 0) {
+                    trafficInfo.style.display = 'block';
+                    const riskLevel = match.count > 100 ? 'high-traffic route!' : match.count > 10 ? 'moderate traffic' : 'low traffic';
+                    trafficCount.innerHTML = '<strong>' + match.count + '</strong> requests - ' + riskLevel;
+                }
+            }
 
             document.getElementById('route-modal-overlay').style.display = 'flex';
         }
@@ -5458,12 +5695,24 @@ const dashboardHTML = `<!DOCTYPE html>
         let currentRequestId = null;
         let currentRequestData = null;
 
-        // Available models for replay
-        const replayModelOptions = [
-            { group: 'Anthropic', models: ['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250514', 'claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'] },
-            { group: 'OpenAI', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o1', 'o1-mini'] },
-            { group: 'Ollama (Local)', models: ['llama3.3:70b', 'llama3:latest', 'gemma3:latest', 'qwen3-vl:30b'] }
+        // Available models for replay - fetched dynamically
+        let replayModelOptions = [
+            { group: 'Anthropic', models: ['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250514', 'claude-sonnet-4-20250514', 'claude-opus-4-20250514'] },
+            { group: 'OpenAI', models: ['gpt-5.1', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o1', 'o1-mini'] },
+            { group: 'Ollama (Local)', models: [] } // Will be populated dynamically
         ];
+
+        // Fetch Ollama models dynamically
+        fetch('/api/models').then(r => r.json()).then(data => {
+            if (data.ollama) {
+                replayModelOptions[2].models = data.ollama;
+                // Refresh the selector if it's already populated
+                const select = document.getElementById('replay-model-select');
+                if (select && select.options.length > 1) {
+                    populateReplayModelSelect();
+                }
+            }
+        }).catch(e => console.error('Failed to load Ollama models:', e));
 
         async function replayWithModel() {
             const select = document.getElementById('replay-model-select');
@@ -6708,6 +6957,7 @@ func main() {
 	http.HandleFunc("/api/routes/override", handleRouteOverride)
 	http.HandleFunc("/api/usecases", handleUsecases)
 	http.HandleFunc("/api/usecases/history", handleUsecasesHistory)
+	http.HandleFunc("/api/usecases/distribution", handleUsecaseDistribution)
 	http.HandleFunc("/api/models", handleAvailableModels)
 	http.HandleFunc("/api/history", handleRequestHistory)
 	http.HandleFunc("/api/request", handleRequestDetail)
