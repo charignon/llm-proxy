@@ -374,6 +374,89 @@ func getOllamaModels() []string {
 	return models
 }
 
+// OllamaModelDetails is the detailed response from Ollama /api/show
+type OllamaModelDetails struct {
+	Details struct {
+		Family   string   `json:"family"`
+		Families []string `json:"families"`
+	} `json:"details"`
+}
+
+// getOllamaVisionModels returns only vision-capable Ollama models
+func getOllamaVisionModels() []string {
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	// First get all models
+	resp, err := client.Get("http://" + ollamaHost + "/api/tags")
+	if err != nil {
+		log.Printf("Failed to fetch Ollama models: %v", err)
+		return []string{}
+	}
+	defer resp.Body.Close()
+
+	var tagsResp OllamaTagsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tagsResp); err != nil {
+		log.Printf("Failed to decode Ollama models: %v", err)
+		return []string{}
+	}
+
+	visionModels := []string{}
+	for _, m := range tagsResp.Models {
+		// Check if model supports vision by querying details
+		detailResp, err := client.Post("http://"+ollamaHost+"/api/show",
+			"application/json",
+			strings.NewReader(`{"name":"`+m.Name+`"}`))
+		if err != nil {
+			continue
+		}
+
+		var details OllamaModelDetails
+		json.NewDecoder(detailResp.Body).Decode(&details)
+		detailResp.Body.Close()
+
+		// Check for vision capability indicators
+		isVision := false
+		// Check family names for vision indicators
+		family := strings.ToLower(details.Details.Family)
+		if strings.Contains(family, "vl") || strings.Contains(family, "llava") ||
+			strings.Contains(family, "vision") || strings.Contains(family, "clip") {
+			isVision = true
+		}
+		// Check families array for clip (vision encoder)
+		for _, f := range details.Details.Families {
+			if strings.ToLower(f) == "clip" || strings.Contains(strings.ToLower(f), "vl") {
+				isVision = true
+				break
+			}
+		}
+		// Also check model name for common vision model patterns
+		nameLower := strings.ToLower(m.Name)
+		if strings.Contains(nameLower, "llava") || strings.Contains(nameLower, "-vl") ||
+			strings.Contains(nameLower, "vision") {
+			isVision = true
+		}
+
+		if isVision {
+			visionModels = append(visionModels, m.Name)
+		}
+	}
+	return visionModels
+}
+
+// handleVisionModels returns only vision-capable models (local only)
+func handleVisionModels(w http.ResponseWriter, r *http.Request) {
+	visionModels := getOllamaVisionModels()
+
+	// Prefix with ollama/ for clarity
+	models := make([]string, len(visionModels))
+	for i, m := range visionModels {
+		models[i] = "ollama/" + m
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(models)
+}
+
 // Whisper API types (OpenAI-compatible)
 type WhisperTranscriptionResponse struct {
 	Text string `json:"text"`
@@ -7228,6 +7311,7 @@ func main() {
 	http.HandleFunc("/api/usecases/history", handleUsecasesHistory)
 	http.HandleFunc("/api/usecases/distribution", handleUsecaseDistribution)
 	http.HandleFunc("/api/models", handleAvailableModels)
+	http.HandleFunc("/api/models/vision", handleVisionModels)
 	http.HandleFunc("/api/history", handleRequestHistory)
 	http.HandleFunc("/api/request", handleRequestDetail)
 	http.HandleFunc("/api/replay", handleReplayRequest)
