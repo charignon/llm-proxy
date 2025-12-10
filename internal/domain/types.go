@@ -149,6 +149,7 @@ type RequestLog struct {
 	AudioDurationMs int64     `json:"audio_duration_ms,omitempty"`
 	InputChars      int       `json:"input_chars,omitempty"`
 	IsReplay        bool      `json:"is_replay,omitempty"`
+	ClientIP        string    `json:"client_ip,omitempty"`
 }
 
 // TTSRequest represents a text-to-speech request.

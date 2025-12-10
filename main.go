@@ -381,6 +381,7 @@ func initDB() error {
 	db.Exec(`ALTER TABLE requests ADD COLUMN input_chars INTEGER DEFAULT 0`)
 	db.Exec(`ALTER TABLE requests ADD COLUMN usecase TEXT`)
 	db.Exec(`ALTER TABLE requests ADD COLUMN is_replay INTEGER DEFAULT 0`)
+	db.Exec(`ALTER TABLE requests ADD COLUMN client_ip TEXT`)
 
 	// Create route_overrides table for usecase-specific routing
 	_, err = db.Exec(`
@@ -1323,26 +1324,34 @@ type RequestHistoryEntry struct {
 	InputChars      int    `json:"input_chars,omitempty"`
 }
 
+type RequestHistoryResponse struct {
+	Requests []RequestHistoryEntry `json:"requests"`
+	Total    int                   `json:"total"`
+	Page     int                   `json:"page"`
+	PageSize int                   `json:"page_size"`
+}
+
 func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
-	limit := 50
+	pageSize := 50
 	if l := r.URL.Query().Get("limit"); l != "" {
-		fmt.Sscanf(l, "%d", &limit)
+		fmt.Sscanf(l, "%d", &pageSize)
 	}
 
-	// Build query with optional filtering
-	query := `
-		SELECT id, timestamp, request_type, provider, model, sensitive, precision, usecase, has_images,
-		       latency_ms, cost_usd, success, cache_key, input_tokens, output_tokens, is_replay,
-		       voice, audio_duration_ms, input_chars
-		FROM requests
-	`
-	var args []interface{}
+	page := 1
+	if p := r.URL.Query().Get("page"); p != "" {
+		fmt.Sscanf(p, "%d", &page)
+		if page < 1 {
+			page = 1
+		}
+	}
+	offset := (page - 1) * pageSize
 
-	// Build WHERE conditions
+	// Build WHERE conditions (shared between count and data queries)
 	var conditions []string
+	var filterArgs []interface{}
 
 	// Filter by request_type if specified (can be comma-separated like "llm,tts")
 	if typeFilter := r.URL.Query().Get("type"); typeFilter != "" {
@@ -1350,7 +1359,7 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 		placeholders := make([]string, len(types))
 		for i, t := range types {
 			placeholders[i] = "?"
-			args = append(args, strings.TrimSpace(t))
+			filterArgs = append(filterArgs, strings.TrimSpace(t))
 		}
 		conditions = append(conditions, "request_type IN ("+strings.Join(placeholders, ",")+")")
 	}
@@ -1358,37 +1367,53 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 	// Filter by usecase if specified
 	if usecaseFilter := r.URL.Query().Get("usecase"); usecaseFilter != "" {
 		conditions = append(conditions, "usecase = ?")
-		args = append(args, usecaseFilter)
+		filterArgs = append(filterArgs, usecaseFilter)
 	}
 
 	// Filter by model if specified
 	if modelFilter := r.URL.Query().Get("model"); modelFilter != "" {
 		conditions = append(conditions, "model = ?")
-		args = append(args, modelFilter)
+		filterArgs = append(filterArgs, modelFilter)
 	}
 
 	// Filter by sensitive if specified
 	if sensitiveFilter := r.URL.Query().Get("sensitive"); sensitiveFilter != "" {
 		conditions = append(conditions, "sensitive = ?")
 		if sensitiveFilter == "1" || sensitiveFilter == "true" {
-			args = append(args, 1)
+			filterArgs = append(filterArgs, 1)
 		} else {
-			args = append(args, 0)
+			filterArgs = append(filterArgs, 0)
 		}
 	}
 
 	// Filter by precision if specified
 	if precisionFilter := r.URL.Query().Get("precision"); precisionFilter != "" {
 		conditions = append(conditions, "precision = ?")
-		args = append(args, precisionFilter)
+		filterArgs = append(filterArgs, precisionFilter)
 	}
 
+	whereClause := ""
 	if len(conditions) > 0 {
-		query += " WHERE " + strings.Join(conditions, " AND ")
+		whereClause = " WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	query += " ORDER BY id DESC LIMIT ?"
-	args = append(args, limit)
+	// Get total count for pagination
+	countQuery := "SELECT COUNT(*) FROM requests" + whereClause
+	var total int
+	if err := db.QueryRow(countQuery, filterArgs...).Scan(&total); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Build data query
+	query := `
+		SELECT id, timestamp, request_type, provider, model, sensitive, precision, usecase, has_images,
+		       latency_ms, cost_usd, success, cache_key, input_tokens, output_tokens, is_replay,
+		       voice, audio_duration_ms, input_chars
+		FROM requests
+	` + whereClause + " ORDER BY id DESC LIMIT ? OFFSET ?"
+
+	args := append(filterArgs, pageSize, offset)
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -1434,7 +1459,12 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(history)
+	json.NewEncoder(w).Encode(RequestHistoryResponse{
+		Requests: history,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+	})
 }
 
 // Pending requests API - returns currently in-flight requests
@@ -1529,7 +1559,7 @@ func handleUsecaseDistribution(w http.ResponseWriter, r *http.Request) {
 				model,
 				COUNT(*) as count
 			FROM requests
-			WHERE timestamp >= datetime('now', '`+interval+`')
+			WHERE timestamp >= datetime('now', 'localtime', '`+interval+`')
 			GROUP BY sensitive, precision, route_type, model
 			ORDER BY count DESC
 		`)
@@ -1544,7 +1574,7 @@ func handleUsecaseDistribution(w http.ResponseWriter, r *http.Request) {
 				COUNT(*) as count
 			FROM requests
 			WHERE usecase = ?
-				AND timestamp >= datetime('now', '`+interval+`')
+				AND timestamp >= datetime('now', 'localtime', '`+interval+`')
 			GROUP BY sensitive, precision, route_type, model
 			ORDER BY count DESC
 		`, usecase)
@@ -1601,7 +1631,7 @@ func handleModelStats(w http.ResponseWriter, r *http.Request) {
 		rows, err = db.Query(`
 			SELECT model, COUNT(*), COALESCE(SUM(cost_usd), 0), AVG(latency_ms)
 			FROM requests
-			WHERE timestamp >= datetime('now', '` + interval + `')
+			WHERE timestamp >= datetime('now', 'localtime', '` + interval + `')
 			GROUP BY model ORDER BY COUNT(*) DESC LIMIT 20
 		`)
 	} else {
@@ -1610,7 +1640,7 @@ func handleModelStats(w http.ResponseWriter, r *http.Request) {
 			SELECT model, COUNT(*), COALESCE(SUM(cost_usd), 0), AVG(latency_ms)
 			FROM requests
 			WHERE usecase = ?
-				AND timestamp >= datetime('now', '` + interval + `')
+				AND timestamp >= datetime('now', 'localtime', '` + interval + `')
 			GROUP BY model ORDER BY COUNT(*) DESC LIMIT 20
 		`, usecase)
 	}
@@ -2311,7 +2341,7 @@ func handleAnalytics(w http.ResponseWriter, r *http.Request) {
 				COUNT(*),
 				COALESCE(SUM(cost_usd), 0)
 			FROM requests
-			WHERE timestamp >= datetime('now', '-1 hour')
+			WHERE timestamp >= datetime('now', 'localtime', '-1 hour')
 			GROUP BY time_block, model
 			ORDER BY time_block ASC, model
 		`
@@ -2324,7 +2354,7 @@ func handleAnalytics(w http.ResponseWriter, r *http.Request) {
 				COUNT(*),
 				COALESCE(SUM(cost_usd), 0)
 			FROM requests
-			WHERE timestamp >= datetime('now', '-1 day')
+			WHERE timestamp >= datetime('now', 'localtime', '-1 day')
 			GROUP BY time_block, model
 			ORDER BY time_block ASC, model
 		`
@@ -2337,7 +2367,7 @@ func handleAnalytics(w http.ResponseWriter, r *http.Request) {
 				COUNT(*),
 				COALESCE(SUM(cost_usd), 0)
 			FROM requests
-			WHERE timestamp >= DATE('now', '-30 days')
+			WHERE timestamp >= DATE('now', 'localtime', '-30 days')
 			GROUP BY time_block, model
 			ORDER BY time_block ASC, model
 		`
@@ -2350,7 +2380,7 @@ func handleAnalytics(w http.ResponseWriter, r *http.Request) {
 				COUNT(*),
 				COALESCE(SUM(cost_usd), 0)
 			FROM requests
-			WHERE timestamp >= DATE('now', '-7 days')
+			WHERE timestamp >= DATE('now', 'localtime', '-7 days')
 			GROUP BY time_block, model
 			ORDER BY time_block ASC, model
 		`
@@ -2379,7 +2409,7 @@ func handleAnalytics(w http.ResponseWriter, r *http.Request) {
 	rows, _ = db.Query(`
 		SELECT strftime('%H', timestamp) as hour, COUNT(*)
 		FROM requests
-		WHERE timestamp >= DATE('now', '-7 days')
+		WHERE timestamp >= DATE('now', 'localtime', '-7 days')
 		GROUP BY hour
 		ORDER BY hour
 	`)
@@ -2404,7 +2434,7 @@ func handleAnalytics(w http.ResponseWriter, r *http.Request) {
 		rows, _ = db.Query(`
 			SELECT DATE(timestamp) as day, COUNT(*), COALESCE(SUM(cost_usd), 0), AVG(latency_ms)
 			FROM requests
-			WHERE model = ? AND timestamp >= DATE('now', '-30 days')
+			WHERE model = ? AND timestamp >= DATE('now', 'localtime', '-30 days')
 			GROUP BY DATE(timestamp)
 			ORDER BY day ASC
 		`, modelParam)
@@ -4374,6 +4404,11 @@ const dashboardHTML = `<!DOCTYPE html>
                     <thead><tr><th>Time</th><th>Type</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Usecase</th><th>Info</th><th>Latency</th><th>Cost</th><th>Status</th></tr></thead>
                     <tbody></tbody>
                 </table>
+                <div id="pagination-controls" style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px; padding: 12px 16px; background: #1e1e2e; border-radius: 8px;">
+                    <button id="prev-page" onclick="goToPrevPage()" style="padding: 8px 16px; border-radius: 6px; border: 1px solid #374151; background: #2d2d44; color: #a5b4fc; cursor: pointer; font-size: 13px;" disabled>&larr; Previous</button>
+                    <span id="page-info" style="color: #888; font-size: 13px;">Page 1 of 1 (0 total)</span>
+                    <button id="next-page" onclick="goToNextPage()" style="padding: 8px 16px; border-radius: 6px; border: 1px solid #374151; background: #2d2d44; color: #a5b4fc; cursor: pointer; font-size: 13px;" disabled>Next &rarr;</button>
+                </div>
             </div>
         </div>
 
@@ -4513,6 +4548,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
         function clearFilters() {
             currentFilters = {};
+            currentPage = 1; // Reset to first page on filter clear
             window.history.replaceState({}, '', '/');
             updateFilterDisplay();
             loadStats();
@@ -4571,7 +4607,7 @@ const dashboardHTML = `<!DOCTYPE html>
         }
 
         async function loadRecentRequests() {
-            let url = '/api/history?limit=50';
+            let url = '/api/history?limit=50&page=' + currentPage;
             if (currentTypeFilter) {
                 url += '&type=' + encodeURIComponent(currentTypeFilter);
             }
@@ -4589,11 +4625,17 @@ const dashboardHTML = `<!DOCTYPE html>
                 url += '&precision=' + encodeURIComponent(currentFilters.precision);
             }
             const resp = await fetch(url);
-            const requests = await resp.json();
+            const data = await resp.json();
+
+            // Update pagination state
+            totalRequests = data.total;
+            totalPages = Math.max(1, Math.ceil(data.total / data.page_size));
+            currentPage = data.page;
+            updatePaginationControls();
 
             const recentBody = document.querySelector('#recent-table tbody');
             recentBody.innerHTML = '';
-            for (const req of requests || []) {
+            for (const req of data.requests || []) {
                 const tr = document.createElement('tr');
                 tr.className = 'clickable';
                 tr.onclick = () => showRequestDetail(req.id);
@@ -4637,6 +4679,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
         function filterByType(type) {
             currentTypeFilter = type;
+            currentPage = 1; // Reset to first page on filter change
             // Update button states
             document.querySelectorAll('.type-filter').forEach(btn => {
                 btn.classList.toggle('active', btn.dataset.type === type);
@@ -4645,10 +4688,42 @@ const dashboardHTML = `<!DOCTYPE html>
         }
 
         let currentUsecaseFilter = '';
+        let currentPage = 1;
+        let totalPages = 1;
+        let totalRequests = 0;
 
         function filterByUsecase(usecase) {
             currentUsecaseFilter = usecase;
+            currentPage = 1; // Reset to first page on filter change
             loadRecentRequests();
+        }
+
+        function goToPrevPage() {
+            if (currentPage > 1) {
+                currentPage--;
+                loadRecentRequests();
+            }
+        }
+
+        function goToNextPage() {
+            if (currentPage < totalPages) {
+                currentPage++;
+                loadRecentRequests();
+            }
+        }
+
+        function updatePaginationControls() {
+            const prevBtn = document.getElementById('prev-page');
+            const nextBtn = document.getElementById('next-page');
+            const pageInfo = document.getElementById('page-info');
+
+            prevBtn.disabled = currentPage <= 1;
+            nextBtn.disabled = currentPage >= totalPages;
+
+            prevBtn.style.opacity = prevBtn.disabled ? '0.5' : '1';
+            nextBtn.style.opacity = nextBtn.disabled ? '0.5' : '1';
+
+            pageInfo.textContent = 'Page ' + currentPage + ' of ' + totalPages + ' (' + totalRequests + ' total)';
         }
 
         async function loadUsecaseFilter() {
