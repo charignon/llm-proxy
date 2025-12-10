@@ -1,3 +1,5 @@
+// Package main runs the llm-proxy service: an HTTP router/proxy for LLM, STT,
+// and TTS requests with routing, caching, history, analytics, and UI.
 package main
 
 import (
@@ -1018,6 +1020,39 @@ func resolveRoute(req *ChatCompletionRequest) (*RouteConfig, error) {
 	return route, nil
 }
 
+// ChatProvider is a port for sending chat completion requests to a backing LLM.
+type ChatProvider interface {
+	Chat(req *ChatCompletionRequest, model string) (*ChatCompletionResponse, error)
+}
+
+type openAIProvider struct{}
+
+func (p openAIProvider) Chat(req *ChatCompletionRequest, model string) (*ChatCompletionResponse, error) {
+	return callOpenAI(req, model)
+}
+
+type anthropicProvider struct{}
+
+func (p anthropicProvider) Chat(req *ChatCompletionRequest, model string) (*ChatCompletionResponse, error) {
+	return callAnthropic(req, model)
+}
+
+type ollamaProvider struct{}
+
+func (p ollamaProvider) Chat(req *ChatCompletionRequest, model string) (*ChatCompletionResponse, error) {
+	return callOllama(req, model)
+}
+
+var chatProviders map[string]ChatProvider
+
+func initChatProviders() {
+	chatProviders = map[string]ChatProvider{
+		"openai":    openAIProvider{},
+		"anthropic": anthropicProvider{},
+		"ollama":    ollamaProvider{},
+	}
+}
+
 func callOpenAI(req *ChatCompletionRequest, model string) (*ChatCompletionResponse, error) {
 	if openaiKey == "" {
 		return nil, fmt.Errorf("OPENAI_API_KEY not set")
@@ -2027,15 +2062,11 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Make the actual call
 	var resp *ChatCompletionResponse
-	switch route.Provider {
-	case "openai":
-		resp, err = callOpenAI(&req, route.Model)
-	case "anthropic":
-		resp, err = callAnthropic(&req, route.Model)
-	case "ollama":
-		resp, err = callOllama(&req, route.Model)
-	default:
+	provider, ok := chatProviders[route.Provider]
+	if !ok {
 		err = fmt.Errorf("unknown provider: %s", route.Provider)
+	} else {
+		resp, err = provider.Chat(&req, route.Model)
 	}
 
 	logEntry.LatencyMs = time.Since(startTime).Milliseconds()
@@ -7486,6 +7517,9 @@ func main() {
 	// SECURITY ASSERTION: Verify sensitive routes only use Ollama (local)
 	// This runs on startup to catch configuration errors before serving requests
 	validateRoutingTableSecurity()
+
+	// Initialize provider adapters (ports -> implementations)
+	initChatProviders()
 
 	// Routes
 	http.HandleFunc("/", handleDashboard)
