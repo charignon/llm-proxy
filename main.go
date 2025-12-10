@@ -1403,6 +1403,17 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 		filterArgs = append(filterArgs, usecaseFilter)
 	}
 
+	// Exclude usecases if specified (comma-separated list)
+	if excludeUsecases := r.URL.Query().Get("exclude_usecases"); excludeUsecases != "" {
+		usecases := strings.Split(excludeUsecases, ",")
+		placeholders := make([]string, len(usecases))
+		for i, u := range usecases {
+			placeholders[i] = "?"
+			filterArgs = append(filterArgs, strings.TrimSpace(u))
+		}
+		conditions = append(conditions, "usecase NOT IN ("+strings.Join(placeholders, ",")+")")
+	}
+
 	// Filter by model if specified
 	if modelFilter := r.URL.Query().Get("model"); modelFilter != "" {
 		conditions = append(conditions, "model = ?")
@@ -3198,6 +3209,7 @@ const analyticsHTML = `<!DOCTYPE html>
             <button class="nav-tab" onclick="window.location.href='/test'">Playground</button>
             <button class="nav-tab" onclick="window.location.href='/#routing'">Routing</button>
             <button class="nav-tab active">Analytics</button>
+            <button class="nav-tab" onclick="window.location.href='/stats'">Stats</button>
             <button class="nav-tab" onclick="window.location.href='/#system'">System</button>
         </div>
 
@@ -3232,6 +3244,14 @@ const analyticsHTML = `<!DOCTYPE html>
                     <div class="chart-title">Request Volume by Hour (Last 7 Days)</div>
                     <div class="chart-container">
                         <canvas id="hourlyChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Request Volume Last 24h Stacked Bar -->
+                <div class="chart-card full-width">
+                    <div class="chart-title">Request Volume Last 24h by Model</div>
+                    <div class="chart-container tall">
+                        <canvas id="volume24hChart"></canvas>
                     </div>
                 </div>
 
@@ -3296,10 +3316,12 @@ const analyticsHTML = `<!DOCTYPE html>
     <script>
         let analyticsData = null;
         let statsData = null;
+        let volume24hData = null;
         let costPieChart = null;
         let costByModelChart = null;
         let costByProviderChart = null;
         let hourlyChart = null;
+        let volume24hChart = null;
         let volumeChart = null;
         let modelDetailChart = null;
         let selectedVolumeModel = 'all';
@@ -3312,12 +3334,14 @@ const analyticsHTML = `<!DOCTYPE html>
         ];
 
         async function loadAnalytics() {
-            const [analyticsResponse, statsResponse] = await Promise.all([
+            const [analyticsResponse, statsResponse, volume24hResponse] = await Promise.all([
                 fetch('/api/analytics?range=' + selectedTimeRange),
-                fetch('/api/stats')
+                fetch('/api/stats'),
+                fetch('/api/analytics?range=1d')
             ]);
             analyticsData = await analyticsResponse.json();
             statsData = await statsResponse.json();
+            volume24hData = await volume24hResponse.json();
             renderCharts();
         }
 
@@ -3340,6 +3364,7 @@ const analyticsHTML = `<!DOCTYPE html>
             renderCostByProviderChart();
             renderCostPieChart();
             renderHourlyChart();
+            renderVolume24hChart();
             initMatrixSliders();
             renderMatrix();
             renderVolumeChart();
@@ -3581,6 +3606,111 @@ const analyticsHTML = `<!DOCTYPE html>
                         y: {
                             grid: { color: '#2d2d44' },
                             ticks: { color: '#888' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderVolume24hChart() {
+            const ctx = document.getElementById('volume24hChart').getContext('2d');
+            const data = volume24hData.volume_over_time || [];
+
+            if (volume24hChart) volume24hChart.destroy();
+
+            // Get unique time blocks (hours)
+            const timeBlocks = [...new Set(data.map(d => d.day))].sort();
+
+            // Get all models and calculate totals for sorting
+            const modelTotals = {};
+            data.forEach(d => {
+                modelTotals[d.model] = (modelTotals[d.model] || 0) + d.count;
+            });
+
+            // Get models sorted by total count (descending)
+            const models = Object.entries(modelTotals)
+                .sort((a, b) => b[1] - a[1])
+                .map(([model]) => model);
+
+            // Create stacked datasets for each model
+            const datasets = models.map((model, i) => {
+                const modelData = timeBlocks.map(time => {
+                    const item = data.find(d => d.day === time && d.model === model);
+                    return item ? item.count : 0;
+                });
+                return {
+                    label: model,
+                    data: modelData,
+                    backgroundColor: colors[i % colors.length],
+                    borderColor: colors[i % colors.length],
+                    borderWidth: 0,
+                    borderRadius: 2
+                };
+            });
+
+            volume24hChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: timeBlocks.map(t => {
+                        // Format: "2024-12-10 14:00" -> "14:00"
+                        const parts = t.split(' ');
+                        return parts[1] || parts[0];
+                    }),
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                            labels: {
+                                color: '#888',
+                                usePointStyle: true,
+                                pointStyle: 'rect',
+                                padding: 15,
+                                font: { size: 11 }
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1,
+                            padding: 12,
+                            mode: 'index',
+                            intersect: false,
+                            filter: function(tooltipItem) {
+                                return tooltipItem.raw > 0;
+                            },
+                            callbacks: {
+                                title: function(context) {
+                                    const idx = context[0].dataIndex;
+                                    return timeBlocks[idx];
+                                },
+                                label: function(context) {
+                                    if (context.raw === 0) return null;
+                                    return context.dataset.label + ': ' + context.raw + ' requests';
+                                },
+                                footer: function(tooltipItems) {
+                                    const total = tooltipItems.reduce((sum, item) => sum + item.raw, 0);
+                                    return 'Total: ' + total + ' requests';
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            stacked: true,
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#888', maxRotation: 45, minRotation: 0 }
+                        },
+                        y: {
+                            stacked: true,
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#888' },
+                            beginAtZero: true
                         }
                     }
                 }
@@ -3999,6 +4129,488 @@ func handleAnalyticsPage(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(analyticsHTML))
 }
 
+// Stats page HTML - Performance metrics visualization
+const statsHTML = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Proxy - Performance Stats</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0f0f1a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { color: #6366f1; margin-bottom: 8px; font-size: 28px; }
+        .subtitle { color: #888; margin-bottom: 16px; }
+
+        .nav-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 24px;
+            background: #1a1a2e;
+            padding: 4px;
+            border-radius: 12px;
+        }
+        .nav-tab {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            color: #888;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .nav-tab:hover { color: #e0e0e0; background: #252540; }
+        .nav-tab.active { background: #6366f1; color: #fff; }
+
+        .stats-overview {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .stat-card {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #2d2d44;
+        }
+        .stat-card-label {
+            color: #888;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        .stat-card-value {
+            font-size: 28px;
+            font-weight: 600;
+            color: #e0e0e0;
+        }
+        .stat-card-value.cost { color: #22c55e; }
+        .stat-card-value.latency { color: #f59e0b; }
+        .stat-card-value.count { color: #6366f1; }
+        .stat-card-sub {
+            font-size: 12px;
+            color: #666;
+            margin-top: 4px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            color: #a5b4fc;
+            margin: 32px 0 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #2d2d44;
+        }
+
+        .perf-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            margin-bottom: 24px;
+        }
+        .perf-card {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #2d2d44;
+        }
+        .perf-card-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #a5b4fc;
+            margin-bottom: 16px;
+        }
+        .perf-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid #252540;
+        }
+        .perf-row:last-child { border-bottom: none; }
+        .perf-label {
+            color: #888;
+            font-size: 13px;
+        }
+        .perf-value {
+            font-weight: 500;
+            font-size: 14px;
+        }
+        .perf-value.good { color: #22c55e; }
+        .perf-value.warn { color: #f59e0b; }
+        .perf-value.bad { color: #ef4444; }
+
+        .chart-section {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #2d2d44;
+            margin-bottom: 24px;
+        }
+        .chart-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #a5b4fc;
+            margin-bottom: 16px;
+        }
+        .chart-container {
+            height: 300px;
+            position: relative;
+        }
+
+        .model-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        .model-table th {
+            text-align: left;
+            padding: 12px;
+            background: #252540;
+            color: #a5b4fc;
+            font-weight: 500;
+            border-radius: 4px;
+        }
+        .model-table td {
+            padding: 12px;
+            border-bottom: 1px solid #252540;
+        }
+        .model-table tr:hover td {
+            background: #1f1f35;
+        }
+        .model-name {
+            font-weight: 500;
+            color: #e0e0e0;
+        }
+        .latency-bar {
+            height: 8px;
+            background: #252540;
+            border-radius: 4px;
+            overflow: hidden;
+            width: 100px;
+            display: inline-block;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        .latency-bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>LLM Proxy Performance</h1>
+        <p class="subtitle">Response times, latency metrics, and model performance</p>
+
+        <div class="nav-tabs">
+            <button class="nav-tab" onclick="window.location.href='/'">Requests</button>
+            <button class="nav-tab" onclick="window.location.href='/test'">Playground</button>
+            <button class="nav-tab" onclick="window.location.href='/#routing'">Routing</button>
+            <button class="nav-tab" onclick="window.location.href='/analytics'">Analytics</button>
+            <button class="nav-tab active">Stats</button>
+            <button class="nav-tab" onclick="window.location.href='/#system'">System</button>
+        </div>
+
+        <div class="stats-overview" id="statsOverview">
+            <!-- Stats cards will be populated here -->
+        </div>
+
+        <h2 class="section-title">Latency by Model</h2>
+        <div class="chart-section">
+            <div class="chart-container">
+                <canvas id="latencyChart"></canvas>
+            </div>
+        </div>
+
+        <div class="perf-grid">
+            <div class="perf-card">
+                <div class="perf-card-title">Performance by Provider</div>
+                <div id="providerPerf">
+                    <!-- Provider performance will be populated here -->
+                </div>
+            </div>
+            <div class="perf-card">
+                <div class="perf-card-title">Vision Request Timing</div>
+                <div id="visionPerf">
+                    <!-- Vision performance will be populated here -->
+                </div>
+            </div>
+        </div>
+
+        <h2 class="section-title">Model Performance Details</h2>
+        <div class="chart-section">
+            <table class="model-table">
+                <thead>
+                    <tr>
+                        <th>Model</th>
+                        <th>Requests</th>
+                        <th>Avg Latency</th>
+                        <th>Latency Distribution</th>
+                        <th>Cost</th>
+                    </tr>
+                </thead>
+                <tbody id="modelTableBody">
+                    <!-- Model rows will be populated here -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let statsData = null;
+        let timingData = null;
+        let latencyChart = null;
+
+        const colors = [
+            '#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#22c55e',
+            '#14b8a6', '#06b6d4', '#3b82f6', '#ef4444', '#84cc16'
+        ];
+
+        async function loadStats() {
+            const [statsResponse, timingResponse] = await Promise.all([
+                fetch('/api/stats'),
+                fetch('/api/timing')
+            ]);
+            statsData = await statsResponse.json();
+            timingData = await timingResponse.json();
+            renderStats();
+        }
+
+        function formatLatency(ms) {
+            if (ms >= 1000) {
+                return (ms / 1000).toFixed(1) + 's';
+            }
+            return Math.round(ms) + 'ms';
+        }
+
+        function formatCost(usd) {
+            if (usd >= 1) {
+                return '$' + usd.toFixed(2);
+            }
+            return '$' + usd.toFixed(4);
+        }
+
+        function getLatencyClass(ms) {
+            if (ms < 2000) return 'good';
+            if (ms < 5000) return 'warn';
+            return 'bad';
+        }
+
+        function getLatencyColor(ms, maxMs) {
+            const ratio = ms / maxMs;
+            if (ratio < 0.3) return '#22c55e';
+            if (ratio < 0.6) return '#f59e0b';
+            return '#ef4444';
+        }
+
+        function renderStats() {
+            renderOverview();
+            renderLatencyChart();
+            renderProviderPerf();
+            renderVisionPerf();
+            renderModelTable();
+        }
+
+        function renderOverview() {
+            const today = statsData.today || {};
+            const total = statsData.total_requests || 0;
+            const totalCost = statsData.total_cost_usd || 0;
+            const cacheRate = (statsData.cache_hit_rate || 0) * 100;
+
+            // Calculate avg latency across all models
+            const byModel = statsData.by_model || [];
+            let totalLatency = 0;
+            let latencyCount = 0;
+            byModel.forEach(m => {
+                if (m.avg_latency_ms > 0) {
+                    totalLatency += m.avg_latency_ms * m.count;
+                    latencyCount += m.count;
+                }
+            });
+            const avgLatency = latencyCount > 0 ? totalLatency / latencyCount : 0;
+
+            document.getElementById('statsOverview').innerHTML = ` + "`" + `
+                <div class="stat-card">
+                    <div class="stat-card-label">Total Requests</div>
+                    <div class="stat-card-value count">${total.toLocaleString()}</div>
+                    <div class="stat-card-sub">Today: ${today.requests?.toLocaleString() || 0}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-label">Total Cost</div>
+                    <div class="stat-card-value cost">${formatCost(totalCost)}</div>
+                    <div class="stat-card-sub">Today: ${formatCost(today.cost_usd || 0)}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-label">Cache Hit Rate</div>
+                    <div class="stat-card-value">${cacheRate.toFixed(1)}%</div>
+                    <div class="stat-card-sub">${(statsData.cached_requests || 0).toLocaleString()} cached</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-label">Avg Latency</div>
+                    <div class="stat-card-value latency">${formatLatency(avgLatency)}</div>
+                    <div class="stat-card-sub">Across all models</div>
+                </div>
+            ` + "`" + `;
+        }
+
+        function renderLatencyChart() {
+            const ctx = document.getElementById('latencyChart').getContext('2d');
+            const byModel = (statsData.by_model || [])
+                .filter(m => m.count >= 5 && m.avg_latency_ms > 0)
+                .sort((a, b) => b.avg_latency_ms - a.avg_latency_ms)
+                .slice(0, 15);
+
+            if (latencyChart) latencyChart.destroy();
+
+            latencyChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: byModel.map(m => m.model),
+                    datasets: [{
+                        label: 'Avg Latency (ms)',
+                        data: byModel.map(m => m.avg_latency_ms),
+                        backgroundColor: byModel.map((m, i) => colors[i % colors.length]),
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1,
+                            callbacks: {
+                                label: function(context) {
+                                    const item = byModel[context.dataIndex];
+                                    return [
+                                        'Latency: ' + formatLatency(item.avg_latency_ms),
+                                        'Requests: ' + item.count.toLocaleString()
+                                    ];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: '#2d2d44' },
+                            ticks: {
+                                color: '#888',
+                                callback: v => formatLatency(v)
+                            }
+                        },
+                        y: {
+                            grid: { display: false },
+                            ticks: { color: '#888', font: { size: 11 } }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderProviderPerf() {
+            const byProvider = statsData.by_provider || {};
+            const providers = Object.entries(byProvider)
+                .map(([name, data]) => ({ name, ...data }))
+                .filter(p => p.count > 0)
+                .sort((a, b) => b.count - a.count);
+
+            const html = providers.map(p => ` + "`" + `
+                <div class="perf-row">
+                    <span class="perf-label">${p.name.charAt(0).toUpperCase() + p.name.slice(1)}</span>
+                    <span class="perf-value ${getLatencyClass(p.avg_latency_ms)}">
+                        ${formatLatency(p.avg_latency_ms)}
+                        <span style="color: #666; font-size: 11px;">(${p.count.toLocaleString()} reqs)</span>
+                    </span>
+                </div>
+            ` + "`" + `).join('');
+
+            document.getElementById('providerPerf').innerHTML = html || '<div class="perf-row"><span class="perf-label">No data</span></div>';
+        }
+
+        function renderVisionPerf() {
+            const visionByPrecision = timingData.vision_by_precision || {};
+            const precisions = Object.entries(visionByPrecision)
+                .map(([name, data]) => ({ name, ...data }))
+                .sort((a, b) => {
+                    const order = ['low', 'medium', 'high', 'very_high'];
+                    return order.indexOf(a.name) - order.indexOf(b.name);
+                });
+
+            if (precisions.length === 0) {
+                document.getElementById('visionPerf').innerHTML = '<div class="perf-row"><span class="perf-label">No vision requests</span></div>';
+                return;
+            }
+
+            const html = precisions.map(p => ` + "`" + `
+                <div class="perf-row">
+                    <span class="perf-label">${p.name.replace('_', ' ')}</span>
+                    <span class="perf-value ${getLatencyClass(p.avg_ms)}">
+                        ${formatLatency(p.avg_ms)}
+                        <span style="color: #666; font-size: 11px;">(p75: ${formatLatency(p.p75_ms)})</span>
+                    </span>
+                </div>
+            ` + "`" + `).join('');
+
+            document.getElementById('visionPerf').innerHTML = html;
+        }
+
+        function renderModelTable() {
+            const byModel = (statsData.by_model || [])
+                .filter(m => m.count > 0)
+                .sort((a, b) => b.count - a.count);
+
+            const maxLatency = Math.max(...byModel.map(m => m.avg_latency_ms), 1);
+
+            const html = byModel.map(m => {
+                const latencyPercent = (m.avg_latency_ms / maxLatency) * 100;
+                const latencyColor = getLatencyColor(m.avg_latency_ms, maxLatency);
+                return ` + "`" + `
+                    <tr>
+                        <td class="model-name">${m.model}</td>
+                        <td>${m.count.toLocaleString()}</td>
+                        <td class="${getLatencyClass(m.avg_latency_ms)}">${formatLatency(m.avg_latency_ms)}</td>
+                        <td>
+                            <div class="latency-bar">
+                                <div class="latency-bar-fill" style="width: ${latencyPercent}%; background: ${latencyColor};"></div>
+                            </div>
+                        </td>
+                        <td>${formatCost(m.cost_usd)}</td>
+                    </tr>
+                ` + "`" + `;
+            }).join('');
+
+            document.getElementById('modelTableBody').innerHTML = html || '<tr><td colspan="5">No data</td></tr>';
+        }
+
+        loadStats();
+    </script>
+</body>
+</html>`
+
+func handleStatsPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(statsHTML))
+}
+
 // Dashboard HTML
 const dashboardHTML = `<!DOCTYPE html>
 <html>
@@ -4102,6 +4714,10 @@ const dashboardHTML = `<!DOCTYPE html>
         .badge.precision { background: #8b5cf6; color: #fff; }
         .badge.usecase { background: #f59e0b; color: #000; }
         .badge.images { background: #06b6d4; color: #000; }
+        .exclude-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: 12px; background: #374151; color: #9ca3af; font-size: 12px; cursor: pointer; border: 1px solid transparent; transition: all 0.15s; }
+        .exclude-chip:hover { background: #4b5563; }
+        .exclude-chip.excluded { background: #7f1d1d; color: #fca5a5; border-color: #ef4444; }
+        .exclude-chip .x { font-size: 14px; font-weight: bold; margin-left: 2px; }
         .badge.replay { background: #ec4899; color: #fff; }
         .badge.type-llm { background: #6366f1; color: #fff; }
         .badge.type-tts { background: #ec4899; color: #fff; }
@@ -4449,6 +5065,8 @@ const dashboardHTML = `<!DOCTYPE html>
                     <select id="usecase-filter" onchange="filterByUsecase(this.value)" style="padding: 6px 12px; border-radius: 6px; border: 1px solid #374151; background: #1a1a2e; color: #888; cursor: pointer; font-size: 13px;">
                         <option value="">All</option>
                     </select>
+                    <span style="margin-left: 16px; color: #888;">Exclude:</span>
+                    <div id="usecase-exclude-chips" style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;"></div>
                 </div>
                 <table id="recent-table">
                     <thead><tr><th>Time</th><th>Type</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Usecase</th><th>Client IP</th><th>Info</th><th>Latency</th><th>Cost</th><th>Status</th></tr></thead>
@@ -4732,6 +5350,9 @@ const dashboardHTML = `<!DOCTYPE html>
             if (currentUsecaseFilter) {
                 url += '&usecase=' + encodeURIComponent(currentUsecaseFilter);
             }
+            if (excludedUsecases.size > 0) {
+                url += '&exclude_usecases=' + encodeURIComponent(Array.from(excludedUsecases).join(','));
+            }
             // Add matrix filters
             if (currentFilters.model) {
                 url += '&model=' + encodeURIComponent(currentFilters.model);
@@ -4808,6 +5429,7 @@ const dashboardHTML = `<!DOCTYPE html>
         }
 
         let currentUsecaseFilter = '';
+        let excludedUsecases = new Set();
         let currentPage = 1;
         let totalPages = 1;
         let totalRequests = 0;
@@ -4816,6 +5438,30 @@ const dashboardHTML = `<!DOCTYPE html>
             currentUsecaseFilter = usecase;
             currentPage = 1; // Reset to first page on filter change
             loadRecentRequests();
+        }
+
+        function toggleExcludeUsecase(usecase) {
+            if (excludedUsecases.has(usecase)) {
+                excludedUsecases.delete(usecase);
+            } else {
+                excludedUsecases.add(usecase);
+            }
+            currentPage = 1;
+            updateExcludeChips();
+            loadRecentRequests();
+        }
+
+        function updateExcludeChips() {
+            const container = document.getElementById('usecase-exclude-chips');
+            const chips = container.querySelectorAll('.exclude-chip');
+            chips.forEach(chip => {
+                const usecase = chip.dataset.usecase;
+                if (excludedUsecases.has(usecase)) {
+                    chip.classList.add('excluded');
+                } else {
+                    chip.classList.remove('excluded');
+                }
+            });
         }
 
         function goToPrevPage() {
@@ -4864,6 +5510,18 @@ const dashboardHTML = `<!DOCTYPE html>
             // Restore selection if it still exists
             if (currentValue && usecases && usecases.includes(currentValue)) {
                 select.value = currentValue;
+            }
+
+            // Populate exclusion chips
+            const chipsContainer = document.getElementById('usecase-exclude-chips');
+            chipsContainer.innerHTML = '';
+            for (const usecase of usecases || []) {
+                const chip = document.createElement('span');
+                chip.className = 'exclude-chip' + (excludedUsecases.has(usecase) ? ' excluded' : '');
+                chip.dataset.usecase = usecase;
+                chip.onclick = () => toggleExcludeUsecase(usecase);
+                chip.innerHTML = usecase + '<span class="x">\u00d7</span>';
+                chipsContainer.appendChild(chip);
             }
         }
 
@@ -6991,6 +7649,7 @@ func main() {
 	http.HandleFunc("/api/analytics", handleAnalytics)
 	http.HandleFunc("/api/system-metrics", handleSystemMetrics)
 	http.HandleFunc("/analytics", handleAnalyticsPage)
+	http.HandleFunc("/stats", handleStatsPage)
 	http.HandleFunc("/test", handleTestPlayground)
 	http.HandleFunc("/v1/audio/transcriptions", handleWhisperTranscription)
 	http.HandleFunc("/v1/audio/transcriptions/stream", handleWhisperStream)
