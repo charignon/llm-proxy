@@ -2873,24 +2873,28 @@ func handleAnalytics(w http.ResponseWriter, r *http.Request) {
 	}
 	analytics["models"] = models
 
-	// Volume over time (last 30 days, grouped by day and model)
+	// Volume over time (last 7 days, grouped by 4-hour blocks and model for more granularity)
 	rows, _ = db.Query(`
-		SELECT DATE(timestamp) as day, model, COUNT(*), COALESCE(SUM(cost_usd), 0)
+		SELECT
+			DATE(timestamp) || ' ' || printf('%02d', (CAST(strftime('%H', timestamp) AS INTEGER) / 4) * 4) || ':00' as time_block,
+			model,
+			COUNT(*),
+			COALESCE(SUM(cost_usd), 0)
 		FROM requests
-		WHERE timestamp >= DATE('now', '-30 days')
-		GROUP BY DATE(timestamp), model
-		ORDER BY day ASC, model
+		WHERE timestamp >= DATE('now', '-7 days')
+		GROUP BY time_block, model
+		ORDER BY time_block ASC, model
 	`)
 	defer rows.Close()
 
 	volumeOverTime := []map[string]interface{}{}
 	for rows.Next() {
-		var day, model string
+		var timeBlock, model string
 		var count int
 		var cost float64
-		rows.Scan(&day, &model, &count, &cost)
+		rows.Scan(&timeBlock, &model, &count, &cost)
 		volumeOverTime = append(volumeOverTime, map[string]interface{}{
-			"day":   day,
+			"day":   timeBlock,
 			"model": model,
 			"count": count,
 			"cost":  cost,
@@ -3607,7 +3611,7 @@ const analyticsHTML = `<!DOCTYPE html>
 
                 <!-- Volume Over Time -->
                 <div class="chart-card full-width">
-                    <div class="chart-title">Request Volume Over Time (Last 30 Days)</div>
+                    <div class="chart-title">Request Volume Over Time (Last 7 Days, 4-Hour Blocks)</div>
                     <div class="model-selector" id="modelSelector">
                         <button class="model-btn active" data-model="all">All Models</button>
                     </div>
@@ -3828,11 +3832,18 @@ const analyticsHTML = `<!DOCTYPE html>
 
         function renderModelSelector() {
             const container = document.getElementById('modelSelector');
-            const models = analyticsData.models || [];
+            const volumeData = analyticsData.volume_over_time || [];
+
+            // Only show models with more than 1 request total
+            const modelCounts = {};
+            volumeData.forEach(d => {
+                modelCounts[d.model] = (modelCounts[d.model] || 0) + d.count;
+            });
+            const activeModels = Object.keys(modelCounts).filter(m => modelCounts[m] > 1).sort();
 
             let html = '<button class="model-btn active" data-model="all" onclick="selectVolumeModel(\'all\')">All Models</button>';
-            models.forEach(model => {
-                html += '<button class="model-btn" data-model="' + model + '" onclick="selectVolumeModel(\'' + model + '\')">' + model + '</button>';
+            activeModels.forEach(model => {
+                html += '<button class="model-btn" data-model="' + model + '" onclick="selectVolumeModel(\'' + model + '\')">' + model + ' <span style="color:#888;font-size:11px;">(' + modelCounts[model] + ')</span></button>';
             });
             container.innerHTML = html;
         }
@@ -3854,11 +3865,17 @@ const analyticsHTML = `<!DOCTYPE html>
             // Get unique dates
             const dates = [...new Set(data.map(d => d.day))].sort();
 
+            // Calculate model totals for filtering
+            const modelCounts = {};
+            data.forEach(d => {
+                modelCounts[d.model] = (modelCounts[d.model] || 0) + d.count;
+            });
+
             let datasets = [];
 
             if (selectedVolumeModel === 'all') {
-                // Group by model
-                const models = [...new Set(data.map(d => d.model))];
+                // Group by model, only include models with > 1 request
+                const models = [...new Set(data.map(d => d.model))].filter(m => modelCounts[m] > 1);
                 models.forEach((model, i) => {
                     const modelData = dates.map(date => {
                         const item = data.find(d => d.day === date && d.model === model);
@@ -3869,10 +3886,11 @@ const analyticsHTML = `<!DOCTYPE html>
                         data: modelData,
                         borderColor: colors[i % colors.length],
                         backgroundColor: colors[i % colors.length] + '20',
-                        fill: true,
-                        tension: 0.4,
-                        pointRadius: 2,
-                        pointHoverRadius: 5
+                        fill: false,
+                        tension: 0.3,
+                        pointRadius: 3,
+                        pointHoverRadius: 6,
+                        borderWidth: 2
                     });
                 });
             } else {
@@ -3887,9 +3905,10 @@ const analyticsHTML = `<!DOCTYPE html>
                     borderColor: '#6366f1',
                     backgroundColor: 'rgba(99, 102, 241, 0.2)',
                     fill: true,
-                    tension: 0.4,
-                    pointRadius: 3,
-                    pointHoverRadius: 6
+                    tension: 0.3,
+                    pointRadius: 4,
+                    pointHoverRadius: 7,
+                    borderWidth: 2
                 });
             }
 
@@ -3897,8 +3916,11 @@ const analyticsHTML = `<!DOCTYPE html>
                 type: 'line',
                 data: {
                     labels: dates.map(d => {
-                        const date = new Date(d);
-                        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                        // Format: "2024-12-09 08:00" -> "Dec 9 08:00"
+                        const parts = d.split(' ');
+                        const datePart = new Date(parts[0]);
+                        const timePart = parts[1] || '00:00';
+                        return datePart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + timePart;
                     }),
                     datasets: datasets
                 },
@@ -3930,7 +3952,13 @@ const analyticsHTML = `<!DOCTYPE html>
                     scales: {
                         x: {
                             grid: { color: '#2d2d44' },
-                            ticks: { color: '#888' }
+                            ticks: {
+                                color: '#888',
+                                maxRotation: 45,
+                                minRotation: 45,
+                                autoSkip: true,
+                                maxTicksLimit: 20
+                            }
                         },
                         y: {
                             grid: { color: '#2d2d44' },
