@@ -45,15 +45,10 @@ var modelPricing = map[string][2]float64{
 	"gpt-3.5-turbo": {0.50, 1.50},
 	"o1":            {15.00, 60.00},
 	"o1-mini":       {3.00, 12.00},
-	// Anthropic
-	"claude-3-5-sonnet-20241022": {3.00, 15.00},
-	"claude-3-5-haiku-20241022":  {0.80, 4.00},
-	"claude-3-opus-20240229":     {15.00, 75.00},
-	"claude-sonnet-4-20250514":   {3.00, 15.00},
-	"claude-opus-4-20250514":     {15.00, 75.00},
-	// Claude 4.5 models
+	// Anthropic - Claude 4.5 models only
 	"claude-opus-4-5-20251101":   {15.00, 75.00},
 	"claude-sonnet-4-5-20250514": {3.00, 15.00},
+	"claude-haiku-4-5-20251101":  {0.80, 4.00},
 	// Ollama (free)
 	"qwen3-vl:30b":  {0, 0},
 	"llama3:latest": {0, 0},
@@ -77,7 +72,7 @@ type RouteConfig struct {
 var routingTable = map[string]map[string]*RouteConfig{
 	// sensitive: false (text only)
 	"false": {
-		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
+		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-5-20250514"},
 		"high":      {Provider: "openai", Model: "gpt-4o"},
 		"medium":    {Provider: "openai", Model: "gpt-4o-mini"},
 		"low":       {Provider: "ollama", Model: "llama3:latest"},
@@ -95,7 +90,7 @@ var routingTable = map[string]map[string]*RouteConfig{
 var visionRoutingTable = map[string]map[string]*RouteConfig{
 	// sensitive: false (can use cloud)
 	"false": {
-		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-20250514"}, // Claude has great vision
+		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-5-20250514"}, // Claude has great vision
 		"high":      {Provider: "openai", Model: "gpt-4o"},
 		"medium":    {Provider: "ollama", Model: "qwen3-vl:30b"},
 		"low":       {Provider: "ollama", Model: "qwen3-vl:30b"},
@@ -729,6 +724,11 @@ func getCached(key string) ([]byte, bool) {
 
 	// Check TTL
 	if time.Since(entry.CreatedAt) > time.Duration(cacheTTLHours)*time.Hour {
+		return nil, false
+	}
+
+	// Don't return entries with nil/empty responses (e.g., from errors)
+	if entry.Response == nil || len(entry.Response) == 0 {
 		return nil, false
 	}
 
@@ -1962,9 +1962,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		logEntry.Success = false
 		logEntry.Error = err.Error()
 
-		// Cache the request even on error so we can debug it later
-		setCache(cacheKey, body, nil)
-
+		// Don't cache errors - only log the request for debugging
 		logRequest(logEntry)
 
 		// Record error metrics
@@ -3433,8 +3431,7 @@ func handleAvailableModels(w http.ResponseWriter, r *http.Request) {
 		"anthropic": {
 			"claude-opus-4-5-20251101",
 			"claude-sonnet-4-5-20250514",
-			"claude-sonnet-4-20250514",
-			"claude-opus-4-20250514",
+			"claude-haiku-4-5-20251101",
 		},
 		"openai": {
 			"gpt-5.1",
