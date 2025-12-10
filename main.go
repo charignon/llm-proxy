@@ -97,7 +97,7 @@ var visionRoutingTable = map[string]map[string]*RouteConfig{
 	},
 	// sensitive: true (local only)
 	"true": {
-		"very_high": {Provider: "ollama", Model: "qwen3-vl:30b"}, // Best local vision model
+		"very_high": {Provider: "ollama", Model: "qwen3-vl:235b"}, // Largest local vision model (143GB)
 		"high":      {Provider: "ollama", Model: "qwen3-vl:30b"},
 		"medium":    {Provider: "ollama", Model: "qwen3-vl:30b"},
 		"low":       {Provider: "ollama", Model: "qwen3-vl:30b"},
