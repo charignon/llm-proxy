@@ -5244,6 +5244,7 @@ const dashboardHTML = `<!DOCTYPE html>
         function parseMatrixFilters() {
             const urlParams = new URLSearchParams(window.location.search);
             const matrixParam = urlParams.get('matrix');
+            console.log('Matrix param:', matrixParam);
             if (matrixParam) {
                 const filterParams = new URLSearchParams(matrixParam);
                 currentFilters = {
@@ -5251,6 +5252,7 @@ const dashboardHTML = `<!DOCTYPE html>
                     sensitive: filterParams.get('sensitive') || '',
                     precision: filterParams.get('precision') || ''
                 };
+                console.log('Parsed filters:', currentFilters);
             }
         }
         parseMatrixFilters();
@@ -5285,9 +5287,11 @@ const dashboardHTML = `<!DOCTYPE html>
             if (currentFilters.sensitive) params.set('sensitive', currentFilters.sensitive);
             if (currentFilters.precision) params.set('precision', currentFilters.precision);
             if (params.toString()) url += '?' + params.toString();
+            console.log('loadStats URL:', url, 'currentFilters:', currentFilters);
 
             const resp = await fetch(url);
             const stats = await resp.json();
+            console.log('Stats response filters:', stats.filters, 'recent count:', stats.recent_requests?.length);
 
             updateFilterDisplay();
 
