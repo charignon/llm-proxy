@@ -3198,6 +3198,7 @@ const analyticsHTML = `<!DOCTYPE html>
             <button class="nav-tab" onclick="window.location.href='/test'">Playground</button>
             <button class="nav-tab" onclick="window.location.href='/#routing'">Routing</button>
             <button class="nav-tab active">Analytics</button>
+            <button class="nav-tab" onclick="window.location.href='/#system'">System</button>
         </div>
 
         <div id="overview-view">
@@ -4519,6 +4520,9 @@ const dashboardHTML = `<!DOCTYPE html>
                     <div style="display: flex; align-items: center; gap: 12px;">
                         <span id="system-hostname" style="color: #a5b4fc; font-size: 14px;"></span>
                         <span id="system-last-update" style="color: #888; font-size: 12px;"></span>
+                        <a href="http://grafana.lan" target="_blank" style="padding: 6px 12px; background: #6366f1; color: white; border-radius: 6px; text-decoration: none; font-size: 13px; display: flex; align-items: center; gap: 6px;">
+                            <span>📊</span> Grafana
+                        </a>
                     </div>
                 </div>
                 <div class="stats-grid" id="system-stats-grid">
@@ -5699,7 +5703,7 @@ const dashboardHTML = `<!DOCTYPE html>
         // Handle URL hash navigation
         function handleHash() {
             const hash = window.location.hash.replace('#', '');
-            if (hash && ['llm', 'tts', 'stt', 'routing'].includes(hash)) {
+            if (hash && ['llm', 'tts', 'stt', 'routing', 'system'].includes(hash)) {
                 switchTab(hash);
             }
         }
@@ -5947,6 +5951,7 @@ const testPlaygroundHTML = `<!DOCTYPE html>
             <button class="nav-tab active">Playground</button>
             <button class="nav-tab" onclick="window.location.href='/#routing'">Routing</button>
             <button class="nav-tab" onclick="window.location.href='/analytics'">Analytics</button>
+            <button class="nav-tab" onclick="window.location.href='/#system'">System</button>
         </div>
 
         <h2 style="color:#a5b4fc;margin-bottom:16px;font-size:20px;">Test Playground</h2>
