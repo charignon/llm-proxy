@@ -4051,6 +4051,22 @@ const analyticsHTML = `<!DOCTYPE html>
 
         <div id="overview-view">
             <div class="charts-grid">
+                <!-- Cost by Model Bar Chart -->
+                <div class="chart-card">
+                    <div class="chart-title">Cost Breakdown by Model</div>
+                    <div class="chart-container">
+                        <canvas id="costByModelChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Cost by Provider Pie Chart -->
+                <div class="chart-card">
+                    <div class="chart-title">Cost Breakdown by Provider</div>
+                    <div class="chart-container">
+                        <canvas id="costByProviderChart"></canvas>
+                    </div>
+                </div>
+
                 <!-- Cost by Usecase Pie Chart -->
                 <div class="chart-card">
                     <div class="chart-title">Cost Breakdown by Use Case</div>
@@ -4127,7 +4143,10 @@ const analyticsHTML = `<!DOCTYPE html>
 
     <script>
         let analyticsData = null;
+        let statsData = null;
         let costPieChart = null;
+        let costByModelChart = null;
+        let costByProviderChart = null;
         let hourlyChart = null;
         let volumeChart = null;
         let modelDetailChart = null;
@@ -4141,8 +4160,12 @@ const analyticsHTML = `<!DOCTYPE html>
         ];
 
         async function loadAnalytics() {
-            const response = await fetch('/api/analytics?range=' + selectedTimeRange);
-            analyticsData = await response.json();
+            const [analyticsResponse, statsResponse] = await Promise.all([
+                fetch('/api/analytics?range=' + selectedTimeRange),
+                fetch('/api/stats')
+            ]);
+            analyticsData = await analyticsResponse.json();
+            statsData = await statsResponse.json();
             renderCharts();
         }
 
@@ -4161,12 +4184,147 @@ const analyticsHTML = `<!DOCTYPE html>
         }
 
         function renderCharts() {
+            renderCostByModelChart();
+            renderCostByProviderChart();
             renderCostPieChart();
             renderHourlyChart();
             initMatrixSliders();
             renderMatrix();
             renderVolumeChart();
             renderModelSelector();
+        }
+
+        function renderCostByModelChart() {
+            const ctx = document.getElementById('costByModelChart').getContext('2d');
+            // Filter models with cost > 0 and sort by cost descending
+            const data = (statsData.by_model || [])
+                .filter(d => d.cost_usd > 0)
+                .sort((a, b) => b.cost_usd - a.cost_usd)
+                .slice(0, 10); // Top 10 models
+
+            if (costByModelChart) costByModelChart.destroy();
+
+            costByModelChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: data.map(d => d.model),
+                    datasets: [{
+                        label: 'Cost ($)',
+                        data: data.map(d => d.cost_usd),
+                        backgroundColor: '#22c55e',
+                        borderColor: '#16a34a',
+                        borderWidth: 1,
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1,
+                            padding: 12,
+                            callbacks: {
+                                label: function(context) {
+                                    const item = data[context.dataIndex];
+                                    return [
+                                        'Cost: $' + item.cost_usd.toFixed(4),
+                                        'Requests: ' + item.count.toLocaleString()
+                                    ];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: '#2d2d44' },
+                            ticks: {
+                                color: '#888',
+                                callback: function(value) { return '$' + value.toFixed(2); }
+                            }
+                        },
+                        y: {
+                            grid: { display: false },
+                            ticks: { color: '#888', font: { size: 11 } }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderCostByProviderChart() {
+            const ctx = document.getElementById('costByProviderChart').getContext('2d');
+            const providerData = statsData.by_provider || {};
+            // Convert object to array and filter providers with cost > 0
+            const data = Object.entries(providerData)
+                .map(([name, stats]) => ({ name, ...stats }))
+                .filter(d => d.cost_usd > 0)
+                .sort((a, b) => b.cost_usd - a.cost_usd);
+
+            if (costByProviderChart) costByProviderChart.destroy();
+
+            const providerColors = {
+                'anthropic': '#d97706',
+                'openai': '#10b981',
+                'ollama': '#6366f1',
+                'local': '#8b5cf6',
+                'kokoro': '#ec4899'
+            };
+
+            costByProviderChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: data.map(d => d.name.charAt(0).toUpperCase() + d.name.slice(1)),
+                    datasets: [{
+                        data: data.map(d => d.cost_usd),
+                        backgroundColor: data.map(d => providerColors[d.name] || colors[0]),
+                        borderColor: '#0f0f1a',
+                        borderWidth: 2,
+                        hoverOffset: 8
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: {
+                                color: '#888',
+                                padding: 12,
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1,
+                            padding: 12,
+                            callbacks: {
+                                label: function(context) {
+                                    const item = data[context.dataIndex];
+                                    const total = data.reduce((sum, d) => sum + d.cost_usd, 0);
+                                    const percentage = ((item.cost_usd / total) * 100).toFixed(1);
+                                    return [
+                                        'Cost: $' + item.cost_usd.toFixed(4),
+                                        'Requests: ' + item.count.toLocaleString(),
+                                        'Share: ' + percentage + '%'
+                                    ];
+                                }
+                            }
+                        }
+                    }
+                }
+            });
         }
 
         function renderCostPieChart() {
