@@ -960,14 +960,19 @@ func getPendingRequests() []*PendingRequest {
 func resolveRoute(req *ChatCompletionRequest) (*RouteConfig, error) {
 	// If model is explicitly specified (not a routing keyword), use it directly
 	if req.Model != "" && req.Model != "auto" && req.Model != "route" {
+		model := req.Model
 		// Check if it's a known model and determine provider
 		provider := "openai"
-		if strings.HasPrefix(req.Model, "claude") {
+		if strings.HasPrefix(model, "ollama/") {
+			// Strip ollama/ prefix - we added it for clarity in model lists
+			provider = "ollama"
+			model = strings.TrimPrefix(model, "ollama/")
+		} else if strings.HasPrefix(model, "claude") {
 			provider = "anthropic"
-		} else if strings.Contains(req.Model, ":") || req.Model == "llama3" || req.Model == "gemma3" || req.Model == "llava" || strings.HasPrefix(req.Model, "qwen") {
+		} else if strings.Contains(model, ":") || model == "llama3" || model == "gemma3" || model == "llava" || strings.HasPrefix(model, "qwen") {
 			provider = "ollama"
 		}
-		return &RouteConfig{Provider: provider, Model: req.Model}, nil
+		return &RouteConfig{Provider: provider, Model: model}, nil
 	}
 
 	// Use routing table - choose text or vision based on content
