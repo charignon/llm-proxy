@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"llm-proxy/internal/adapters/cache"
+	httphandlers "llm-proxy/internal/adapters/http"
 	"llm-proxy/internal/adapters/providers"
 	"llm-proxy/internal/adapters/repository"
 	"llm-proxy/internal/app"
@@ -112,6 +113,9 @@ var visionRoutingTable = map[string]map[string]*RouteConfig{
 // Router service for request routing decisions
 var router *app.Router
 
+// HTTP handler for chat completions (primary adapter)
+var chatHandler *httphandlers.ChatHandler
+
 // Database
 var db *sql.DB
 var dbMutex sync.Mutex
@@ -182,6 +186,11 @@ func (m *Metrics) recordRequest(provider, model, status string, durationMs int64
 	} else {
 		m.CacheMisses++
 	}
+}
+
+// RecordRequest implements the http.MetricsRecorder interface.
+func (m *Metrics) RecordRequest(provider, model, status string, durationMs int64, inputTokens, outputTokens int, cost float64, cached bool) {
+	m.recordRequest(provider, model, status, durationMs, inputTokens, outputTokens, cost, cached)
 }
 
 // OpenAI API types - aliases to domain types
@@ -1152,150 +1161,7 @@ func urlEncode(s string) string {
 	return url.QueryEscape(s)
 }
 
-func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "Failed to read request", http.StatusBadRequest)
-		return
-	}
-
-	var req ChatCompletionRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Validate usecase is provided
-	if req.Usecase == "" {
-		http.Error(w, "Missing required field: usecase. Please provide a usecase to identify the caller.", http.StatusBadRequest)
-		return
-	}
-
-	startTime := time.Now()
-	logEntry := &RequestLog{
-		Timestamp:      startTime,
-		RequestedModel: req.Model,
-		Precision:      req.Precision,
-		Usecase:        req.Usecase,
-		HasImages:      req.HasImages(),
-		RequestBody:    body, // Store for DB persistence
-	}
-	if req.Sensitive != nil {
-		logEntry.Sensitive = *req.Sensitive
-	}
-	// Check if this is a replay request (set by handleReplayRequest)
-	if r.Header.Get("X-LLM-Proxy-Replay") == "true" {
-		logEntry.IsReplay = true
-	}
-
-	// Resolve routing
-	route, err := resolveRoute(&req)
-	if err != nil {
-		logEntry.Provider = "routing_failed"
-		logEntry.Success = false
-		logEntry.Error = err.Error()
-		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
-		logRequest(logEntry)
-
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	logEntry.Provider = route.Provider
-	logEntry.Model = route.Model
-
-	// Check cache
-	cacheKey := generateCacheKey(&req, route)
-	logEntry.CacheKey = cacheKey
-
-	if !req.NoCache {
-		if cached, ok := getCached(cacheKey); ok {
-			logEntry.Cached = true
-			logEntry.LatencyMs = time.Since(startTime).Milliseconds()
-			logEntry.Success = true
-			logEntry.ResponseBody = cached // Store cached response for DB persistence
-			requestID := logRequest(logEntry)
-
-			// Record cache hit metrics
-			metrics.recordRequest(route.Provider, route.Model, "success", logEntry.LatencyMs, 0, 0, 0, true)
-
-			// Add cached flag to response
-			var resp ChatCompletionResponse
-			json.Unmarshal(cached, &resp)
-			resp.Cached = true
-
-			w.Header().Set("Content-Type", "application/json")
-			if requestID > 0 {
-				w.Header().Set("X-LLM-Proxy-Request-ID", fmt.Sprintf("%d", requestID))
-			}
-			w.Header().Set("X-LLM-Proxy-Cached", "true")
-			json.NewEncoder(w).Encode(resp)
-			return
-		}
-	}
-
-	// Track pending request
-	pendingID := addPendingRequest(&req, route, startTime)
-	defer removePendingRequest(pendingID)
-
-	// Make the actual call
-	var resp *ChatCompletionResponse
-	provider, ok := chatProviders[route.Provider]
-	if !ok {
-		err = fmt.Errorf("unknown provider: %s", route.Provider)
-	} else {
-		resp, err = provider.Chat(&req, route.Model)
-	}
-
-	logEntry.LatencyMs = time.Since(startTime).Milliseconds()
-
-	if err != nil {
-		logEntry.Success = false
-		logEntry.Error = err.Error()
-
-		// Don't cache errors - only log the request for debugging
-		logRequest(logEntry)
-
-		// Record error metrics
-		metrics.recordRequest(route.Provider, route.Model, "error", logEntry.LatencyMs, 0, 0, 0, false)
-
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Update log entry
-	if resp.Usage != nil {
-		logEntry.InputTokens = resp.Usage.PromptTokens
-		logEntry.OutputTokens = resp.Usage.CompletionTokens
-	}
-	logEntry.CostUSD = calculateCost(route.Model, logEntry.InputTokens, logEntry.OutputTokens)
-	logEntry.Success = true
-
-	// Cache the response with original request for replay
-	respBytes, _ := json.Marshal(resp)
-	setCache(cacheKey, body, respBytes)
-
-	logEntry.ResponseBody = respBytes // Store for DB persistence
-	requestID := logRequest(logEntry)
-
-	// Record metrics
-	metrics.recordRequest(route.Provider, route.Model, "success", logEntry.LatencyMs, logEntry.InputTokens, logEntry.OutputTokens, logEntry.CostUSD, false)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-LLM-Proxy-Provider", route.Provider)
-	w.Header().Set("X-LLM-Proxy-Model", route.Model)
-	w.Header().Set("X-LLM-Proxy-Latency-Ms", fmt.Sprintf("%d", logEntry.LatencyMs))
-	w.Header().Set("X-LLM-Proxy-Cost-USD", fmt.Sprintf("%.6f", logEntry.CostUSD))
-	if requestID > 0 {
-		w.Header().Set("X-LLM-Proxy-Request-ID", fmt.Sprintf("%d", requestID))
-	}
-	json.NewEncoder(w).Encode(resp)
-}
+// handleChatCompletions is now handled by httphandlers.ChatHandler
 
 func handleModels(w http.ResponseWriter, r *http.Request) {
 	models := []map[string]interface{}{}
@@ -2007,7 +1873,7 @@ func handleReplayRequest(w http.ResponseWriter, r *http.Request) {
 		statusCode:     http.StatusOK,
 	}
 
-	handleChatCompletions(recorder, internalReq)
+	chatHandler.ServeHTTP(recorder, internalReq)
 }
 
 // responseRecorder wraps ResponseWriter to capture status code
@@ -6711,12 +6577,25 @@ func main() {
 	// Initialize provider adapters (ports -> implementations)
 	initChatProviders()
 
+	// Initialize chat handler (primary adapter)
+	chatHandler = &httphandlers.ChatHandler{
+		Router:        router,
+		Providers:     chatProviders,
+		Cache:         requestCache,
+		Logger:        requestLogger,
+		Metrics:       metrics,
+		GenerateKey:   generateCacheKey,
+		CalculateCost: calculateCost,
+		AddPending:    addPendingRequest,
+		RemovePending: removePendingRequest,
+	}
+
 	// Routes
 	http.HandleFunc("/", handleDashboard)
 	http.HandleFunc("/request/", handleRequestPage)
 	http.HandleFunc("/health", handleHealth)
 	http.HandleFunc("/metrics", handleMetrics)
-	http.HandleFunc("/v1/chat/completions", handleChatCompletions)
+	http.Handle("/v1/chat/completions", chatHandler)
 	http.HandleFunc("/v1/estimate", handleEstimate)
 	http.HandleFunc("/v1/models", handleModels)
 	http.HandleFunc("/api/stats", handleStats)
