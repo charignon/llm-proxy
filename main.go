@@ -2938,9 +2938,9 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	if sensitiveFilter != "" {
 		recentQuery += " AND sensitive = ?"
 		if sensitiveFilter == "1" || sensitiveFilter == "true" {
-			args = append(args, true)
+			args = append(args, 1)
 		} else {
-			args = append(args, false)
+			args = append(args, 0)
 		}
 	}
 	if precisionFilter != "" {
