@@ -5013,6 +5013,7 @@ const dashboardHTML = `<!DOCTYPE html>
             <button class="nav-tab" onclick="window.location.href='/test'">Playground</button>
             <button class="nav-tab" onclick="switchTab('routing')">Routing</button>
             <button class="nav-tab" onclick="window.location.href='/analytics'">Analytics</button>
+            <button class="nav-tab" onclick="window.location.href='/stats'">Stats</button>
             <button class="nav-tab" onclick="switchTab('system')">System</button>
         </div>
 
@@ -6609,6 +6610,7 @@ const testPlaygroundHTML = `<!DOCTYPE html>
             <button class="nav-tab active">Playground</button>
             <button class="nav-tab" onclick="window.location.href='/#routing'">Routing</button>
             <button class="nav-tab" onclick="window.location.href='/analytics'">Analytics</button>
+            <button class="nav-tab" onclick="window.location.href='/stats'">Stats</button>
             <button class="nav-tab" onclick="window.location.href='/#system'">System</button>
         </div>
 
@@ -7456,13 +7458,13 @@ func runCommand(name string, args ...string) (string, error) {
 func handleMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 
-	metrics.mutex.RLock()
-	defer metrics.mutex.RUnlock()
-
 	var sb strings.Builder
 
-	// Requests total
-	sb.WriteString("# HELP llm_proxy_requests_total Total number of LLM requests\n")
+	// ===== IN-MEMORY METRICS (since service start) =====
+	metrics.mutex.RLock()
+
+	// Requests total (in-memory since restart)
+	sb.WriteString("# HELP llm_proxy_requests_total Total number of requests since service start\n")
 	sb.WriteString("# TYPE llm_proxy_requests_total counter\n")
 	for key, count := range metrics.RequestsTotal {
 		parts := strings.SplitN(key, "|", 3)
@@ -7473,7 +7475,7 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Tokens total
-	sb.WriteString("\n# HELP llm_proxy_tokens_total Total tokens processed\n")
+	sb.WriteString("\n# HELP llm_proxy_tokens_total Total tokens processed since service start\n")
 	sb.WriteString("# TYPE llm_proxy_tokens_total counter\n")
 	for key, count := range metrics.TokensTotal {
 		parts := strings.SplitN(key, "|", 3)
@@ -7504,19 +7506,359 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Cost
-	sb.WriteString("\n# HELP llm_proxy_cost_usd_total Total cost in USD\n")
+	// Cost (in-memory)
+	sb.WriteString("\n# HELP llm_proxy_cost_usd_total Total cost in USD since service start\n")
 	sb.WriteString("# TYPE llm_proxy_cost_usd_total counter\n")
 	sb.WriteString(fmt.Sprintf("llm_proxy_cost_usd_total %.6f\n", metrics.CostTotal))
 
-	// Cache
-	sb.WriteString("\n# HELP llm_proxy_cache_hits_total Total cache hits\n")
+	// Cache (in-memory)
+	sb.WriteString("\n# HELP llm_proxy_cache_hits_total Total cache hits since service start\n")
 	sb.WriteString("# TYPE llm_proxy_cache_hits_total counter\n")
 	sb.WriteString(fmt.Sprintf("llm_proxy_cache_hits_total %d\n", metrics.CacheHits))
 
-	sb.WriteString("\n# HELP llm_proxy_cache_misses_total Total cache misses\n")
+	sb.WriteString("\n# HELP llm_proxy_cache_misses_total Total cache misses since service start\n")
 	sb.WriteString("# TYPE llm_proxy_cache_misses_total counter\n")
 	sb.WriteString(fmt.Sprintf("llm_proxy_cache_misses_total %d\n", metrics.CacheMisses))
+
+	metrics.mutex.RUnlock()
+
+	// ===== DATABASE METRICS (historical, survives restarts) =====
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	// --- Totals ---
+	sb.WriteString("\n# HELP llm_proxy_db_requests_total Total requests in database (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_requests_total gauge\n")
+	var totalRequests int64
+	db.QueryRow("SELECT COUNT(*) FROM requests").Scan(&totalRequests)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_requests_total %d\n", totalRequests))
+
+	sb.WriteString("\n# HELP llm_proxy_db_cost_usd_total Total cost in database (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_cost_usd_total gauge\n")
+	var totalCost float64
+	db.QueryRow("SELECT COALESCE(SUM(cost_usd), 0) FROM requests").Scan(&totalCost)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_cost_usd_total %.6f\n", totalCost))
+
+	sb.WriteString("\n# HELP llm_proxy_db_tokens_total Total tokens in database (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_tokens_total gauge\n")
+	var totalInputTokens, totalOutputTokens int64
+	db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) FROM requests").Scan(&totalInputTokens, &totalOutputTokens)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_tokens_total{direction=\"input\"} %d\n", totalInputTokens))
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_tokens_total{direction=\"output\"} %d\n", totalOutputTokens))
+
+	// --- By Provider ---
+	sb.WriteString("\n# HELP llm_proxy_db_requests_by_provider Requests by provider (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_requests_by_provider gauge\n")
+	rows, _ := db.Query("SELECT provider, COUNT(*), COALESCE(SUM(cost_usd), 0), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) FROM requests GROUP BY provider")
+	for rows.Next() {
+		var provider string
+		var count int64
+		var cost float64
+		var inputTokens, outputTokens int64
+		rows.Scan(&provider, &count, &cost, &inputTokens, &outputTokens)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_requests_by_provider{provider=\"%s\"} %d\n", provider, count))
+	}
+	rows.Close()
+
+	sb.WriteString("\n# HELP llm_proxy_db_cost_by_provider Cost by provider (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_cost_by_provider gauge\n")
+	rows, _ = db.Query("SELECT provider, COALESCE(SUM(cost_usd), 0) FROM requests GROUP BY provider")
+	for rows.Next() {
+		var provider string
+		var cost float64
+		rows.Scan(&provider, &cost)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_cost_by_provider{provider=\"%s\"} %.6f\n", provider, cost))
+	}
+	rows.Close()
+
+	sb.WriteString("\n# HELP llm_proxy_db_tokens_by_provider Tokens by provider (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_tokens_by_provider gauge\n")
+	rows, _ = db.Query("SELECT provider, COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) FROM requests GROUP BY provider")
+	for rows.Next() {
+		var provider string
+		var inputTokens, outputTokens int64
+		rows.Scan(&provider, &inputTokens, &outputTokens)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_tokens_by_provider{provider=\"%s\",direction=\"input\"} %d\n", provider, inputTokens))
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_tokens_by_provider{provider=\"%s\",direction=\"output\"} %d\n", provider, outputTokens))
+	}
+	rows.Close()
+
+	// --- By Model ---
+	sb.WriteString("\n# HELP llm_proxy_db_requests_by_model Requests by model (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_requests_by_model gauge\n")
+	rows, _ = db.Query("SELECT model, COUNT(*) FROM requests GROUP BY model")
+	for rows.Next() {
+		var model string
+		var count int64
+		rows.Scan(&model, &count)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_requests_by_model{model=\"%s\"} %d\n", model, count))
+	}
+	rows.Close()
+
+	sb.WriteString("\n# HELP llm_proxy_db_cost_by_model Cost by model (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_cost_by_model gauge\n")
+	rows, _ = db.Query("SELECT model, COALESCE(SUM(cost_usd), 0) FROM requests GROUP BY model")
+	for rows.Next() {
+		var model string
+		var cost float64
+		rows.Scan(&model, &cost)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_cost_by_model{model=\"%s\"} %.6f\n", model, cost))
+	}
+	rows.Close()
+
+	sb.WriteString("\n# HELP llm_proxy_db_tokens_by_model Tokens by model (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_tokens_by_model gauge\n")
+	rows, _ = db.Query("SELECT model, COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) FROM requests GROUP BY model")
+	for rows.Next() {
+		var model string
+		var inputTokens, outputTokens int64
+		rows.Scan(&model, &inputTokens, &outputTokens)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_tokens_by_model{model=\"%s\",direction=\"input\"} %d\n", model, inputTokens))
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_tokens_by_model{model=\"%s\",direction=\"output\"} %d\n", model, outputTokens))
+	}
+	rows.Close()
+
+	sb.WriteString("\n# HELP llm_proxy_db_avg_latency_by_model Average latency in ms by model\n")
+	sb.WriteString("# TYPE llm_proxy_db_avg_latency_by_model gauge\n")
+	rows, _ = db.Query("SELECT model, AVG(latency_ms) FROM requests WHERE latency_ms > 0 GROUP BY model")
+	for rows.Next() {
+		var model string
+		var avgLatency float64
+		rows.Scan(&model, &avgLatency)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_avg_latency_by_model{model=\"%s\"} %.2f\n", model, avgLatency))
+	}
+	rows.Close()
+
+	// --- By Usecase ---
+	sb.WriteString("\n# HELP llm_proxy_db_requests_by_usecase Requests by usecase (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_requests_by_usecase gauge\n")
+	rows, _ = db.Query("SELECT COALESCE(usecase, 'unknown'), COUNT(*) FROM requests GROUP BY usecase")
+	for rows.Next() {
+		var usecase string
+		var count int64
+		rows.Scan(&usecase, &count)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_requests_by_usecase{usecase=\"%s\"} %d\n", usecase, count))
+	}
+	rows.Close()
+
+	sb.WriteString("\n# HELP llm_proxy_db_cost_by_usecase Cost by usecase (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_cost_by_usecase gauge\n")
+	rows, _ = db.Query("SELECT COALESCE(usecase, 'unknown'), COALESCE(SUM(cost_usd), 0) FROM requests GROUP BY usecase")
+	for rows.Next() {
+		var usecase string
+		var cost float64
+		rows.Scan(&usecase, &cost)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_cost_by_usecase{usecase=\"%s\"} %.6f\n", usecase, cost))
+	}
+	rows.Close()
+
+	sb.WriteString("\n# HELP llm_proxy_db_tokens_by_usecase Tokens by usecase (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_tokens_by_usecase gauge\n")
+	rows, _ = db.Query("SELECT COALESCE(usecase, 'unknown'), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) FROM requests GROUP BY usecase")
+	for rows.Next() {
+		var usecase string
+		var inputTokens, outputTokens int64
+		rows.Scan(&usecase, &inputTokens, &outputTokens)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_tokens_by_usecase{usecase=\"%s\",direction=\"input\"} %d\n", usecase, inputTokens))
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_tokens_by_usecase{usecase=\"%s\",direction=\"output\"} %d\n", usecase, outputTokens))
+	}
+	rows.Close()
+
+	// --- By Request Type ---
+	sb.WriteString("\n# HELP llm_proxy_db_requests_by_type Requests by type (llm, tts, stt)\n")
+	sb.WriteString("# TYPE llm_proxy_db_requests_by_type gauge\n")
+	rows, _ = db.Query("SELECT COALESCE(request_type, 'llm'), COUNT(*) FROM requests GROUP BY request_type")
+	for rows.Next() {
+		var reqType string
+		var count int64
+		rows.Scan(&reqType, &count)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_requests_by_type{type=\"%s\"} %d\n", reqType, count))
+	}
+	rows.Close()
+
+	// --- By Sensitivity ---
+	sb.WriteString("\n# HELP llm_proxy_db_requests_by_sensitivity Requests by sensitivity (local vs cloud)\n")
+	sb.WriteString("# TYPE llm_proxy_db_requests_by_sensitivity gauge\n")
+	rows, _ = db.Query("SELECT sensitive, COUNT(*) FROM requests GROUP BY sensitive")
+	for rows.Next() {
+		var sensitive int
+		var count int64
+		rows.Scan(&sensitive, &count)
+		sensitiveStr := "false"
+		if sensitive == 1 {
+			sensitiveStr = "true"
+		}
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_requests_by_sensitivity{sensitive=\"%s\"} %d\n", sensitiveStr, count))
+	}
+	rows.Close()
+
+	// --- By Precision ---
+	sb.WriteString("\n# HELP llm_proxy_db_requests_by_precision Requests by precision level\n")
+	sb.WriteString("# TYPE llm_proxy_db_requests_by_precision gauge\n")
+	rows, _ = db.Query("SELECT COALESCE(precision, 'unknown'), COUNT(*) FROM requests GROUP BY precision")
+	for rows.Next() {
+		var precision string
+		var count int64
+		rows.Scan(&precision, &count)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_requests_by_precision{precision=\"%s\"} %d\n", precision, count))
+	}
+	rows.Close()
+
+	// --- Success/Error Rates ---
+	sb.WriteString("\n# HELP llm_proxy_db_success_total Successful requests (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_success_total gauge\n")
+	var successCount int64
+	db.QueryRow("SELECT COUNT(*) FROM requests WHERE success = 1").Scan(&successCount)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_success_total %d\n", successCount))
+
+	sb.WriteString("\n# HELP llm_proxy_db_error_total Failed requests (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_error_total gauge\n")
+	var errorCount int64
+	db.QueryRow("SELECT COUNT(*) FROM requests WHERE success = 0").Scan(&errorCount)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_error_total %d\n", errorCount))
+
+	sb.WriteString("\n# HELP llm_proxy_db_errors_by_provider Failed requests by provider\n")
+	sb.WriteString("# TYPE llm_proxy_db_errors_by_provider gauge\n")
+	rows, _ = db.Query("SELECT provider, COUNT(*) FROM requests WHERE success = 0 GROUP BY provider")
+	for rows.Next() {
+		var provider string
+		var count int64
+		rows.Scan(&provider, &count)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_errors_by_provider{provider=\"%s\"} %d\n", provider, count))
+	}
+	rows.Close()
+
+	// --- Cache Stats ---
+	sb.WriteString("\n# HELP llm_proxy_db_cached_total Cached requests (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_cached_total gauge\n")
+	var cachedCount int64
+	db.QueryRow("SELECT COUNT(*) FROM requests WHERE cached = 1").Scan(&cachedCount)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_cached_total %d\n", cachedCount))
+
+	// --- Vision Requests ---
+	sb.WriteString("\n# HELP llm_proxy_db_vision_requests_total Vision requests with images (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_vision_requests_total gauge\n")
+	var visionCount int64
+	db.QueryRow("SELECT COUNT(*) FROM requests WHERE has_images = 1").Scan(&visionCount)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_vision_requests_total %d\n", visionCount))
+
+	// --- TTS Metrics ---
+	sb.WriteString("\n# HELP llm_proxy_db_tts_audio_duration_ms_total Total TTS audio duration generated (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_tts_audio_duration_ms_total gauge\n")
+	var ttsDuration int64
+	db.QueryRow("SELECT COALESCE(SUM(audio_duration_ms), 0) FROM requests WHERE request_type = 'tts'").Scan(&ttsDuration)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_tts_audio_duration_ms_total %d\n", ttsDuration))
+
+	sb.WriteString("\n# HELP llm_proxy_db_tts_input_chars_total Total TTS input characters (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_tts_input_chars_total gauge\n")
+	var ttsChars int64
+	db.QueryRow("SELECT COALESCE(SUM(input_chars), 0) FROM requests WHERE request_type = 'tts'").Scan(&ttsChars)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_tts_input_chars_total %d\n", ttsChars))
+
+	sb.WriteString("\n# HELP llm_proxy_db_tts_requests_by_voice TTS requests by voice\n")
+	sb.WriteString("# TYPE llm_proxy_db_tts_requests_by_voice gauge\n")
+	rows, _ = db.Query("SELECT COALESCE(voice, 'unknown'), COUNT(*) FROM requests WHERE request_type = 'tts' GROUP BY voice")
+	for rows.Next() {
+		var voice string
+		var count int64
+		rows.Scan(&voice, &count)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_tts_requests_by_voice{voice=\"%s\"} %d\n", voice, count))
+	}
+	rows.Close()
+
+	// --- Time-based metrics (last 24h, 7d, 30d) ---
+	sb.WriteString("\n# HELP llm_proxy_db_requests_24h Requests in last 24 hours\n")
+	sb.WriteString("# TYPE llm_proxy_db_requests_24h gauge\n")
+	var requests24h int64
+	db.QueryRow("SELECT COUNT(*) FROM requests WHERE timestamp > datetime('now', '-1 day')").Scan(&requests24h)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_requests_24h %d\n", requests24h))
+
+	sb.WriteString("\n# HELP llm_proxy_db_cost_24h Cost in last 24 hours\n")
+	sb.WriteString("# TYPE llm_proxy_db_cost_24h gauge\n")
+	var cost24h float64
+	db.QueryRow("SELECT COALESCE(SUM(cost_usd), 0) FROM requests WHERE timestamp > datetime('now', '-1 day')").Scan(&cost24h)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_cost_24h %.6f\n", cost24h))
+
+	sb.WriteString("\n# HELP llm_proxy_db_tokens_24h Tokens in last 24 hours\n")
+	sb.WriteString("# TYPE llm_proxy_db_tokens_24h gauge\n")
+	var inputTokens24h, outputTokens24h int64
+	db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) FROM requests WHERE timestamp > datetime('now', '-1 day')").Scan(&inputTokens24h, &outputTokens24h)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_tokens_24h{direction=\"input\"} %d\n", inputTokens24h))
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_tokens_24h{direction=\"output\"} %d\n", outputTokens24h))
+
+	sb.WriteString("\n# HELP llm_proxy_db_requests_7d Requests in last 7 days\n")
+	sb.WriteString("# TYPE llm_proxy_db_requests_7d gauge\n")
+	var requests7d int64
+	db.QueryRow("SELECT COUNT(*) FROM requests WHERE timestamp > datetime('now', '-7 day')").Scan(&requests7d)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_requests_7d %d\n", requests7d))
+
+	sb.WriteString("\n# HELP llm_proxy_db_cost_7d Cost in last 7 days\n")
+	sb.WriteString("# TYPE llm_proxy_db_cost_7d gauge\n")
+	var cost7d float64
+	db.QueryRow("SELECT COALESCE(SUM(cost_usd), 0) FROM requests WHERE timestamp > datetime('now', '-7 day')").Scan(&cost7d)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_cost_7d %.6f\n", cost7d))
+
+	sb.WriteString("\n# HELP llm_proxy_db_requests_30d Requests in last 30 days\n")
+	sb.WriteString("# TYPE llm_proxy_db_requests_30d gauge\n")
+	var requests30d int64
+	db.QueryRow("SELECT COUNT(*) FROM requests WHERE timestamp > datetime('now', '-30 day')").Scan(&requests30d)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_requests_30d %d\n", requests30d))
+
+	sb.WriteString("\n# HELP llm_proxy_db_cost_30d Cost in last 30 days\n")
+	sb.WriteString("# TYPE llm_proxy_db_cost_30d gauge\n")
+	var cost30d float64
+	db.QueryRow("SELECT COALESCE(SUM(cost_usd), 0) FROM requests WHERE timestamp > datetime('now', '-30 day')").Scan(&cost30d)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_cost_30d %.6f\n", cost30d))
+
+	// --- Requests by client IP ---
+	sb.WriteString("\n# HELP llm_proxy_db_requests_by_client Requests by client IP/hostname\n")
+	sb.WriteString("# TYPE llm_proxy_db_requests_by_client gauge\n")
+	rows, _ = db.Query("SELECT COALESCE(client_ip, 'unknown'), COUNT(*) FROM requests GROUP BY client_ip")
+	for rows.Next() {
+		var clientIP string
+		var count int64
+		rows.Scan(&clientIP, &count)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_requests_by_client{client=\"%s\"} %d\n", clientIP, count))
+	}
+	rows.Close()
+
+	sb.WriteString("\n# HELP llm_proxy_db_cost_by_client Cost by client IP/hostname\n")
+	sb.WriteString("# TYPE llm_proxy_db_cost_by_client gauge\n")
+	rows, _ = db.Query("SELECT COALESCE(client_ip, 'unknown'), COALESCE(SUM(cost_usd), 0) FROM requests GROUP BY client_ip")
+	for rows.Next() {
+		var clientIP string
+		var cost float64
+		rows.Scan(&clientIP, &cost)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_cost_by_client{client=\"%s\"} %.6f\n", clientIP, cost))
+	}
+	rows.Close()
+
+	// --- Routing analytics ---
+	sb.WriteString("\n# HELP llm_proxy_db_routing_requests Requests by requested vs actual model\n")
+	sb.WriteString("# TYPE llm_proxy_db_routing_requests gauge\n")
+	rows, _ = db.Query("SELECT COALESCE(requested_model, 'unknown'), model, COUNT(*) FROM requests GROUP BY requested_model, model")
+	for rows.Next() {
+		var requestedModel, actualModel string
+		var count int64
+		rows.Scan(&requestedModel, &actualModel, &count)
+		sb.WriteString(fmt.Sprintf("llm_proxy_db_routing_requests{requested=\"%s\",actual=\"%s\"} %d\n", requestedModel, actualModel, count))
+	}
+	rows.Close()
+
+	// --- Replay requests ---
+	sb.WriteString("\n# HELP llm_proxy_db_replay_requests_total Replayed requests (all time)\n")
+	sb.WriteString("# TYPE llm_proxy_db_replay_requests_total gauge\n")
+	var replayCount int64
+	db.QueryRow("SELECT COUNT(*) FROM requests WHERE is_replay = 1").Scan(&replayCount)
+	sb.WriteString(fmt.Sprintf("llm_proxy_db_replay_requests_total %d\n", replayCount))
+
+	// --- Pending requests ---
+	pendingMutex.RLock()
+	pendingCount := len(pendingRequests)
+	pendingMutex.RUnlock()
+	sb.WriteString("\n# HELP llm_proxy_pending_requests Current pending/in-flight requests\n")
+	sb.WriteString("# TYPE llm_proxy_pending_requests gauge\n")
+	sb.WriteString(fmt.Sprintf("llm_proxy_pending_requests %d\n", pendingCount))
 
 	// Service info
 	sb.WriteString("\n# HELP llm_proxy_info Service information\n")
