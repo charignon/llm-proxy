@@ -2868,10 +2868,10 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	stats["by_provider"] = byProvider
 
-	// By model
+	// By model - return all models, sorted by cost (for cost charts)
 	rows, _ = db.Query(`
 		SELECT model, COUNT(*), COALESCE(SUM(cost_usd), 0), AVG(latency_ms)
-		FROM requests GROUP BY model ORDER BY COUNT(*) DESC LIMIT 10
+		FROM requests GROUP BY model ORDER BY SUM(cost_usd) DESC
 	`)
 	defer rows.Close()
 
@@ -2891,10 +2891,10 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	stats["by_model"] = byModel
 
-	// By usecase
+	// By usecase - return all usecases, sorted by cost
 	rows, _ = db.Query(`
 		SELECT COALESCE(usecase, ''), COUNT(*), COALESCE(SUM(cost_usd), 0), AVG(latency_ms)
-		FROM requests WHERE usecase IS NOT NULL AND usecase != '' GROUP BY usecase ORDER BY COUNT(*) DESC LIMIT 20
+		FROM requests WHERE usecase IS NOT NULL AND usecase != '' GROUP BY usecase ORDER BY SUM(cost_usd) DESC
 	`)
 	defer rows.Close()
 
