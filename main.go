@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"llm-proxy/internal/domain"
+
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -59,11 +61,8 @@ var modelPricing = map[string][2]float64{
 	"llava":         {0, 0},
 }
 
-// Routing configuration
-type RouteConfig struct {
-	Provider string
-	Model    string
-}
+// RouteConfig is an alias to the domain type for routing decisions.
+type RouteConfig = domain.RouteConfig
 
 // Route based on sensitive + precision + hasImages flags
 // Format: routingTable[sensitive][precision] for text
@@ -118,28 +117,16 @@ var dbMutex sync.Mutex
 var cache = make(map[string]*CacheEntry)
 var cacheMutex sync.RWMutex
 
-type CacheEntry struct {
-	Request   []byte // Original request body for replay
-	Response  []byte
-	CreatedAt time.Time
-}
+// CacheEntry is an alias to the domain type for cached entries.
+type CacheEntry = domain.CacheEntry
 
 // Pending requests tracker
 var pendingRequests = make(map[string]*PendingRequest)
 var pendingMutex sync.RWMutex
 var pendingCounter int64
 
-type PendingRequest struct {
-	ID        string    `json:"id"`
-	StartTime time.Time `json:"start_time"`
-	Provider  string    `json:"provider"`
-	Model     string    `json:"model"`
-	HasImages bool      `json:"has_images"`
-	Sensitive bool      `json:"sensitive"`
-	Precision string    `json:"precision"`
-	Usecase   string    `json:"usecase"`
-	Preview   string    `json:"preview"` // First 100 chars of user message
-}
+// PendingRequest is an alias to the domain type for in-flight request tracking.
+type PendingRequest = domain.PendingRequest
 
 // Prometheus metrics
 type Metrics struct {
@@ -188,87 +175,18 @@ func (m *Metrics) recordRequest(provider, model, status string, durationMs int64
 	}
 }
 
-// OpenAI API types
-type ChatCompletionRequest struct {
-	Model       string      `json:"model"`
-	Messages    []Message   `json:"messages"`
-	MaxTokens   int         `json:"max_tokens,omitempty"`
-	Temperature float64     `json:"temperature,omitempty"`
-	Stream      bool        `json:"stream,omitempty"`
-	Tools       []Tool      `json:"tools,omitempty"`
-	ToolChoice  interface{} `json:"tool_choice,omitempty"` // "auto", "none", or specific tool
-	// Custom routing fields (non-OpenAI)
-	Sensitive *bool  `json:"sensitive,omitempty"`
-	Precision string `json:"precision,omitempty"`
-	Usecase   string `json:"usecase,omitempty"`
-	NoCache   bool   `json:"no_cache,omitempty"`
-	// Internal fields (not from JSON)
-	IsReplay bool `json:"-"` // Set internally for replay requests
-}
-
-type Tool struct {
-	Type     string       `json:"type"` // "function"
-	Function ToolFunction `json:"function"`
-}
-
-type ToolFunction struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description,omitempty"`
-	Parameters  map[string]interface{} `json:"parameters,omitempty"`
-}
-
-type ToolCall struct {
-	ID       string           `json:"id"`
-	Type     string           `json:"type"` // "function"
-	Function ToolCallFunction `json:"function"`
-}
-
-type ToolCallFunction struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"` // JSON string
-}
-
-type Message struct {
-	Role       string      `json:"role"`
-	Content    interface{} `json:"content"` // string or []ContentPart
-	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID string      `json:"tool_call_id,omitempty"` // For tool response messages
-}
-
-type ContentPart struct {
-	Type     string    `json:"type"`
-	Text     string    `json:"text,omitempty"`
-	ImageURL *ImageURL `json:"image_url,omitempty"`
-}
-
-type ImageURL struct {
-	URL    string `json:"url"`
-	Detail string `json:"detail,omitempty"`
-}
-
-type ChatCompletionResponse struct {
-	ID      string   `json:"id"`
-	Object  string   `json:"object"`
-	Created int64    `json:"created"`
-	Model   string   `json:"model"`
-	Choices []Choice `json:"choices"`
-	Usage   *Usage   `json:"usage,omitempty"`
-	// Custom fields
-	Cached   bool   `json:"cached,omitempty"`
-	Provider string `json:"provider,omitempty"`
-}
-
-type Choice struct {
-	Index        int     `json:"index"`
-	Message      Message `json:"message"`
-	FinishReason string  `json:"finish_reason"`
-}
-
-type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
-}
+// OpenAI API types - aliases to domain types
+type ChatCompletionRequest = domain.ChatCompletionRequest
+type Tool = domain.Tool
+type ToolFunction = domain.ToolFunction
+type ToolCall = domain.ToolCall
+type ToolCallFunction = domain.ToolCallFunction
+type Message = domain.Message
+type ContentPart = domain.ContentPart
+type ImageURL = domain.ImageURL
+type ChatCompletionResponse = domain.ChatCompletionResponse
+type Choice = domain.Choice
+type Usage = domain.Usage
 
 // Anthropic API types
 type AnthropicRequest struct {
@@ -459,48 +377,10 @@ func handleVisionModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // Whisper API types (OpenAI-compatible)
-type WhisperTranscriptionResponse struct {
-	Text string `json:"text"`
-}
-
-// TTS API types (OpenAI-compatible)
-type TTSRequest struct {
-	Model          string  `json:"model"`           // tts-1, tts-1-hd (mapped to kokoro)
-	Input          string  `json:"input"`           // Text to synthesize
-	Voice          string  `json:"voice"`           // alloy, echo, fable, onyx, nova, shimmer -> mapped to kokoro voices
-	ResponseFormat string  `json:"response_format"` // mp3 (default), wav
-	Speed          float64 `json:"speed"`           // 0.25 to 4.0, default 1.0
-}
-
-// Request log entry
-type RequestLog struct {
-	ID             int64     `json:"id"`
-	Timestamp      time.Time `json:"timestamp"`
-	RequestType    string    `json:"request_type"` // "llm", "tts", "stt"
-	Provider       string    `json:"provider"`
-	Model          string    `json:"model"`
-	RequestedModel string    `json:"requested_model"`
-	Sensitive      bool      `json:"sensitive"`
-	Precision      string    `json:"precision"`
-	Usecase        string    `json:"usecase"`
-	Cached         bool      `json:"cached"`
-	InputTokens    int       `json:"input_tokens"`
-	OutputTokens   int       `json:"output_tokens"`
-	LatencyMs      int64     `json:"latency_ms"`
-	CostUSD        float64   `json:"cost_usd"`
-	Success        bool      `json:"success"`
-	Error          string    `json:"error,omitempty"`
-	CacheKey       string    `json:"cache_key"`
-	HasImages      bool      `json:"has_images"`
-	RequestBody    []byte    `json:"-"` // Stored in DB for persistence
-	ResponseBody   []byte    `json:"-"` // Stored in DB for persistence
-	// TTS/STT specific fields
-	Voice           string `json:"voice,omitempty"`             // TTS voice used
-	AudioDurationMs int64  `json:"audio_duration_ms,omitempty"` // STT audio duration
-	InputChars      int    `json:"input_chars,omitempty"`       // TTS input character count
-	// Replay tracking
-	IsReplay bool `json:"is_replay,omitempty"` // True if this is a replay of another request
-}
+// Whisper/TTS types - aliases to domain types
+type WhisperTranscriptionResponse = domain.WhisperTranscriptionResponse
+type TTSRequest = domain.TTSRequest
+type RequestLog = domain.RequestLog
 
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
@@ -864,28 +744,6 @@ func getCachedResponse(key string) ([]byte, bool) {
 	return entry.Response, true
 }
 
-func hasImages(req *ChatCompletionRequest) bool {
-	for _, msg := range req.Messages {
-		switch c := msg.Content.(type) {
-		case []interface{}:
-			for _, part := range c {
-				if m, ok := part.(map[string]interface{}); ok {
-					if m["type"] == "image_url" {
-						return true
-					}
-				}
-			}
-		case []ContentPart:
-			for _, part := range c {
-				if part.Type == "image_url" {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
 // Pending request management
 func addPendingRequest(req *ChatCompletionRequest, route *RouteConfig, startTime time.Time) string {
 	pendingMutex.Lock()
@@ -930,7 +788,7 @@ func addPendingRequest(req *ChatCompletionRequest, route *RouteConfig, startTime
 		StartTime: startTime,
 		Provider:  route.Provider,
 		Model:     route.Model,
-		HasImages: hasImages(req),
+		HasImages: req.HasImages(),
 		Sensitive: sensitive,
 		Precision: req.Precision,
 		Usecase:   req.Usecase,
@@ -989,7 +847,7 @@ func resolveRoute(req *ChatCompletionRequest) (*RouteConfig, error) {
 
 	// Determine route type
 	routeType := "text"
-	if hasImages(req) {
+	if req.HasImages() {
 		routeType = "vision"
 	}
 
@@ -2004,7 +1862,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		RequestedModel: req.Model,
 		Precision:      req.Precision,
 		Usecase:        req.Usecase,
-		HasImages:      hasImages(&req),
+		HasImages:      req.HasImages(),
 		RequestBody:    body, // Store for DB persistence
 	}
 	if req.Sensitive != nil {
