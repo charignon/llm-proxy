@@ -4520,7 +4520,7 @@ const dashboardHTML = `<!DOCTYPE html>
                     <div style="display: flex; align-items: center; gap: 12px;">
                         <span id="system-hostname" style="color: #a5b4fc; font-size: 14px;"></span>
                         <span id="system-last-update" style="color: #888; font-size: 12px;"></span>
-                        <a href="http://grafana.lan" target="_blank" style="padding: 6px 12px; background: #6366f1; color: white; border-radius: 6px; text-decoration: none; font-size: 13px; display: flex; align-items: center; gap: 6px;">
+                        <a href="http://grafana.lan/d/b2d10d3f-3168-4346-9006-af925bdf53a2/node-exporter-mac-osx?orgId=1&amp;from=now-24h&amp;to=now&amp;timezone=browser&amp;var-datasource=d12817a3-8969-4c8f-9f1b-baf56584a1f1&amp;var-instance=192.168.1.238:9100" target="_blank" style="padding: 6px 12px; background: #6366f1; color: white; border-radius: 6px; text-decoration: none; font-size: 13px; display: flex; align-items: center; gap: 6px;">
                             <span>📊</span> Grafana
                         </a>
                     </div>
