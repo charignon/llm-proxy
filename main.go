@@ -23,6 +23,7 @@ import (
 
 	"llm-proxy/internal/adapters/cache"
 	"llm-proxy/internal/adapters/providers"
+	"llm-proxy/internal/adapters/repository"
 	"llm-proxy/internal/domain"
 	"llm-proxy/internal/ports"
 
@@ -115,6 +116,9 @@ var usecaseRoutesMutex sync.RWMutex
 // Database
 var db *sql.DB
 var dbMutex sync.Mutex
+
+// Request logger - using the port interface
+var requestLogger ports.RequestLogger
 
 // Cache - using the port interface
 var requestCache ports.Cache
@@ -542,34 +546,9 @@ func getUsecaseRoute(usecase, routeType, sensitive, precision string) *RouteConf
 	return nil
 }
 
+// logRequest delegates to the requestLogger port.
 func logRequest(entry *RequestLog) int64 {
-	dbMutex.Lock()
-	defer dbMutex.Unlock()
-
-	// Default request type to "llm" if not set
-	if entry.RequestType == "" {
-		entry.RequestType = "llm"
-	}
-
-	result, err := db.Exec(`
-		INSERT INTO requests (timestamp, request_type, provider, model, requested_model, sensitive, precision, usecase, cached, input_tokens, output_tokens, latency_ms, cost_usd, success, error, cache_key, has_images, request_body, response_body, voice, audio_duration_ms, input_chars, is_replay)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, entry.Timestamp.Format(time.RFC3339), entry.RequestType, entry.Provider, entry.Model, entry.RequestedModel,
-		entry.Sensitive, entry.Precision, entry.Usecase, entry.Cached, entry.InputTokens, entry.OutputTokens,
-		entry.LatencyMs, entry.CostUSD, entry.Success, entry.Error, entry.CacheKey, entry.HasImages,
-		string(entry.RequestBody), string(entry.ResponseBody), entry.Voice, entry.AudioDurationMs, entry.InputChars, entry.IsReplay)
-
-	if err != nil {
-		log.Printf("Failed to log request: %v", err)
-		return 0
-	}
-
-	id, err := result.LastInsertId()
-	if err != nil {
-		log.Printf("Failed to get last insert ID: %v", err)
-		return 0
-	}
-	return id
+	return requestLogger.LogRequest(entry)
 }
 
 func calculateCost(model string, inputTokens, outputTokens int) float64 {
@@ -6824,6 +6803,9 @@ func main() {
 	if err := initDB(); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
+
+	// Initialize request logger (uses the database)
+	requestLogger = repository.NewSQLiteLogger(db)
 
 	// Initialize cache
 	initCache()
