@@ -3630,6 +3630,11 @@ const dashboardHTML = `<!DOCTYPE html>
                 <h2 class="section-title">STT Routing</h2>
                 <div class="routes-grid" id="stt-routes-grid"></div>
             </div>
+            <div class="section">
+                <h2 class="section-title">Model Traffic Volume</h2>
+                <p style="color: #888; font-size: 13px; margin-bottom: 12px;">Request counts by model - helps identify high-traffic routes to optimize</p>
+                <div id="model-volume-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px;"></div>
+            </div>
         </div>
 
         <!-- Route Edit Modal -->
@@ -3810,14 +3815,15 @@ const dashboardHTML = `<!DOCTYPE html>
         let currentEditRoute = null;
 
         async function loadUsecases() {
-            const resp = await fetch('/api/usecases');
+            // Fetch all usecases from history (API calls made)
+            const resp = await fetch('/api/usecases/history');
             const usecases = await resp.json();
             const select = document.getElementById('usecase-select');
             const currentValue = select.value;
 
             // Keep the first option (base config)
             select.innerHTML = '<option value="">(base config - no overrides)</option>';
-            for (const usecase of usecases) {
+            for (const usecase of usecases || []) {
                 const opt = document.createElement('option');
                 opt.value = usecase;
                 opt.textContent = usecase;
@@ -3825,7 +3831,7 @@ const dashboardHTML = `<!DOCTYPE html>
             }
 
             // Restore selection if it still exists
-            if (currentValue && usecases.includes(currentValue)) {
+            if (currentValue && usecases && usecases.includes(currentValue)) {
                 select.value = currentValue;
             }
         }
@@ -4031,6 +4037,43 @@ const dashboardHTML = `<!DOCTYPE html>
                 loadUsecases();
                 loadAvailableModels();
                 loadRoutes();
+                loadModelVolumes();
+            }
+        }
+
+        async function loadModelVolumes() {
+            const resp = await fetch('/api/stats');
+            const stats = await resp.json();
+            const grid = document.getElementById('model-volume-grid');
+            grid.innerHTML = '';
+
+            const models = stats.by_model || [];
+            if (models.length === 0) {
+                grid.innerHTML = '<div style="color: #888; font-style: italic;">No traffic data yet</div>';
+                return;
+            }
+
+            // Find max count for bar scaling
+            const maxCount = Math.max(...models.map(m => m.count));
+
+            for (const m of models) {
+                const card = document.createElement('div');
+                card.style.cssText = 'background: #1e1e2e; border: 1px solid #374151; border-radius: 8px; padding: 12px;';
+
+                const barWidth = (m.count / maxCount) * 100;
+                const costStr = m.cost_usd > 0 ? '$' + m.cost_usd.toFixed(4) : '-';
+
+                card.innerHTML =
+                    '<div style="font-size: 13px; color: #a5b4fc; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="' + m.model + '">' + m.model + '</div>' +
+                    '<div style="display: flex; align-items: center; gap: 8px;">' +
+                        '<div style="flex: 1; background: #374151; border-radius: 4px; height: 8px; overflow: hidden;">' +
+                            '<div style="width: ' + barWidth + '%; height: 100%; background: linear-gradient(90deg, #6366f1, #8b5cf6); border-radius: 4px;"></div>' +
+                        '</div>' +
+                        '<div style="font-size: 14px; font-weight: 600; color: #fff; min-width: 50px; text-align: right;">' + m.count.toLocaleString() + '</div>' +
+                    '</div>' +
+                    '<div style="font-size: 11px; color: #888; margin-top: 4px;">' + Math.round(m.avg_latency_ms) + 'ms avg | ' + costStr + '</div>';
+
+                grid.appendChild(card);
             }
         }
 
