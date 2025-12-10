@@ -2837,12 +2837,36 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	stats["by_usecase_detail"] = byUsecaseDetail
 
-	// Recent requests
-	rows, _ = db.Query(`
+	// Recent requests - with optional filtering
+	modelFilter := r.URL.Query().Get("model")
+	sensitiveFilter := r.URL.Query().Get("sensitive")
+	precisionFilter := r.URL.Query().Get("precision")
+
+	recentQuery := `
 		SELECT id, timestamp, provider, model, cached, latency_ms, cost_usd, success, error,
-		       sensitive, precision, has_images, input_tokens, output_tokens
-		FROM requests ORDER BY id DESC LIMIT 20
-	`)
+		       sensitive, precision, has_images, input_tokens, output_tokens, usecase
+		FROM requests WHERE 1=1`
+	var args []interface{}
+
+	if modelFilter != "" {
+		recentQuery += " AND model = ?"
+		args = append(args, modelFilter)
+	}
+	if sensitiveFilter != "" {
+		recentQuery += " AND sensitive = ?"
+		if sensitiveFilter == "1" || sensitiveFilter == "true" {
+			args = append(args, true)
+		} else {
+			args = append(args, false)
+		}
+	}
+	if precisionFilter != "" {
+		recentQuery += " AND precision = ?"
+		args = append(args, precisionFilter)
+	}
+	recentQuery += " ORDER BY id DESC LIMIT 50"
+
+	rows, _ = db.Query(recentQuery, args...)
 	defer rows.Close()
 
 	recent := []map[string]interface{}{}
@@ -2857,8 +2881,9 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		var precision sql.NullString
 		var hasImages bool
 		var inputTokens, outputTokens int
+		var usecase sql.NullString
 		rows.Scan(&id, &timestamp, &provider, &model, &cached, &latencyMs, &costUsd, &success, &errStr,
-			&sensitive, &precision, &hasImages, &inputTokens, &outputTokens)
+			&sensitive, &precision, &hasImages, &inputTokens, &outputTokens, &usecase)
 
 		entry := map[string]interface{}{
 			"id":            id,
@@ -2880,9 +2905,21 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		if precision.Valid {
 			entry["precision"] = precision.String
 		}
+		if usecase.Valid {
+			entry["usecase"] = usecase.String
+		}
 		recent = append(recent, entry)
 	}
 	stats["recent_requests"] = recent
+
+	// Include active filters in response
+	if modelFilter != "" || sensitiveFilter != "" || precisionFilter != "" {
+		stats["filters"] = map[string]string{
+			"model":     modelFilter,
+			"sensitive": sensitiveFilter,
+			"precision": precisionFilter,
+		}
+	}
 
 	// Today's stats
 	today := time.Now().Format("2006-01-02")
@@ -4985,6 +5022,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
             <div class="section">
                 <h2 class="section-title">Recent Requests <span style="font-size:12px;color:#888;font-weight:normal">(click row for details)</span></h2>
+                <div id="filter-bar" style="display: none; background: #2d2d44; padding: 12px 16px; border-radius: 8px; margin-bottom: 12px; color: #a5b4fc; font-size: 14px;"></div>
                 <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center;">
                     <button class="type-filter active" data-type="" onclick="filterByType('')">All</button>
                     <button class="type-filter" data-type="llm" onclick="filterByType('llm')">LLM</button>
@@ -5117,10 +5155,58 @@ const dashboardHTML = `<!DOCTYPE html>
 
     <script>
         let currentTypeFilter = '';
+        let currentFilters = {}; // For matrix filtering
+
+        // Parse matrix filters from URL
+        function parseMatrixFilters() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const matrixParam = urlParams.get('matrix');
+            if (matrixParam) {
+                const filterParams = new URLSearchParams(matrixParam);
+                currentFilters = {
+                    model: filterParams.get('model') || '',
+                    sensitive: filterParams.get('sensitive') || '',
+                    precision: filterParams.get('precision') || ''
+                };
+            }
+        }
+        parseMatrixFilters();
+
+        function clearFilters() {
+            currentFilters = {};
+            window.history.replaceState({}, '', '/');
+            updateFilterDisplay();
+            loadStats();
+        }
+
+        function updateFilterDisplay() {
+            const filterBar = document.getElementById('filter-bar');
+            if (!filterBar) return;
+
+            if (currentFilters.model || currentFilters.sensitive || currentFilters.precision) {
+                let filterText = 'Filtering: ';
+                if (currentFilters.model) filterText += 'model=' + currentFilters.model + ' ';
+                if (currentFilters.sensitive) filterText += 'sensitive=' + (currentFilters.sensitive === '1' ? 'true' : 'false') + ' ';
+                if (currentFilters.precision) filterText += 'precision=' + currentFilters.precision;
+                filterBar.innerHTML = filterText + ' <a href="#" onclick="clearFilters(); return false;" style="margin-left: 12px;">Clear filters</a>';
+                filterBar.style.display = 'block';
+            } else {
+                filterBar.style.display = 'none';
+            }
+        }
 
         async function loadStats() {
-            const resp = await fetch('/api/stats');
+            let url = '/api/stats';
+            const params = new URLSearchParams();
+            if (currentFilters.model) params.set('model', currentFilters.model);
+            if (currentFilters.sensitive) params.set('sensitive', currentFilters.sensitive);
+            if (currentFilters.precision) params.set('precision', currentFilters.precision);
+            if (params.toString()) url += '?' + params.toString();
+
+            const resp = await fetch(url);
             const stats = await resp.json();
+
+            updateFilterDisplay();
 
             document.getElementById('total-requests').textContent = stats.total_requests.toLocaleString();
             document.getElementById('cache-rate').textContent = (stats.cache_hit_rate * 100).toFixed(1) + '%';
