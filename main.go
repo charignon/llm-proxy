@@ -947,7 +947,12 @@ func callOpenAI(req *ChatCompletionRequest, model string) (*ChatCompletionRespon
 		"messages": req.Messages,
 	}
 	if req.MaxTokens > 0 {
-		openaiReq["max_tokens"] = req.MaxTokens
+		// Newer OpenAI models (gpt-4o, o1, gpt-5.1, etc.) require max_completion_tokens
+		if strings.HasPrefix(model, "gpt-4o") || strings.HasPrefix(model, "gpt-5") || strings.HasPrefix(model, "o1") {
+			openaiReq["max_completion_tokens"] = req.MaxTokens
+		} else {
+			openaiReq["max_tokens"] = req.MaxTokens
+		}
 	}
 	if req.Temperature > 0 {
 		openaiReq["temperature"] = req.Temperature
@@ -2303,6 +2308,19 @@ func handleUsecasesHistory(w http.ResponseWriter, r *http.Request) {
 // handleUsecaseDistribution returns the distribution of sensitivity/precision combinations for a usecase
 func handleUsecaseDistribution(w http.ResponseWriter, r *http.Request) {
 	usecase := r.URL.Query().Get("usecase")
+	timeRange := r.URL.Query().Get("range")
+
+	// Convert range to SQL interval
+	var interval string
+	switch timeRange {
+	case "24h":
+		interval = "-1 day"
+	case "7d":
+		interval = "-7 days"
+	default:
+		interval = "-30 days"
+		timeRange = "30d"
+	}
 
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
@@ -2318,7 +2336,7 @@ func handleUsecaseDistribution(w http.ResponseWriter, r *http.Request) {
 	var rows *sql.Rows
 	var err error
 
-	// Get distribution for the last 30 days, grouped by model to show overrides
+	// Get distribution grouped by model to show overrides
 	if usecase == "" {
 		// Base config: show all requests (gives overall distribution)
 		rows, err = db.Query(`
@@ -2329,7 +2347,7 @@ func handleUsecaseDistribution(w http.ResponseWriter, r *http.Request) {
 				model,
 				COUNT(*) as count
 			FROM requests
-			WHERE timestamp >= datetime('now', '-30 days')
+			WHERE timestamp >= datetime('now', '`+interval+`')
 			GROUP BY sensitive, precision, route_type, model
 			ORDER BY count DESC
 		`)
@@ -2344,7 +2362,7 @@ func handleUsecaseDistribution(w http.ResponseWriter, r *http.Request) {
 				COUNT(*) as count
 			FROM requests
 			WHERE usecase = ?
-				AND timestamp >= datetime('now', '-30 days')
+				AND timestamp >= datetime('now', '`+interval+`')
 			GROUP BY sensitive, precision, route_type, model
 			ORDER BY count DESC
 		`, usecase)
@@ -2369,13 +2387,26 @@ func handleUsecaseDistribution(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"usecase":      usecase,
 		"distribution": distribution,
-		"total_30d":    totalCount,
+		"total":        totalCount,
+		"range":        timeRange,
 	})
 }
 
 // handleModelStats returns model volume statistics, optionally filtered by usecase
 func handleModelStats(w http.ResponseWriter, r *http.Request) {
 	usecase := r.URL.Query().Get("usecase")
+	timeRange := r.URL.Query().Get("range")
+
+	// Convert range to SQL interval
+	var interval string
+	switch timeRange {
+	case "24h":
+		interval = "-1 day"
+	case "7d":
+		interval = "-7 days"
+	default:
+		interval = "-30 days"
+	}
 
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
@@ -2388,6 +2419,7 @@ func handleModelStats(w http.ResponseWriter, r *http.Request) {
 		rows, err = db.Query(`
 			SELECT model, COUNT(*), COALESCE(SUM(cost_usd), 0), AVG(latency_ms)
 			FROM requests
+			WHERE timestamp >= datetime('now', '` + interval + `')
 			GROUP BY model ORDER BY COUNT(*) DESC LIMIT 20
 		`)
 	} else {
@@ -2396,6 +2428,7 @@ func handleModelStats(w http.ResponseWriter, r *http.Request) {
 			SELECT model, COUNT(*), COALESCE(SUM(cost_usd), 0), AVG(latency_ms)
 			FROM requests
 			WHERE usecase = ?
+				AND timestamp >= datetime('now', '` + interval + `')
 			GROUP BY model ORDER BY COUNT(*) DESC LIMIT 20
 		`, usecase)
 	}
@@ -5003,10 +5036,17 @@ const dashboardHTML = `<!DOCTYPE html>
                 <div class="routes-grid" id="stt-routes-grid"></div>
             </div>
             <div class="section" id="usecase-distribution-section" style="display: none;">
-                <h2 class="section-title">Traffic Distribution (Last 30d)</h2>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                    <h2 class="section-title" style="margin: 0;">Traffic Distribution</h2>
+                    <div style="display: flex; gap: 8px;">
+                        <button id="range-24h" onclick="setTimeRange('24h')" style="padding: 6px 12px; border-radius: 6px; border: 1px solid #374151; background: #1e1e2e; color: #888; cursor: pointer; font-size: 12px;">24h</button>
+                        <button id="range-7d" onclick="setTimeRange('7d')" style="padding: 6px 12px; border-radius: 6px; border: 1px solid #374151; background: #1e1e2e; color: #888; cursor: pointer; font-size: 12px;">7d</button>
+                        <button id="range-30d" onclick="setTimeRange('30d')" style="padding: 6px 12px; border-radius: 6px; border: 1px solid #6366f1; background: #6366f1; color: #fff; cursor: pointer; font-size: 12px;">30d</button>
+                    </div>
+                </div>
                 <p style="color: #888; font-size: 13px; margin-bottom: 12px;">Shows which sensitivity/precision combinations are used - helps identify what routes matter most</p>
                 <div id="usecase-distribution-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px;"></div>
-                <div id="usecase-distribution-empty" style="display: none; color: #888; font-style: italic; padding: 20px; text-align: center;">No requests in the last 30 days for this usecase</div>
+                <div id="usecase-distribution-empty" style="display: none; color: #888; font-style: italic; padding: 20px; text-align: center;">No requests in the selected time range</div>
             </div>
             <div class="section">
                 <h2 class="section-title">Model Traffic Volume</h2>
@@ -5320,6 +5360,30 @@ const dashboardHTML = `<!DOCTYPE html>
             loadModelVolumes(usecase);
         }
 
+        let currentTimeRange = '30d';
+        let lastDistributionData = null;
+
+        function setTimeRange(range) {
+            currentTimeRange = range;
+            // Update button styles
+            ['24h', '7d', '30d'].forEach(r => {
+                const btn = document.getElementById('range-' + r);
+                if (r === range) {
+                    btn.style.background = '#6366f1';
+                    btn.style.borderColor = '#6366f1';
+                    btn.style.color = '#fff';
+                } else {
+                    btn.style.background = '#1e1e2e';
+                    btn.style.borderColor = '#374151';
+                    btn.style.color = '#888';
+                }
+            });
+            // Reload data with new range
+            const usecase = document.getElementById('usecase-select').value;
+            loadUsecaseDistribution(usecase);
+            loadModelVolumes(usecase);
+        }
+
         async function loadUsecaseDistribution(usecase) {
             const section = document.getElementById('usecase-distribution-section');
             const grid = document.getElementById('usecase-distribution-grid');
@@ -5329,11 +5393,16 @@ const dashboardHTML = `<!DOCTYPE html>
             grid.innerHTML = '';
             emptyMsg.style.display = 'none';
 
-            const url = usecase
-                ? '/api/usecases/distribution?usecase=' + encodeURIComponent(usecase)
-                : '/api/usecases/distribution';
+            let url = '/api/usecases/distribution?range=' + currentTimeRange;
+            if (usecase) {
+                url += '&usecase=' + encodeURIComponent(usecase);
+            }
             const resp = await fetch(url);
             const data = await resp.json();
+            lastDistributionData = data;
+
+            // Highlight route cards that have traffic
+            highlightActiveRoutes(data.distribution || []);
 
             if (!data.distribution || data.distribution.length === 0) {
                 emptyMsg.style.display = 'block';
@@ -5353,7 +5422,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
                 const barWidth = (d.count / maxCount) * 100;
                 const color = typeColors[d.route_type] || '#6366f1';
-                const pct = ((d.count / data.total_30d) * 100).toFixed(1);
+                const pct = ((d.count / data.total) * 100).toFixed(1);
 
                 card.innerHTML =
                     '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">' +
@@ -5374,8 +5443,37 @@ const dashboardHTML = `<!DOCTYPE html>
             // Add total summary
             const summary = document.createElement('div');
             summary.style.cssText = 'background: #1e1e2e; border: 1px solid #22c55e; border-radius: 8px; padding: 12px; display: flex; align-items: center; justify-content: center;';
-            summary.innerHTML = '<span style="font-size: 14px; color: #22c55e; font-weight: 600;">Total: ' + data.total_30d + ' requests (30d)</span>';
+            summary.innerHTML = '<span style="font-size: 14px; color: #22c55e; font-weight: 600;">Total: ' + data.total + ' requests (' + currentTimeRange + ')</span>';
             grid.appendChild(summary);
+        }
+
+        function highlightActiveRoutes(distribution) {
+            // Build a set of active route keys
+            const activeRoutes = new Set();
+            for (const d of distribution) {
+                activeRoutes.add(d.route_type + '|' + d.sensitive + '|' + d.precision);
+            }
+
+            // Find all route cards and highlight those with traffic
+            document.querySelectorAll('.route-card').forEach(card => {
+                const flagsText = card.querySelector('.route-flags')?.textContent || '';
+                const typeText = card.querySelector('.route-type')?.textContent || '';
+
+                // Parse sensitive and precision from flags
+                const sensitiveMatch = flagsText.match(/sensitive:\s*(true|false)/);
+                const precisionMatch = flagsText.match(/precision:\s*(\w+)/);
+
+                if (sensitiveMatch && precisionMatch) {
+                    const key = typeText + '|' + sensitiveMatch[1] + '|' + precisionMatch[1];
+                    if (activeRoutes.has(key)) {
+                        card.style.boxShadow = '0 0 12px rgba(245, 158, 11, 0.6), inset 0 0 20px rgba(245, 158, 11, 0.1)';
+                        card.style.borderColor = '#f59e0b';
+                    } else {
+                        card.style.boxShadow = '';
+                        card.style.borderColor = '';
+                    }
+                }
+            });
         }
 
         async function openRouteEditModal(route, usecase) {
@@ -5514,9 +5612,10 @@ const dashboardHTML = `<!DOCTYPE html>
         }
 
         async function loadModelVolumes(usecase) {
-            const url = usecase
-                ? '/api/stats/models?usecase=' + encodeURIComponent(usecase)
-                : '/api/stats/models';
+            let url = '/api/stats/models?range=' + currentTimeRange;
+            if (usecase) {
+                url += '&usecase=' + encodeURIComponent(usecase);
+            }
             const resp = await fetch(url);
             const models = await resp.json();
             const grid = document.getElementById('model-volume-grid');
