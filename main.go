@@ -3401,9 +3401,11 @@ const analyticsHTML = `<!DOCTYPE html>
             width: 100%;
             border-collapse: collapse;
             font-size: 13px;
+            border-radius: 12px;
+            overflow: hidden;
         }
         .matrix-table th, .matrix-table td {
-            padding: 10px 12px;
+            padding: 12px 14px;
             text-align: center;
             border: 1px solid #2d2d44;
         }
@@ -3411,6 +3413,21 @@ const analyticsHTML = `<!DOCTYPE html>
             background: #252540;
             color: #a5b4fc;
             font-weight: 600;
+        }
+        .matrix-table .sensitive-header {
+            background: rgba(239, 68, 68, 0.15);
+            color: #fca5a5;
+            border-bottom: 2px solid #ef4444;
+        }
+        .matrix-table .not-sensitive-header {
+            background: rgba(34, 197, 94, 0.15);
+            color: #86efac;
+            border-bottom: 2px solid #22c55e;
+        }
+        .matrix-table .precision-header {
+            font-size: 11px;
+            text-transform: capitalize;
+            font-weight: 500;
         }
         .matrix-table td {
             background: #1e1e30;
@@ -3420,6 +3437,7 @@ const analyticsHTML = `<!DOCTYPE html>
             font-weight: 500;
             color: #6366f1;
             cursor: pointer;
+            background: #1a1a2e;
         }
         .matrix-table .model-cell:hover {
             color: #818cf8;
@@ -3429,9 +3447,17 @@ const analyticsHTML = `<!DOCTYPE html>
             cursor: pointer;
             transition: all 0.15s;
         }
-        .matrix-cell:hover {
-            background: #2d2d50;
-            transform: scale(1.05);
+        .matrix-cell.cell-sensitive {
+            background: rgba(239, 68, 68, 0.08);
+        }
+        .matrix-cell.cell-sensitive:hover {
+            background: rgba(239, 68, 68, 0.2);
+        }
+        .matrix-cell.cell-not-sensitive {
+            background: rgba(34, 197, 94, 0.08);
+        }
+        .matrix-cell.cell-not-sensitive:hover {
+            background: rgba(34, 197, 94, 0.2);
         }
         .matrix-count {
             font-size: 16px;
@@ -3752,15 +3778,23 @@ const analyticsHTML = `<!DOCTYPE html>
             // Build matrix structure: model -> sensitivity -> precision -> {count, cost}
             const models = [...new Set(data.map(d => d.model))].sort();
             const precisions = ['very_high', 'high', 'medium', 'low', 'unspecified'];
+            const hasUnspecified = data.some(d => d.precision === 'unspecified');
+            const activePrecisions = precisions.filter(p => p !== 'unspecified' || hasUnspecified);
 
-            let html = '<table class="matrix-table"><thead><tr><th>Model</th>';
+            let html = '<table class="matrix-table"><thead>';
 
-            // Headers: Sensitive/Not Sensitive × Precision
-            ['Sensitive', 'Not Sensitive'].forEach(sens => {
-                precisions.forEach(prec => {
-                    if (prec !== 'unspecified' || data.some(d => d.precision === 'unspecified')) {
-                        html += '<th style="font-size:11px;">' + sens.substring(0, 4) + '<br>' + prec.replace('_', ' ') + '</th>';
-                    }
+            // First header row: Sensitivity groups
+            html += '<tr><th rowspan="2" style="vertical-align:middle;">Model</th>';
+            html += '<th colspan="' + activePrecisions.length + '" class="sensitive-header">Sensitive</th>';
+            html += '<th colspan="' + activePrecisions.length + '" class="not-sensitive-header">Not Sensitive</th>';
+            html += '</tr>';
+
+            // Second header row: Precision levels
+            html += '<tr>';
+            [true, false].forEach(sensitive => {
+                activePrecisions.forEach(prec => {
+                    const cls = sensitive ? 'sensitive-header' : 'not-sensitive-header';
+                    html += '<th class="' + cls + ' precision-header">' + prec.replace('_', ' ') + '</th>';
                 });
             });
             html += '</tr></thead><tbody>';
@@ -3769,19 +3803,18 @@ const analyticsHTML = `<!DOCTYPE html>
                 html += '<tr><td class="model-cell" onclick="showModelDetail(\'' + model + '\')">' + model + '</td>';
 
                 [true, false].forEach(sensitive => {
-                    precisions.forEach(prec => {
-                        if (prec !== 'unspecified' || data.some(d => d.precision === 'unspecified')) {
-                            const item = data.find(d => d.model === model && d.sensitive === sensitive && d.precision === prec);
-                            if (item) {
-                                html += '<td class="matrix-cell" title="' + model + ' (' + (sensitive ? 'sensitive' : 'not sensitive') + ', ' + prec + ')">';
-                                html += '<div class="matrix-count">' + item.count.toLocaleString() + '</div>';
-                                if (item.cost > 0) {
-                                    html += '<div class="matrix-cost">$' + item.cost.toFixed(4) + '</div>';
-                                }
-                                html += '</td>';
-                            } else {
-                                html += '<td class="matrix-cell" style="color:#444;">-</td>';
+                    activePrecisions.forEach(prec => {
+                        const item = data.find(d => d.model === model && d.sensitive === sensitive && d.precision === prec);
+                        const bgClass = sensitive ? 'cell-sensitive' : 'cell-not-sensitive';
+                        if (item) {
+                            html += '<td class="matrix-cell ' + bgClass + '" title="' + model + ' (' + (sensitive ? 'sensitive' : 'not sensitive') + ', ' + prec + ')">';
+                            html += '<div class="matrix-count">' + item.count.toLocaleString() + '</div>';
+                            if (item.cost > 0) {
+                                html += '<div class="matrix-cost">$' + item.cost.toFixed(4) + '</div>';
                             }
+                            html += '</td>';
+                        } else {
+                            html += '<td class="matrix-cell ' + bgClass + '" style="color:#555;">-</td>';
                         }
                     });
                 });
