@@ -2373,6 +2373,58 @@ func handleUsecaseDistribution(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleModelStats returns model volume statistics, optionally filtered by usecase
+func handleModelStats(w http.ResponseWriter, r *http.Request) {
+	usecase := r.URL.Query().Get("usecase")
+
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	var rows *sql.Rows
+	var err error
+
+	if usecase == "" {
+		// All usecases
+		rows, err = db.Query(`
+			SELECT model, COUNT(*), COALESCE(SUM(cost_usd), 0), AVG(latency_ms)
+			FROM requests
+			GROUP BY model ORDER BY COUNT(*) DESC LIMIT 20
+		`)
+	} else {
+		// Specific usecase
+		rows, err = db.Query(`
+			SELECT model, COUNT(*), COALESCE(SUM(cost_usd), 0), AVG(latency_ms)
+			FROM requests
+			WHERE usecase = ?
+			GROUP BY model ORDER BY COUNT(*) DESC LIMIT 20
+		`, usecase)
+	}
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var models []map[string]interface{}
+	for rows.Next() {
+		var model string
+		var count int
+		var cost float64
+		var avgLatency float64
+		rows.Scan(&model, &count, &cost, &avgLatency)
+		models = append(models, map[string]interface{}{
+			"model":          model,
+			"count":          count,
+			"cost_usd":       cost,
+			"avg_latency_ms": avgLatency,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(models)
+}
+
 // Request detail API - returns full request/response data for a specific request
 func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 	idStr := r.URL.Query().Get("id")
@@ -5263,8 +5315,9 @@ const dashboardHTML = `<!DOCTYPE html>
                 }
             }
 
-            // Load distribution when a usecase is selected
+            // Load distribution and model volumes for selected usecase
             loadUsecaseDistribution(usecase);
+            loadModelVolumes(usecase);
         }
 
         async function loadUsecaseDistribution(usecase) {
@@ -5460,14 +5513,16 @@ const dashboardHTML = `<!DOCTYPE html>
             }
         }
 
-        async function loadModelVolumes() {
-            const resp = await fetch('/api/stats');
-            const stats = await resp.json();
+        async function loadModelVolumes(usecase) {
+            const url = usecase
+                ? '/api/stats/models?usecase=' + encodeURIComponent(usecase)
+                : '/api/stats/models';
+            const resp = await fetch(url);
+            const models = await resp.json();
             const grid = document.getElementById('model-volume-grid');
             grid.innerHTML = '';
 
-            const models = stats.by_model || [];
-            if (models.length === 0) {
+            if (!models || models.length === 0) {
                 grid.innerHTML = '<div style="color: #888; font-style: italic;">No traffic data yet</div>';
                 return;
             }
@@ -6952,6 +7007,7 @@ func main() {
 	http.HandleFunc("/v1/estimate", handleEstimate)
 	http.HandleFunc("/v1/models", handleModels)
 	http.HandleFunc("/api/stats", handleStats)
+	http.HandleFunc("/api/stats/models", handleModelStats)
 	http.HandleFunc("/api/timing", handleTiming)
 	http.HandleFunc("/api/routes", handleRoutes)
 	http.HandleFunc("/api/routes/override", handleRouteOverride)
