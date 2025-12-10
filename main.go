@@ -4541,7 +4541,7 @@ const analyticsHTML = `<!DOCTYPE html>
             if (precision && precision !== 'unspecified') {
                 params.set('precision', precision);
             }
-            window.location.href = '/?matrix=' + params.toString();
+            window.location.href = '/?matrix=' + encodeURIComponent(params.toString());
         }
 
         async function showModelDetail(model) {
