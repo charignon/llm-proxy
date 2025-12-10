@@ -3474,6 +3474,43 @@ const analyticsHTML = `<!DOCTYPE html>
             margin-top: 2px;
         }
 
+        .filter-row {
+            display: flex;
+            gap: 32px;
+            align-items: center;
+            margin-bottom: 16px;
+            padding: 12px 16px;
+            background: #252540;
+            border-radius: 10px;
+            flex-wrap: wrap;
+        }
+        .filter-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .filter-group label {
+            color: #a5b4fc;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        .filter-group input[type="range"] {
+            width: 120px;
+            accent-color: #6366f1;
+            cursor: pointer;
+        }
+        .filter-group span {
+            min-width: 50px;
+            color: #e0e0e0;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .filter-info {
+            color: #888;
+            font-size: 12px;
+            margin-left: auto;
+        }
+
         .model-selector {
             display: flex;
             gap: 8px;
@@ -3603,7 +3640,20 @@ const analyticsHTML = `<!DOCTYPE html>
                 <!-- Query Matrix by Model/Sensitivity/Precision -->
                 <div class="chart-card full-width">
                     <div class="chart-title">Query Count Matrix (Model × Sensitivity × Precision)</div>
-                    <p style="color: #888; font-size: 13px; margin-bottom: 16px;">Click on a model name to see detailed stats</p>
+                    <p style="color: #888; font-size: 13px; margin-bottom: 12px;">Click on a model name to see detailed stats</p>
+                    <div class="filter-row">
+                        <div class="filter-group">
+                            <label>Min Requests:</label>
+                            <input type="range" id="minCountSlider" min="0" max="100" value="1" oninput="updateMatrixFilters()">
+                            <span id="minCountValue">1</span>
+                        </div>
+                        <div class="filter-group">
+                            <label>Min Cost ($):</label>
+                            <input type="range" id="minCostSlider" min="0" max="100" value="0" step="1" oninput="updateMatrixFilters()">
+                            <span id="minCostValue">$0.00</span>
+                        </div>
+                        <div class="filter-info" id="filterInfo">Showing all models</div>
+                    </div>
                     <div class="matrix-container" id="matrixContainer">
                         <!-- Matrix will be generated here -->
                     </div>
@@ -3662,6 +3712,7 @@ const analyticsHTML = `<!DOCTYPE html>
         function renderCharts() {
             renderCostPieChart();
             renderHourlyChart();
+            initMatrixSliders();
             renderMatrix();
             renderVolumeChart();
             renderModelSelector();
@@ -3775,12 +3826,74 @@ const analyticsHTML = `<!DOCTYPE html>
             });
         }
 
+        let matrixMinCount = 1;
+        let matrixMinCost = 0;
+        let maxModelCount = 100;
+        let maxModelCost = 1;
+
+        function initMatrixSliders() {
+            const data = analyticsData.query_matrix || [];
+
+            // Calculate per-model totals
+            const modelStats = {};
+            data.forEach(d => {
+                if (!modelStats[d.model]) {
+                    modelStats[d.model] = { count: 0, cost: 0 };
+                }
+                modelStats[d.model].count += d.count;
+                modelStats[d.model].cost += d.cost;
+            });
+
+            // Find max values for slider ranges
+            maxModelCount = Math.max(...Object.values(modelStats).map(s => s.count), 1);
+            maxModelCost = Math.max(...Object.values(modelStats).map(s => s.cost), 0.01);
+
+            // Set slider max values
+            document.getElementById('minCountSlider').max = maxModelCount;
+            document.getElementById('minCostSlider').max = Math.ceil(maxModelCost * 100); // cents
+        }
+
+        function updateMatrixFilters() {
+            matrixMinCount = parseInt(document.getElementById('minCountSlider').value);
+            const costCents = parseInt(document.getElementById('minCostSlider').value);
+            matrixMinCost = costCents / 100;
+
+            document.getElementById('minCountValue').textContent = matrixMinCount;
+            document.getElementById('minCostValue').textContent = '$' + matrixMinCost.toFixed(2);
+
+            renderMatrix();
+        }
+
         function renderMatrix() {
             const container = document.getElementById('matrixContainer');
             const data = analyticsData.query_matrix || [];
 
-            // Build matrix structure: model -> sensitivity -> precision -> {count, cost}
-            const models = [...new Set(data.map(d => d.model))].sort();
+            // Calculate per-model totals for filtering
+            const modelStats = {};
+            data.forEach(d => {
+                if (!modelStats[d.model]) {
+                    modelStats[d.model] = { count: 0, cost: 0 };
+                }
+                modelStats[d.model].count += d.count;
+                modelStats[d.model].cost += d.cost;
+            });
+
+            // Filter models based on sliders
+            const allModels = [...new Set(data.map(d => d.model))].sort();
+            const models = allModels.filter(m => {
+                const stats = modelStats[m] || { count: 0, cost: 0 };
+                return stats.count >= matrixMinCount && stats.cost >= matrixMinCost;
+            });
+
+            // Update filter info
+            document.getElementById('filterInfo').textContent =
+                'Showing ' + models.length + ' of ' + allModels.length + ' models';
+
+            if (models.length === 0) {
+                container.innerHTML = '<p style="color:#888;text-align:center;padding:40px;">No models match the current filters</p>';
+                return;
+            }
+
             const precisions = ['very_high', 'high', 'medium', 'low', 'unspecified'];
             const hasUnspecified = data.some(d => d.precision === 'unspecified');
             const activePrecisions = precisions.filter(p => p !== 'unspecified' || hasUnspecified);
@@ -3791,6 +3904,7 @@ const analyticsHTML = `<!DOCTYPE html>
             html += '<tr><th rowspan="2" style="vertical-align:middle;">Model</th>';
             html += '<th colspan="' + activePrecisions.length + '" class="sensitive-header">Sensitive</th>';
             html += '<th colspan="' + activePrecisions.length + '" class="not-sensitive-header">Not Sensitive</th>';
+            html += '<th rowspan="2" style="vertical-align:middle;">Total</th>';
             html += '</tr>';
 
             // Second header row: Precision levels
@@ -3804,6 +3918,7 @@ const analyticsHTML = `<!DOCTYPE html>
             html += '</tr></thead><tbody>';
 
             models.forEach(model => {
+                const stats = modelStats[model];
                 html += '<tr><td class="model-cell" onclick="showModelDetail(\'' + model + '\')">' + model + '</td>';
 
                 [true, false].forEach(sensitive => {
@@ -3822,6 +3937,14 @@ const analyticsHTML = `<!DOCTYPE html>
                         }
                     });
                 });
+
+                // Total column
+                html += '<td style="background:#252540;font-weight:600;">';
+                html += '<div class="matrix-count">' + stats.count.toLocaleString() + '</div>';
+                if (stats.cost > 0) {
+                    html += '<div class="matrix-cost">$' + stats.cost.toFixed(4) + '</div>';
+                }
+                html += '</td>';
 
                 html += '</tr>';
             });
