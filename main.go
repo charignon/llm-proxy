@@ -2282,6 +2282,28 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 		args = append(args, usecaseFilter)
 	}
 
+	// Filter by model if specified
+	if modelFilter := r.URL.Query().Get("model"); modelFilter != "" {
+		conditions = append(conditions, "model = ?")
+		args = append(args, modelFilter)
+	}
+
+	// Filter by sensitive if specified
+	if sensitiveFilter := r.URL.Query().Get("sensitive"); sensitiveFilter != "" {
+		conditions = append(conditions, "sensitive = ?")
+		if sensitiveFilter == "1" || sensitiveFilter == "true" {
+			args = append(args, 1)
+		} else {
+			args = append(args, 0)
+		}
+	}
+
+	// Filter by precision if specified
+	if precisionFilter := r.URL.Query().Get("precision"); precisionFilter != "" {
+		conditions = append(conditions, "precision = ?")
+		args = append(args, precisionFilter)
+	}
+
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -5323,6 +5345,16 @@ const dashboardHTML = `<!DOCTYPE html>
             }
             if (currentUsecaseFilter) {
                 url += '&usecase=' + encodeURIComponent(currentUsecaseFilter);
+            }
+            // Add matrix filters
+            if (currentFilters.model) {
+                url += '&model=' + encodeURIComponent(currentFilters.model);
+            }
+            if (currentFilters.sensitive) {
+                url += '&sensitive=' + encodeURIComponent(currentFilters.sensitive);
+            }
+            if (currentFilters.precision) {
+                url += '&precision=' + encodeURIComponent(currentFilters.precision);
             }
             const resp = await fetch(url);
             const requests = await resp.json();
