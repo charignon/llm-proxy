@@ -2800,6 +2800,176 @@ func handleTiming(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(timing)
 }
 
+// handleAnalytics returns analytics data for charts
+func handleAnalytics(w http.ResponseWriter, r *http.Request) {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	analytics := map[string]interface{}{}
+
+	// Cost breakdown by usecase (for pie chart)
+	rows, _ := db.Query(`
+		SELECT COALESCE(usecase, 'unspecified'), COALESCE(SUM(cost_usd), 0), COUNT(*)
+		FROM requests
+		WHERE usecase IS NOT NULL AND usecase != ''
+		GROUP BY usecase
+		ORDER BY SUM(cost_usd) DESC
+	`)
+	defer rows.Close()
+
+	costByUsecase := []map[string]interface{}{}
+	for rows.Next() {
+		var usecase string
+		var cost float64
+		var count int
+		rows.Scan(&usecase, &cost, &count)
+		costByUsecase = append(costByUsecase, map[string]interface{}{
+			"usecase": usecase,
+			"cost":    cost,
+			"count":   count,
+		})
+	}
+	analytics["cost_by_usecase"] = costByUsecase
+
+	// Query count matrix by model, sensitivity, precision
+	rows, _ = db.Query(`
+		SELECT model, sensitive, COALESCE(precision, 'unspecified'), COUNT(*), COALESCE(SUM(cost_usd), 0)
+		FROM requests
+		GROUP BY model, sensitive, precision
+		ORDER BY model, sensitive, precision
+	`)
+	defer rows.Close()
+
+	queryMatrix := []map[string]interface{}{}
+	for rows.Next() {
+		var model string
+		var sensitive bool
+		var precision string
+		var count int
+		var cost float64
+		rows.Scan(&model, &sensitive, &precision, &count, &cost)
+		queryMatrix = append(queryMatrix, map[string]interface{}{
+			"model":     model,
+			"sensitive": sensitive,
+			"precision": precision,
+			"count":     count,
+			"cost":      cost,
+		})
+	}
+	analytics["query_matrix"] = queryMatrix
+
+	// Get all distinct models for filtering
+	rows, _ = db.Query(`SELECT DISTINCT model FROM requests ORDER BY model`)
+	defer rows.Close()
+
+	models := []string{}
+	for rows.Next() {
+		var model string
+		rows.Scan(&model)
+		models = append(models, model)
+	}
+	analytics["models"] = models
+
+	// Volume over time (last 30 days, grouped by day and model)
+	rows, _ = db.Query(`
+		SELECT DATE(timestamp) as day, model, COUNT(*), COALESCE(SUM(cost_usd), 0)
+		FROM requests
+		WHERE timestamp >= DATE('now', '-30 days')
+		GROUP BY DATE(timestamp), model
+		ORDER BY day ASC, model
+	`)
+	defer rows.Close()
+
+	volumeOverTime := []map[string]interface{}{}
+	for rows.Next() {
+		var day, model string
+		var count int
+		var cost float64
+		rows.Scan(&day, &model, &count, &cost)
+		volumeOverTime = append(volumeOverTime, map[string]interface{}{
+			"day":   day,
+			"model": model,
+			"count": count,
+			"cost":  cost,
+		})
+	}
+	analytics["volume_over_time"] = volumeOverTime
+
+	// Hourly distribution (for the last 7 days)
+	rows, _ = db.Query(`
+		SELECT strftime('%H', timestamp) as hour, COUNT(*)
+		FROM requests
+		WHERE timestamp >= DATE('now', '-7 days')
+		GROUP BY hour
+		ORDER BY hour
+	`)
+	defer rows.Close()
+
+	hourlyDistribution := []map[string]interface{}{}
+	for rows.Next() {
+		var hour string
+		var count int
+		rows.Scan(&hour, &count)
+		hourlyDistribution = append(hourlyDistribution, map[string]interface{}{
+			"hour":  hour,
+			"count": count,
+		})
+	}
+	analytics["hourly_distribution"] = hourlyDistribution
+
+	// Model-specific stats (for detail view)
+	modelParam := r.URL.Query().Get("model")
+	if modelParam != "" {
+		// Daily volume for specific model
+		rows, _ = db.Query(`
+			SELECT DATE(timestamp) as day, COUNT(*), COALESCE(SUM(cost_usd), 0), AVG(latency_ms)
+			FROM requests
+			WHERE model = ? AND timestamp >= DATE('now', '-30 days')
+			GROUP BY DATE(timestamp)
+			ORDER BY day ASC
+		`, modelParam)
+		defer rows.Close()
+
+		modelDailyVolume := []map[string]interface{}{}
+		for rows.Next() {
+			var day string
+			var count int
+			var cost, avgLatency float64
+			rows.Scan(&day, &count, &cost, &avgLatency)
+			modelDailyVolume = append(modelDailyVolume, map[string]interface{}{
+				"day":         day,
+				"count":       count,
+				"cost":        cost,
+				"avg_latency": avgLatency,
+			})
+		}
+		analytics["model_daily_volume"] = modelDailyVolume
+
+		// Model summary stats
+		var totalCount int
+		var totalCost, avgLatency float64
+		var minLatency, maxLatency int64
+		db.QueryRow(`
+			SELECT COUNT(*), COALESCE(SUM(cost_usd), 0), AVG(latency_ms), MIN(latency_ms), MAX(latency_ms)
+			FROM requests WHERE model = ?
+		`, modelParam).Scan(&totalCount, &totalCost, &avgLatency, &minLatency, &maxLatency)
+
+		analytics["model_summary"] = map[string]interface{}{
+			"model":       modelParam,
+			"total_count": totalCount,
+			"total_cost":  totalCost,
+			"avg_latency": avgLatency,
+			"min_latency": minLatency,
+			"max_latency": maxLatency,
+		}
+	}
+
+	json.NewEncoder(w).Encode(analytics)
+}
+
 func handleRoutes(w http.ResponseWriter, r *http.Request) {
 	usecase := r.URL.Query().Get("usecase")
 	routes := []map[string]interface{}{}
@@ -3144,6 +3314,722 @@ func handleSTTHistory(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+// Analytics HTML
+const analyticsHTML = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Proxy - Analytics</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0f0f1a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1600px; margin: 0 auto; }
+        h1 { color: #6366f1; margin-bottom: 8px; font-size: 28px; }
+        .subtitle { color: #888; margin-bottom: 16px; }
+        a { color: #6366f1; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        .nav-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 24px;
+            background: #1a1a2e;
+            padding: 4px;
+            border-radius: 12px;
+        }
+        .nav-tab {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            color: #888;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .nav-tab:hover { color: #e0e0e0; background: #252540; }
+        .nav-tab.active { background: #6366f1; color: #fff; }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+        @media (max-width: 1200px) {
+            .charts-grid { grid-template-columns: 1fr; }
+        }
+
+        .chart-card {
+            background: #1a1a2e;
+            border-radius: 16px;
+            padding: 24px;
+            position: relative;
+        }
+        .chart-card.full-width {
+            grid-column: 1 / -1;
+        }
+        .chart-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #a5b4fc;
+            margin-bottom: 16px;
+        }
+        .chart-container {
+            position: relative;
+            height: 320px;
+        }
+        .chart-container.tall {
+            height: 400px;
+        }
+
+        .matrix-container {
+            overflow-x: auto;
+        }
+        .matrix-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        .matrix-table th, .matrix-table td {
+            padding: 10px 12px;
+            text-align: center;
+            border: 1px solid #2d2d44;
+        }
+        .matrix-table th {
+            background: #252540;
+            color: #a5b4fc;
+            font-weight: 600;
+        }
+        .matrix-table td {
+            background: #1e1e30;
+        }
+        .matrix-table .model-cell {
+            text-align: left;
+            font-weight: 500;
+            color: #6366f1;
+            cursor: pointer;
+        }
+        .matrix-table .model-cell:hover {
+            color: #818cf8;
+            text-decoration: underline;
+        }
+        .matrix-cell {
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .matrix-cell:hover {
+            background: #2d2d50;
+            transform: scale(1.05);
+        }
+        .matrix-count {
+            font-size: 16px;
+            font-weight: 600;
+            color: #e0e0e0;
+        }
+        .matrix-cost {
+            font-size: 11px;
+            color: #22c55e;
+            margin-top: 2px;
+        }
+
+        .model-selector {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+        .model-btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: 1px solid #374151;
+            background: #1a1a2e;
+            color: #888;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        .model-btn:hover {
+            border-color: #6366f1;
+            color: #fff;
+        }
+        .model-btn.active {
+            background: #6366f1;
+            color: #fff;
+            border-color: #6366f1;
+        }
+
+        .model-detail {
+            display: none;
+            animation: fadeIn 0.3s ease;
+        }
+        .model-detail.active {
+            display: block;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .stat-box {
+            background: #252540;
+            border-radius: 12px;
+            padding: 16px;
+            text-align: center;
+        }
+        .stat-box-label {
+            color: #888;
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+        .stat-box-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #6366f1;
+        }
+        .stat-box-value.cost { color: #22c55e; }
+        .stat-box-value.latency { color: #f59e0b; }
+
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: #6366f1;
+            font-size: 14px;
+            margin-bottom: 20px;
+            cursor: pointer;
+        }
+        .back-link:hover {
+            color: #818cf8;
+        }
+
+        .legend-inline {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+            font-size: 12px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #888;
+        }
+        .legend-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>LLM Proxy Analytics</h1>
+        <p class="subtitle">Cost breakdown, usage patterns, and model performance</p>
+
+        <div class="nav-tabs">
+            <button class="nav-tab" onclick="window.location.href='/'">Requests</button>
+            <button class="nav-tab" onclick="window.location.href='/test'">Playground</button>
+            <button class="nav-tab" onclick="window.location.href='/#routing'">Routing</button>
+            <button class="nav-tab active">Analytics</button>
+        </div>
+
+        <div id="overview-view">
+            <div class="charts-grid">
+                <!-- Cost by Usecase Pie Chart -->
+                <div class="chart-card">
+                    <div class="chart-title">Cost Breakdown by Use Case</div>
+                    <div class="chart-container">
+                        <canvas id="costPieChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Hourly Distribution -->
+                <div class="chart-card">
+                    <div class="chart-title">Request Volume by Hour (Last 7 Days)</div>
+                    <div class="chart-container">
+                        <canvas id="hourlyChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Query Matrix by Model/Sensitivity/Precision -->
+                <div class="chart-card full-width">
+                    <div class="chart-title">Query Count Matrix (Model × Sensitivity × Precision)</div>
+                    <p style="color: #888; font-size: 13px; margin-bottom: 16px;">Click on a model name to see detailed stats</p>
+                    <div class="matrix-container" id="matrixContainer">
+                        <!-- Matrix will be generated here -->
+                    </div>
+                </div>
+
+                <!-- Volume Over Time -->
+                <div class="chart-card full-width">
+                    <div class="chart-title">Request Volume Over Time (Last 30 Days)</div>
+                    <div class="model-selector" id="modelSelector">
+                        <button class="model-btn active" data-model="all">All Models</button>
+                    </div>
+                    <div class="chart-container tall">
+                        <canvas id="volumeChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Model Detail View -->
+        <div id="model-detail-view" class="model-detail">
+            <div class="back-link" onclick="showOverview()">
+                ← Back to Overview
+            </div>
+            <div class="chart-card">
+                <div class="chart-title" id="modelDetailTitle">Model Details</div>
+                <div class="stats-row" id="modelStatsRow">
+                    <!-- Stats will be populated here -->
+                </div>
+                <div class="chart-container tall">
+                    <canvas id="modelDetailChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let analyticsData = null;
+        let costPieChart = null;
+        let hourlyChart = null;
+        let volumeChart = null;
+        let modelDetailChart = null;
+        let selectedVolumeModel = 'all';
+
+        const colors = [
+            '#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#22c55e',
+            '#14b8a6', '#06b6d4', '#3b82f6', '#ef4444', '#84cc16',
+            '#f97316', '#a855f7', '#eab308', '#10b981', '#0ea5e9'
+        ];
+
+        async function loadAnalytics() {
+            const response = await fetch('/api/analytics');
+            analyticsData = await response.json();
+            renderCharts();
+        }
+
+        function renderCharts() {
+            renderCostPieChart();
+            renderHourlyChart();
+            renderMatrix();
+            renderVolumeChart();
+            renderModelSelector();
+        }
+
+        function renderCostPieChart() {
+            const ctx = document.getElementById('costPieChart').getContext('2d');
+            const data = analyticsData.cost_by_usecase || [];
+
+            if (costPieChart) costPieChart.destroy();
+
+            costPieChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: data.map(d => d.usecase),
+                    datasets: [{
+                        data: data.map(d => d.cost),
+                        backgroundColor: colors.slice(0, data.length),
+                        borderColor: '#0f0f1a',
+                        borderWidth: 2,
+                        hoverOffset: 8
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: {
+                                color: '#888',
+                                padding: 12,
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1,
+                            padding: 12,
+                            callbacks: {
+                                label: function(context) {
+                                    const item = data[context.dataIndex];
+                                    const total = data.reduce((sum, d) => sum + d.cost, 0);
+                                    const percentage = ((item.cost / total) * 100).toFixed(1);
+                                    return [
+                                        'Cost: $' + item.cost.toFixed(4),
+                                        'Requests: ' + item.count.toLocaleString(),
+                                        'Share: ' + percentage + '%'
+                                    ];
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderHourlyChart() {
+            const ctx = document.getElementById('hourlyChart').getContext('2d');
+            const data = analyticsData.hourly_distribution || [];
+
+            // Fill in missing hours
+            const hourlyData = new Array(24).fill(0);
+            data.forEach(d => {
+                const hour = parseInt(d.hour);
+                hourlyData[hour] = d.count;
+            });
+
+            if (hourlyChart) hourlyChart.destroy();
+
+            hourlyChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: Array.from({length: 24}, (_, i) => i.toString().padStart(2, '0') + ':00'),
+                    datasets: [{
+                        label: 'Requests',
+                        data: hourlyData,
+                        backgroundColor: '#6366f1',
+                        borderRadius: 4,
+                        borderSkipped: false
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#888' }
+                        },
+                        y: {
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#888' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderMatrix() {
+            const container = document.getElementById('matrixContainer');
+            const data = analyticsData.query_matrix || [];
+
+            // Build matrix structure: model -> sensitivity -> precision -> {count, cost}
+            const models = [...new Set(data.map(d => d.model))].sort();
+            const precisions = ['very_high', 'high', 'medium', 'low', 'unspecified'];
+
+            let html = '<table class="matrix-table"><thead><tr><th>Model</th>';
+
+            // Headers: Sensitive/Not Sensitive × Precision
+            ['Sensitive', 'Not Sensitive'].forEach(sens => {
+                precisions.forEach(prec => {
+                    if (prec !== 'unspecified' || data.some(d => d.precision === 'unspecified')) {
+                        html += '<th style="font-size:11px;">' + sens.substring(0, 4) + '<br>' + prec.replace('_', ' ') + '</th>';
+                    }
+                });
+            });
+            html += '</tr></thead><tbody>';
+
+            models.forEach(model => {
+                html += '<tr><td class="model-cell" onclick="showModelDetail(\'' + model + '\')">' + model + '</td>';
+
+                [true, false].forEach(sensitive => {
+                    precisions.forEach(prec => {
+                        if (prec !== 'unspecified' || data.some(d => d.precision === 'unspecified')) {
+                            const item = data.find(d => d.model === model && d.sensitive === sensitive && d.precision === prec);
+                            if (item) {
+                                html += '<td class="matrix-cell" title="' + model + ' (' + (sensitive ? 'sensitive' : 'not sensitive') + ', ' + prec + ')">';
+                                html += '<div class="matrix-count">' + item.count.toLocaleString() + '</div>';
+                                if (item.cost > 0) {
+                                    html += '<div class="matrix-cost">$' + item.cost.toFixed(4) + '</div>';
+                                }
+                                html += '</td>';
+                            } else {
+                                html += '<td class="matrix-cell" style="color:#444;">-</td>';
+                            }
+                        }
+                    });
+                });
+
+                html += '</tr>';
+            });
+
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        function renderModelSelector() {
+            const container = document.getElementById('modelSelector');
+            const models = analyticsData.models || [];
+
+            let html = '<button class="model-btn active" data-model="all" onclick="selectVolumeModel(\'all\')">All Models</button>';
+            models.forEach(model => {
+                html += '<button class="model-btn" data-model="' + model + '" onclick="selectVolumeModel(\'' + model + '\')">' + model + '</button>';
+            });
+            container.innerHTML = html;
+        }
+
+        function selectVolumeModel(model) {
+            selectedVolumeModel = model;
+            document.querySelectorAll('#modelSelector .model-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.model === model);
+            });
+            renderVolumeChart();
+        }
+
+        function renderVolumeChart() {
+            const ctx = document.getElementById('volumeChart').getContext('2d');
+            const data = analyticsData.volume_over_time || [];
+
+            if (volumeChart) volumeChart.destroy();
+
+            // Get unique dates
+            const dates = [...new Set(data.map(d => d.day))].sort();
+
+            let datasets = [];
+
+            if (selectedVolumeModel === 'all') {
+                // Group by model
+                const models = [...new Set(data.map(d => d.model))];
+                models.forEach((model, i) => {
+                    const modelData = dates.map(date => {
+                        const item = data.find(d => d.day === date && d.model === model);
+                        return item ? item.count : 0;
+                    });
+                    datasets.push({
+                        label: model,
+                        data: modelData,
+                        borderColor: colors[i % colors.length],
+                        backgroundColor: colors[i % colors.length] + '20',
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 2,
+                        pointHoverRadius: 5
+                    });
+                });
+            } else {
+                // Single model
+                const modelData = dates.map(date => {
+                    const item = data.find(d => d.day === date && d.model === selectedVolumeModel);
+                    return item ? item.count : 0;
+                });
+                datasets.push({
+                    label: selectedVolumeModel,
+                    data: modelData,
+                    borderColor: '#6366f1',
+                    backgroundColor: 'rgba(99, 102, 241, 0.2)',
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 3,
+                    pointHoverRadius: 6
+                });
+            }
+
+            volumeChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: dates.map(d => {
+                        const date = new Date(d);
+                        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                    }),
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            display: selectedVolumeModel === 'all',
+                            position: 'top',
+                            labels: {
+                                color: '#888',
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#888' }
+                        },
+                        y: {
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#888' },
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+
+        async function showModelDetail(model) {
+            document.getElementById('overview-view').style.display = 'none';
+            document.getElementById('model-detail-view').classList.add('active');
+            document.getElementById('modelDetailTitle').textContent = model + ' - Detailed Analytics';
+
+            // Fetch model-specific data
+            const response = await fetch('/api/analytics?model=' + encodeURIComponent(model));
+            const data = await response.json();
+
+            // Render stats
+            const summary = data.model_summary || {};
+            document.getElementById('modelStatsRow').innerHTML =
+                '<div class="stat-box"><div class="stat-box-label">Total Requests</div><div class="stat-box-value">' + (summary.total_count || 0).toLocaleString() + '</div></div>' +
+                '<div class="stat-box"><div class="stat-box-label">Total Cost</div><div class="stat-box-value cost">$' + (summary.total_cost || 0).toFixed(4) + '</div></div>' +
+                '<div class="stat-box"><div class="stat-box-label">Avg Latency</div><div class="stat-box-value latency">' + Math.round(summary.avg_latency || 0).toLocaleString() + 'ms</div></div>' +
+                '<div class="stat-box"><div class="stat-box-label">Min Latency</div><div class="stat-box-value latency">' + (summary.min_latency || 0).toLocaleString() + 'ms</div></div>' +
+                '<div class="stat-box"><div class="stat-box-label">Max Latency</div><div class="stat-box-value latency">' + (summary.max_latency || 0).toLocaleString() + 'ms</div></div>';
+
+            // Render chart
+            const ctx = document.getElementById('modelDetailChart').getContext('2d');
+            const dailyData = data.model_daily_volume || [];
+
+            if (modelDetailChart) modelDetailChart.destroy();
+
+            modelDetailChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: dailyData.map(d => {
+                        const date = new Date(d.day);
+                        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                    }),
+                    datasets: [{
+                        label: 'Requests',
+                        data: dailyData.map(d => d.count),
+                        borderColor: '#6366f1',
+                        backgroundColor: 'rgba(99, 102, 241, 0.2)',
+                        fill: true,
+                        tension: 0.4,
+                        yAxisID: 'y'
+                    }, {
+                        label: 'Avg Latency (ms)',
+                        data: dailyData.map(d => d.avg_latency),
+                        borderColor: '#f59e0b',
+                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                        fill: false,
+                        tension: 0.4,
+                        yAxisID: 'y1'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                            labels: {
+                                color: '#888',
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#888' }
+                        },
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#6366f1' },
+                            title: {
+                                display: true,
+                                text: 'Requests',
+                                color: '#6366f1'
+                            }
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            grid: { drawOnChartArea: false },
+                            ticks: { color: '#f59e0b' },
+                            title: {
+                                display: true,
+                                text: 'Latency (ms)',
+                                color: '#f59e0b'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function showOverview() {
+            document.getElementById('model-detail-view').classList.remove('active');
+            document.getElementById('overview-view').style.display = 'block';
+        }
+
+        // Load on page load
+        loadAnalytics();
+    </script>
+</body>
+</html>`
+
+func handleAnalyticsPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(analyticsHTML))
 }
 
 // Dashboard HTML
@@ -3542,6 +4428,7 @@ const dashboardHTML = `<!DOCTYPE html>
             <button class="nav-tab active" onclick="switchTab('llm')">Requests</button>
             <button class="nav-tab" onclick="window.location.href='/test'">Playground</button>
             <button class="nav-tab" onclick="switchTab('routing')">Routing</button>
+            <button class="nav-tab" onclick="window.location.href='/analytics'">Analytics</button>
         </div>
 
         <!-- LLM Tab -->
@@ -4645,6 +5532,7 @@ const testPlaygroundHTML = `<!DOCTYPE html>
             <button class="nav-tab" onclick="window.location.href='/'">Requests</button>
             <button class="nav-tab active">Playground</button>
             <button class="nav-tab" onclick="window.location.href='/#routing'">Routing</button>
+            <button class="nav-tab" onclick="window.location.href='/analytics'">Analytics</button>
         </div>
 
         <h2 style="color:#a5b4fc;margin-bottom:16px;font-size:20px;">Test Playground</h2>
@@ -5533,6 +6421,8 @@ func main() {
 	http.HandleFunc("/api/pending", handlePendingRequests)
 	http.HandleFunc("/api/tts-history", handleTTSHistory)
 	http.HandleFunc("/api/stt-history", handleSTTHistory)
+	http.HandleFunc("/api/analytics", handleAnalytics)
+	http.HandleFunc("/analytics", handleAnalyticsPage)
 	http.HandleFunc("/test", handleTestPlayground)
 	http.HandleFunc("/v1/audio/transcriptions", handleWhisperTranscription)
 	http.HandleFunc("/v1/audio/transcriptions/stream", handleWhisperStream)
