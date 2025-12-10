@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -31,6 +32,9 @@ import (
 	"llm-proxy/internal/ports"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/shirou/gopsutil/v3/host"
 )
 
 // Configuration
@@ -4392,6 +4396,7 @@ const dashboardHTML = `<!DOCTYPE html>
             <button class="nav-tab" onclick="window.location.href='/test'">Playground</button>
             <button class="nav-tab" onclick="switchTab('routing')">Routing</button>
             <button class="nav-tab" onclick="window.location.href='/analytics'">Analytics</button>
+            <button class="nav-tab" onclick="switchTab('system')">System</button>
         </div>
 
         <!-- LLM Tab -->
@@ -4503,6 +4508,61 @@ const dashboardHTML = `<!DOCTYPE html>
                 <h2 class="section-title">Model Traffic Volume</h2>
                 <p style="color: #888; font-size: 13px; margin-bottom: 12px;">Request counts by model - helps identify high-traffic routes to optimize</p>
                 <div id="model-volume-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px;"></div>
+            </div>
+        </div>
+
+        <!-- System Metrics Tab -->
+        <div id="tab-system" class="tab-content">
+            <div class="section">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <h2 class="section-title" style="margin: 0;">System Metrics</h2>
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <span id="system-hostname" style="color: #a5b4fc; font-size: 14px;"></span>
+                        <span id="system-last-update" style="color: #888; font-size: 12px;"></span>
+                    </div>
+                </div>
+                <div class="stats-grid" id="system-stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">CPU Usage</div>
+                        <div class="stat-value" id="cpu-usage">-</div>
+                        <div id="cpu-bar" style="margin-top: 8px; background: #374151; border-radius: 4px; height: 8px; overflow: hidden;">
+                            <div id="cpu-bar-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444); border-radius: 4px; transition: width 0.5s;"></div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Memory Usage</div>
+                        <div class="stat-value" id="mem-usage">-</div>
+                        <div id="mem-bar" style="margin-top: 8px; background: #374151; border-radius: 4px; height: 8px; overflow: hidden;">
+                            <div id="mem-bar-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444); border-radius: 4px; transition: width 0.5s;"></div>
+                        </div>
+                        <div id="mem-detail" style="margin-top: 4px; font-size: 11px; color: #888;"></div>
+                    </div>
+                    <div class="stat-card" id="gpu-card" style="display: none;">
+                        <div class="stat-label">GPU Usage</div>
+                        <div class="stat-value" id="gpu-usage">-</div>
+                        <div id="gpu-bar" style="margin-top: 8px; background: #374151; border-radius: 4px; height: 8px; overflow: hidden;">
+                            <div id="gpu-bar-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444); border-radius: 4px; transition: width 0.5s;"></div>
+                        </div>
+                        <div id="gpu-name" style="margin-top: 4px; font-size: 11px; color: #888;"></div>
+                    </div>
+                    <div class="stat-card" id="gpu-mem-card" style="display: none;">
+                        <div class="stat-label">GPU Memory</div>
+                        <div class="stat-value" id="gpu-mem-usage">-</div>
+                        <div id="gpu-mem-bar" style="margin-top: 8px; background: #374151; border-radius: 4px; height: 8px; overflow: hidden;">
+                            <div id="gpu-mem-bar-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444); border-radius: 4px; transition: width 0.5s;"></div>
+                        </div>
+                        <div id="gpu-temp" style="margin-top: 4px; font-size: 11px; color: #888;"></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Uptime</div>
+                        <div class="stat-value" id="system-uptime">-</div>
+                        <div id="system-platform" style="margin-top: 4px; font-size: 11px; color: #888;"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="section">
+                <h2 class="section-title">CPU Cores</h2>
+                <div id="cpu-cores-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px;"></div>
             </div>
         </div>
 
@@ -5159,6 +5219,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
         // Tab switching
         let currentTab = 'llm';
+        let systemMetricsInterval = null;
         function switchTab(tabName) {
             currentTab = tabName;
             // Update tab buttons
@@ -5173,6 +5234,95 @@ const dashboardHTML = `<!DOCTYPE html>
                 loadAvailableModels();
                 loadRoutes();
                 loadModelVolumes();
+            }
+            // System metrics tab
+            if (tabName === 'system') {
+                loadSystemMetrics();
+                // Auto-refresh every 2 seconds
+                if (systemMetricsInterval) clearInterval(systemMetricsInterval);
+                systemMetricsInterval = setInterval(loadSystemMetrics, 2000);
+            } else {
+                // Stop auto-refresh when leaving tab
+                if (systemMetricsInterval) {
+                    clearInterval(systemMetricsInterval);
+                    systemMetricsInterval = null;
+                }
+            }
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
+        function formatUptime(seconds) {
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            if (days > 0) return days + 'd ' + hours + 'h';
+            if (hours > 0) return hours + 'h ' + mins + 'm';
+            return mins + 'm';
+        }
+
+        async function loadSystemMetrics() {
+            try {
+                const resp = await fetch('/api/system-metrics');
+                const data = await resp.json();
+
+                // Update hostname and timestamp
+                document.getElementById('system-hostname').textContent = data.hostname || '';
+                document.getElementById('system-last-update').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+
+                // CPU
+                const cpuPct = data.cpu_percent || 0;
+                document.getElementById('cpu-usage').textContent = cpuPct.toFixed(1) + '%';
+                document.getElementById('cpu-bar-fill').style.width = cpuPct + '%';
+
+                // Memory
+                const memPct = data.memory_percent || 0;
+                document.getElementById('mem-usage').textContent = memPct.toFixed(1) + '%';
+                document.getElementById('mem-bar-fill').style.width = memPct + '%';
+                document.getElementById('mem-detail').textContent = formatBytes(data.memory_used_bytes) + ' / ' + formatBytes(data.memory_total_bytes);
+
+                // Uptime
+                document.getElementById('system-uptime').textContent = formatUptime(data.uptime_seconds || 0);
+                document.getElementById('system-platform').textContent = data.platform || '';
+
+                // GPU (if available)
+                if (data.gpu_percent !== undefined && data.gpu_percent >= 0) {
+                    document.getElementById('gpu-card').style.display = 'block';
+                    document.getElementById('gpu-mem-card').style.display = 'block';
+                    document.getElementById('gpu-usage').textContent = data.gpu_percent.toFixed(1) + '%';
+                    document.getElementById('gpu-bar-fill').style.width = data.gpu_percent + '%';
+                    document.getElementById('gpu-name').textContent = data.gpu_name || '';
+                    document.getElementById('gpu-mem-usage').textContent = data.gpu_memory_percent.toFixed(1) + '%';
+                    document.getElementById('gpu-mem-bar-fill').style.width = data.gpu_memory_percent + '%';
+                    document.getElementById('gpu-temp').textContent = data.gpu_temp_celsius ? data.gpu_temp_celsius + '°C' : '';
+                } else {
+                    document.getElementById('gpu-card').style.display = 'none';
+                    document.getElementById('gpu-mem-card').style.display = 'none';
+                }
+
+                // CPU cores
+                const coresGrid = document.getElementById('cpu-cores-grid');
+                coresGrid.innerHTML = '';
+                if (data.cpu_per_core && data.cpu_per_core.length > 0) {
+                    data.cpu_per_core.forEach((pct, i) => {
+                        const card = document.createElement('div');
+                        card.style.cssText = 'background: #1e1e2e; border: 1px solid #374151; border-radius: 6px; padding: 8px;';
+                        const color = pct > 80 ? '#ef4444' : pct > 50 ? '#f59e0b' : '#22c55e';
+                        card.innerHTML = '<div style="font-size: 11px; color: #888; margin-bottom: 4px;">Core ' + i + '</div>' +
+                            '<div style="font-size: 14px; font-weight: 600; color: ' + color + ';">' + pct.toFixed(0) + '%</div>' +
+                            '<div style="margin-top: 4px; background: #374151; border-radius: 3px; height: 4px; overflow: hidden;">' +
+                            '<div style="width: ' + pct + '%; height: 100%; background: ' + color + '; border-radius: 3px;"></div></div>';
+                        coresGrid.appendChild(card);
+                    });
+                }
+            } catch (err) {
+                console.error('Failed to load system metrics:', err);
             }
         }
 
@@ -6554,6 +6704,92 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "service": "llm-proxy"})
 }
 
+// handleSystemMetrics returns CPU, memory, and system info
+func handleSystemMetrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	// Get CPU percent (1 second sample)
+	cpuPercent, err := cpu.Percent(time.Second, false)
+	cpuUsage := 0.0
+	if err == nil && len(cpuPercent) > 0 {
+		cpuUsage = cpuPercent[0]
+	}
+
+	// Get per-core CPU
+	perCoreCPU, _ := cpu.Percent(0, true)
+
+	// Get memory stats
+	memStats, err := mem.VirtualMemory()
+	memUsage := 0.0
+	memTotal := uint64(0)
+	memUsed := uint64(0)
+	if err == nil {
+		memUsage = memStats.UsedPercent
+		memTotal = memStats.Total
+		memUsed = memStats.Used
+	}
+
+	// Get host info
+	hostInfo, _ := host.Info()
+	hostname := ""
+	uptime := uint64(0)
+	platform := ""
+	if hostInfo != nil {
+		hostname = hostInfo.Hostname
+		uptime = hostInfo.Uptime
+		platform = hostInfo.Platform + " " + hostInfo.PlatformVersion
+	}
+
+	// Try to get GPU info via nvidia-smi (if available)
+	gpuUsage := -1.0 // -1 means not available
+	gpuMemUsage := -1.0
+	gpuTemp := -1.0
+	gpuName := ""
+
+	// Check for NVIDIA GPU via nvidia-smi
+	if out, err := runCommand("nvidia-smi", "--query-gpu=utilization.gpu,utilization.memory,temperature.gpu,name", "--format=csv,noheader,nounits"); err == nil {
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		if len(lines) > 0 {
+			parts := strings.Split(lines[0], ", ")
+			if len(parts) >= 4 {
+				fmt.Sscanf(parts[0], "%f", &gpuUsage)
+				fmt.Sscanf(parts[1], "%f", &gpuMemUsage)
+				fmt.Sscanf(parts[2], "%f", &gpuTemp)
+				gpuName = strings.TrimSpace(parts[3])
+			}
+		}
+	}
+
+	result := map[string]interface{}{
+		"cpu_percent":        cpuUsage,
+		"cpu_per_core":       perCoreCPU,
+		"memory_percent":     memUsage,
+		"memory_total_bytes": memTotal,
+		"memory_used_bytes":  memUsed,
+		"hostname":           hostname,
+		"uptime_seconds":     uptime,
+		"platform":           platform,
+		"timestamp":          time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// Only include GPU stats if available
+	if gpuUsage >= 0 {
+		result["gpu_percent"] = gpuUsage
+		result["gpu_memory_percent"] = gpuMemUsage
+		result["gpu_temp_celsius"] = gpuTemp
+		result["gpu_name"] = gpuName
+	}
+
+	json.NewEncoder(w).Encode(result)
+}
+
+// runCommand runs a command and returns stdout
+func runCommand(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	out, err := cmd.Output()
+	return string(out), err
+}
+
 func handleMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 
@@ -6748,6 +6984,7 @@ func main() {
 	http.HandleFunc("/api/tts-history", handleTTSHistory)
 	http.HandleFunc("/api/stt-history", handleSTTHistory)
 	http.HandleFunc("/api/analytics", handleAnalytics)
+	http.HandleFunc("/api/system-metrics", handleSystemMetrics)
 	http.HandleFunc("/analytics", handleAnalyticsPage)
 	http.HandleFunc("/test", handleTestPlayground)
 	http.HandleFunc("/v1/audio/transcriptions", handleWhisperTranscription)
