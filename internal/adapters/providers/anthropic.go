@@ -217,7 +217,8 @@ func (p *AnthropicProvider) Chat(req *domain.ChatCompletionRequest, model string
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	client := &http.Client{Timeout: 240 * time.Second}
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}

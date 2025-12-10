@@ -108,7 +108,7 @@ func (p *OllamaProvider) Chat(req *domain.ChatCompletionRequest, model string) (
 	httpReq, _ := http.NewRequest("POST", "http://"+p.Host+"/api/chat", bytes.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{Timeout: 240 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err

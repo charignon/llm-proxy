@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"llm-proxy/internal/domain"
 )
@@ -57,7 +58,8 @@ func (p *OpenAIProvider) Chat(req *domain.ChatCompletionRequest, model string) (
 	httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	client := &http.Client{Timeout: 240 * time.Second}
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
