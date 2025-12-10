@@ -2873,18 +2873,69 @@ func handleAnalytics(w http.ResponseWriter, r *http.Request) {
 	}
 	analytics["models"] = models
 
-	// Volume over time (last 7 days, grouped by 4-hour blocks and model for more granularity)
-	rows, _ = db.Query(`
-		SELECT
-			DATE(timestamp) || ' ' || printf('%02d', (CAST(strftime('%H', timestamp) AS INTEGER) / 4) * 4) || ':00' as time_block,
-			model,
-			COUNT(*),
-			COALESCE(SUM(cost_usd), 0)
-		FROM requests
-		WHERE timestamp >= DATE('now', '-7 days')
-		GROUP BY time_block, model
-		ORDER BY time_block ASC, model
-	`)
+	// Volume over time - configurable time range
+	timeRange := r.URL.Query().Get("range")
+	if timeRange == "" {
+		timeRange = "7d"
+	}
+
+	var volumeQuery string
+	switch timeRange {
+	case "1h":
+		// Last hour, grouped by 5-minute blocks
+		volumeQuery = `
+			SELECT
+				strftime('%Y-%m-%d %H:', timestamp) || printf('%02d', (CAST(strftime('%M', timestamp) AS INTEGER) / 5) * 5) as time_block,
+				model,
+				COUNT(*),
+				COALESCE(SUM(cost_usd), 0)
+			FROM requests
+			WHERE timestamp >= datetime('now', '-1 hour')
+			GROUP BY time_block, model
+			ORDER BY time_block ASC, model
+		`
+	case "1d":
+		// Last day, grouped by 1-hour blocks
+		volumeQuery = `
+			SELECT
+				strftime('%Y-%m-%d %H:00', timestamp) as time_block,
+				model,
+				COUNT(*),
+				COALESCE(SUM(cost_usd), 0)
+			FROM requests
+			WHERE timestamp >= datetime('now', '-1 day')
+			GROUP BY time_block, model
+			ORDER BY time_block ASC, model
+		`
+	case "30d":
+		// Last 30 days, grouped by day
+		volumeQuery = `
+			SELECT
+				DATE(timestamp) as time_block,
+				model,
+				COUNT(*),
+				COALESCE(SUM(cost_usd), 0)
+			FROM requests
+			WHERE timestamp >= DATE('now', '-30 days')
+			GROUP BY time_block, model
+			ORDER BY time_block ASC, model
+		`
+	default: // 7d
+		// Last 7 days, grouped by 4-hour blocks
+		volumeQuery = `
+			SELECT
+				DATE(timestamp) || ' ' || printf('%02d', (CAST(strftime('%H', timestamp) AS INTEGER) / 4) * 4) || ':00' as time_block,
+				model,
+				COUNT(*),
+				COALESCE(SUM(cost_usd), 0)
+			FROM requests
+			WHERE timestamp >= DATE('now', '-7 days')
+			GROUP BY time_block, model
+			ORDER BY time_block ASC, model
+		`
+	}
+
+	rows, _ = db.Query(volumeQuery)
 	defer rows.Close()
 
 	volumeOverTime := []map[string]interface{}{}
@@ -2901,6 +2952,7 @@ func handleAnalytics(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	analytics["volume_over_time"] = volumeOverTime
+	analytics["time_range"] = timeRange
 
 	// Hourly distribution (for the last 7 days)
 	rows, _ = db.Query(`
@@ -3511,6 +3563,34 @@ const analyticsHTML = `<!DOCTYPE html>
             margin-left: auto;
         }
 
+        .time-range-selector {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 12px;
+            background: #252540;
+            padding: 4px;
+            border-radius: 8px;
+            width: fit-content;
+        }
+        .time-btn {
+            padding: 6px 14px;
+            border-radius: 6px;
+            border: none;
+            background: transparent;
+            color: #888;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .time-btn:hover {
+            color: #e0e0e0;
+        }
+        .time-btn.active {
+            background: #6366f1;
+            color: #fff;
+        }
+
         .model-selector {
             display: flex;
             gap: 8px;
@@ -3661,7 +3741,13 @@ const analyticsHTML = `<!DOCTYPE html>
 
                 <!-- Volume Over Time -->
                 <div class="chart-card full-width">
-                    <div class="chart-title">Request Volume Over Time (Last 7 Days, 4-Hour Blocks)</div>
+                    <div class="chart-title">Request Volume Over Time</div>
+                    <div class="time-range-selector">
+                        <button class="time-btn" data-range="1h" onclick="selectTimeRange('1h')">1 Hour</button>
+                        <button class="time-btn" data-range="1d" onclick="selectTimeRange('1d')">1 Day</button>
+                        <button class="time-btn active" data-range="7d" onclick="selectTimeRange('7d')">7 Days</button>
+                        <button class="time-btn" data-range="30d" onclick="selectTimeRange('30d')">30 Days</button>
+                    </div>
                     <div class="model-selector" id="modelSelector">
                         <button class="model-btn active" data-model="all">All Models</button>
                     </div>
@@ -3696,6 +3782,7 @@ const analyticsHTML = `<!DOCTYPE html>
         let volumeChart = null;
         let modelDetailChart = null;
         let selectedVolumeModel = 'all';
+        let selectedTimeRange = '7d';
 
         const colors = [
             '#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#22c55e',
@@ -3704,9 +3791,23 @@ const analyticsHTML = `<!DOCTYPE html>
         ];
 
         async function loadAnalytics() {
-            const response = await fetch('/api/analytics');
+            const response = await fetch('/api/analytics?range=' + selectedTimeRange);
             analyticsData = await response.json();
             renderCharts();
+        }
+
+        async function selectTimeRange(range) {
+            selectedTimeRange = range;
+            document.querySelectorAll('.time-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.range === range);
+            });
+            // Reload data with new range
+            const response = await fetch('/api/analytics?range=' + range);
+            const newData = await response.json();
+            analyticsData.volume_over_time = newData.volume_over_time;
+            analyticsData.time_range = newData.time_range;
+            renderVolumeChart();
+            renderModelSelector();
         }
 
         function renderCharts() {
@@ -4069,7 +4170,17 @@ const analyticsHTML = `<!DOCTYPE html>
                             titleColor: '#a5b4fc',
                             bodyColor: '#e0e0e0',
                             borderColor: '#2d2d44',
-                            borderWidth: 1
+                            borderWidth: 1,
+                            filter: function(tooltipItem) {
+                                // Only show models with > 0 requests at this point
+                                return tooltipItem.raw > 0;
+                            },
+                            callbacks: {
+                                label: function(context) {
+                                    if (context.raw === 0) return null;
+                                    return context.dataset.label + ': ' + context.raw + ' requests';
+                                }
+                            }
                         }
                     },
                     scales: {
