@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"llm-proxy/internal/app"
@@ -31,6 +33,29 @@ type ChatHandler struct {
 // MetricsRecorder interface for recording request metrics.
 type MetricsRecorder interface {
 	RecordRequest(provider, model, status string, durationMs int64, inputTokens, outputTokens int, cost float64, cached bool)
+}
+
+// getClientIP extracts the client IP address from the request.
+// It checks X-Forwarded-For and X-Real-IP headers first (for proxied requests),
+// then falls back to RemoteAddr.
+func getClientIP(r *http.Request) string {
+	// Check X-Forwarded-For header (may contain multiple IPs, take the first)
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[0])
+	}
+
+	// Check X-Real-IP header
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+
+	// Fall back to RemoteAddr (strip port if present)
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr // Return as-is if no port
+	}
+	return ip
 }
 
 // ServeHTTP handles the chat completion request.
@@ -66,6 +91,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Usecase:        req.Usecase,
 		HasImages:      req.HasImages(),
 		RequestBody:    body,
+		ClientIP:       getClientIP(r),
 	}
 	if req.Sensitive != nil {
 		logEntry.Sensitive = *req.Sensitive

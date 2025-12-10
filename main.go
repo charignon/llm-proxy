@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -411,6 +412,7 @@ func initDB() error {
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_provider ON requests(provider)`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_model ON requests(model)`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_request_type ON requests(request_type)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_client_ip ON requests(client_ip)`)
 
 	return nil
 }
@@ -658,6 +660,29 @@ func initChatProviders() {
 
 // Whisper transcription handlers
 
+// getClientIP extracts the client IP address from the request.
+// It checks X-Forwarded-For and X-Real-IP headers first (for proxied requests),
+// then falls back to RemoteAddr.
+func getClientIP(r *http.Request) string {
+	// Check X-Forwarded-For header (may contain multiple IPs, take the first)
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[0])
+	}
+
+	// Check X-Real-IP header
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+
+	// Fall back to RemoteAddr (strip port if present)
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr // Return as-is if no port
+	}
+	return ip
+}
+
 func isSensitiveRequest(r *http.Request) bool {
 	// Check header first (X-Sensitive)
 	if h := r.Header.Get("X-Sensitive"); h != "" {
@@ -713,6 +738,7 @@ func handleWhisperTranscription(w http.ResponseWriter, r *http.Request) {
 		RequestType: "stt",
 		Sensitive:   sensitive,
 		InputChars:  len(fileContent), // Store file size in InputChars field
+		ClientIP:    getClientIP(r),
 	}
 
 	var resp *WhisperTranscriptionResponse
@@ -924,6 +950,7 @@ func handleWhisperStream(w http.ResponseWriter, r *http.Request) {
 		Model:       "whisper-local-stream",
 		Sensitive:   true, // Streaming is always local/sensitive
 		InputChars:  len(fileContent),
+		ClientIP:    getClientIP(r),
 	}
 
 	// Set up SSE
@@ -1110,6 +1137,7 @@ func handleTTS(w http.ResponseWriter, r *http.Request) {
 		Voice:       kokoroVoice,
 		InputChars:  len(req.Input),
 		RequestBody: body,
+		ClientIP:    getClientIP(r),
 	}
 
 	// Forward request to Kokoro TTS server
@@ -1318,6 +1346,7 @@ type RequestHistoryEntry struct {
 	InputTokens  int     `json:"input_tokens"`
 	OutputTokens int     `json:"output_tokens"`
 	IsReplay     bool    `json:"is_replay"`
+	ClientIP     string  `json:"client_ip,omitempty"`
 	// TTS/STT specific
 	Voice           string `json:"voice,omitempty"`
 	AudioDurationMs int64  `json:"audio_duration_ms,omitempty"`
@@ -1392,6 +1421,12 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 		filterArgs = append(filterArgs, precisionFilter)
 	}
 
+	// Filter by client_ip if specified
+	if clientIPFilter := r.URL.Query().Get("client_ip"); clientIPFilter != "" {
+		conditions = append(conditions, "client_ip = ?")
+		filterArgs = append(filterArgs, clientIPFilter)
+	}
+
 	whereClause := ""
 	if len(conditions) > 0 {
 		whereClause = " WHERE " + strings.Join(conditions, " AND ")
@@ -1409,7 +1444,7 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 	query := `
 		SELECT id, timestamp, request_type, provider, model, sensitive, precision, usecase, has_images,
 		       latency_ms, cost_usd, success, cache_key, input_tokens, output_tokens, is_replay,
-		       voice, audio_duration_ms, input_chars
+		       voice, audio_duration_ms, input_chars, client_ip
 		FROM requests
 	` + whereClause + " ORDER BY id DESC LIMIT ? OFFSET ?"
 
@@ -1431,10 +1466,11 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 		var cacheKey sql.NullString
 		var voice sql.NullString
 		var isReplay sql.NullBool
+		var clientIP sql.NullString
 		rows.Scan(&entry.ID, &entry.Timestamp, &requestType, &entry.Provider, &entry.Model,
 			&entry.Sensitive, &precision, &usecase, &entry.HasImages, &entry.LatencyMs,
 			&entry.CostUSD, &entry.Success, &cacheKey, &entry.InputTokens, &entry.OutputTokens,
-			&isReplay, &voice, &entry.AudioDurationMs, &entry.InputChars)
+			&isReplay, &voice, &entry.AudioDurationMs, &entry.InputChars, &clientIP)
 		if requestType.Valid {
 			entry.RequestType = requestType.String
 		} else {
@@ -1454,6 +1490,9 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		if isReplay.Valid {
 			entry.IsReplay = isReplay.Bool
+		}
+		if clientIP.Valid {
+			entry.ClientIP = clientIP.String
 		}
 		history = append(history, entry)
 	}
@@ -4247,6 +4286,7 @@ const dashboardHTML = `<!DOCTYPE html>
             word-break: break-word;
         }
         .tokens-small { font-size: 11px; color: #888; }
+        .client-ip { font-size: 11px; color: #a5b4fc; font-family: monospace; }
 
         /* Image preview styles */
         .message-text { margin-bottom: 8px; }
@@ -4401,7 +4441,7 @@ const dashboardHTML = `<!DOCTYPE html>
                     </select>
                 </div>
                 <table id="recent-table">
-                    <thead><tr><th>Time</th><th>Type</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Usecase</th><th>Info</th><th>Latency</th><th>Cost</th><th>Status</th></tr></thead>
+                    <thead><tr><th>Time</th><th>Type</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Usecase</th><th>Client IP</th><th>Info</th><th>Latency</th><th>Cost</th><th>Status</th></tr></thead>
                     <tbody></tbody>
                 </table>
                 <div id="pagination-controls" style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px; padding: 12px 16px; background: #1e1e2e; border-radius: 8px;">
@@ -4662,6 +4702,7 @@ const dashboardHTML = `<!DOCTYPE html>
                     info = req.audio_duration_ms ? (req.audio_duration_ms / 1000).toFixed(1) + 's' : '-';
                 }
 
+                const clientIP = req.client_ip || '-';
                 tr.innerHTML = '<td>' + time + '</td>' +
                     '<td>' + typeBadge + ' ' + replayBadge + '</td>' +
                     '<td><span class="badge ' + req.provider + '">' + req.provider + '</span></td>' +
@@ -4669,6 +4710,7 @@ const dashboardHTML = `<!DOCTYPE html>
                     '<td><span class="badge ' + sensitiveClass + '">' + sensitiveText + '</span></td>' +
                     '<td><span class="badge precision">' + precision + '</span></td>' +
                     '<td>' + usecase + '</td>' +
+                    '<td><span class="client-ip">' + clientIP + '</span></td>' +
                     '<td>' + info + '</td>' +
                     '<td>' + req.latency_ms + 'ms</td>' +
                     '<td>$' + req.cost_usd.toFixed(6) + '</td>' +
