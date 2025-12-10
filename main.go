@@ -6171,7 +6171,9 @@ const testPlaygroundHTML = `<!DOCTYPE html>
 
             <div class="form-group">
                 <label>Model Override (optional - leave empty to use routing)</label>
-                <input type="text" id="chat-model" placeholder="e.g. gpt-4o, claude-sonnet-4-20250514, qwen3:235b">
+                <select id="chat-model">
+                    <option value="">-- Use automatic routing --</option>
+                </select>
             </div>
 
             <button class="submit-btn" id="chat-submit" onclick="submitChat()">Send Request</button>
@@ -6219,7 +6221,9 @@ const testPlaygroundHTML = `<!DOCTYPE html>
 
             <div class="form-group">
                 <label>Model Override (optional - leave empty to use routing)</label>
-                <input type="text" id="vision-model" placeholder="e.g. gpt-4o, qwen3-vl:30b">
+                <select id="vision-model">
+                    <option value="">-- Use automatic routing --</option>
+                </select>
             </div>
 
             <button class="submit-btn" id="vision-submit" onclick="submitVision()">Analyze Image</button>
@@ -6336,6 +6340,33 @@ const testPlaygroundHTML = `<!DOCTYPE html>
     <script>
         const PLAYGROUND_USECASE = 'test_playground';
         let selectedImageBase64 = null;
+
+        // Load available models for dropdowns
+        async function loadModelSelectors() {
+            try {
+                const resp = await fetch('/v1/models');
+                const data = await resp.json();
+                const models = (data.data || []).map(m => m.id).filter(id => id !== 'auto').sort();
+
+                const chatSelect = document.getElementById('chat-model');
+                const visionSelect = document.getElementById('vision-model');
+
+                models.forEach(model => {
+                    const opt1 = document.createElement('option');
+                    opt1.value = model;
+                    opt1.textContent = model;
+                    chatSelect.appendChild(opt1);
+
+                    const opt2 = document.createElement('option');
+                    opt2.value = model;
+                    opt2.textContent = model;
+                    visionSelect.appendChild(opt2);
+                });
+            } catch (e) {
+                console.error('Failed to load models:', e);
+            }
+        }
+        loadModelSelectors();
 
         // Helper to escape HTML
         function escapeHtml(text) {
