@@ -46,9 +46,9 @@ var modelPricing = map[string][2]float64{
 	"o1":            {15.00, 60.00},
 	"o1-mini":       {3.00, 12.00},
 	// Anthropic - Claude 4.5 models only
-	"claude-opus-4-5-20251101":   {15.00, 75.00},
-	"claude-sonnet-4-5-20250514": {3.00, 15.00},
-	"claude-haiku-4-5-20251101":  {0.80, 4.00},
+	"claude-opus-4-5-20251101":  {5.00, 25.00},
+	"claude-sonnet-4-5-20250929": {3.00, 15.00},
+	"claude-haiku-4-5-20251001": {1.00, 5.00},
 	// Ollama (free)
 	"qwen3-vl:30b":  {0, 0},
 	"llama3:latest": {0, 0},
@@ -72,7 +72,7 @@ type RouteConfig struct {
 var routingTable = map[string]map[string]*RouteConfig{
 	// sensitive: false (text only)
 	"false": {
-		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-5-20250514"},
+		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-5-20250929"},
 		"high":      {Provider: "openai", Model: "gpt-4o"},
 		"medium":    {Provider: "openai", Model: "gpt-4o-mini"},
 		"low":       {Provider: "ollama", Model: "llama3:latest"},
@@ -90,7 +90,7 @@ var routingTable = map[string]map[string]*RouteConfig{
 var visionRoutingTable = map[string]map[string]*RouteConfig{
 	// sensitive: false (can use cloud)
 	"false": {
-		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-5-20250514"}, // Claude has great vision
+		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-5-20250929"}, // Claude has great vision
 		"high":      {Provider: "openai", Model: "gpt-4o"},
 		"medium":    {Provider: "ollama", Model: "qwen3-vl:30b"},
 		"low":       {Provider: "ollama", Model: "qwen3-vl:30b"},
@@ -3430,8 +3430,8 @@ func handleAvailableModels(w http.ResponseWriter, r *http.Request) {
 	models := map[string][]string{
 		"anthropic": {
 			"claude-opus-4-5-20251101",
-			"claude-sonnet-4-5-20250514",
-			"claude-haiku-4-5-20251101",
+			"claude-sonnet-4-5-20250929",
+			"claude-haiku-4-5-20251001",
 		},
 		"openai": {
 			"gpt-5.1",
@@ -5848,7 +5848,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
         // Available models for replay - fetched dynamically
         let replayModelOptions = [
-            { group: 'Anthropic', models: ['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250514', 'claude-sonnet-4-20250514', 'claude-opus-4-20250514'] },
+            { group: 'Anthropic', models: ['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'] },
             { group: 'OpenAI', models: ['gpt-5.1', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o1', 'o1-mini'] },
             { group: 'Ollama (Local)', models: [] } // Will be populated dynamically
         ];
