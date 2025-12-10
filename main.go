@@ -4573,6 +4573,16 @@ const dashboardHTML = `<!DOCTYPE html>
         let currentTypeFilter = '';
         let currentFilters = {}; // For matrix filtering
 
+        // IP to hostname mapping
+        const ipToHostname = {
+            '192.168.1.99': 'robot.lan',
+            '192.168.1.154': 'laptop'
+        };
+        function formatClientIP(ip) {
+            if (!ip || ip === 'unknown') return 'unknown';
+            return ipToHostname[ip] || ip;
+        }
+
         // Parse matrix filters from URL
         function parseMatrixFilters() {
             const urlParams = new URLSearchParams(window.location.search);
@@ -4706,7 +4716,7 @@ const dashboardHTML = `<!DOCTYPE html>
                     info = req.audio_duration_ms ? (req.audio_duration_ms / 1000).toFixed(1) + 's' : '-';
                 }
 
-                const clientIP = req.client_ip || 'unknown';
+                const clientIP = formatClientIP(req.client_ip);
                 tr.innerHTML = '<td>' + time + '</td>' +
                     '<td>' + typeBadge + ' ' + replayBadge + '</td>' +
                     '<td><span class="badge ' + req.provider + '">' + req.provider + '</span></td>' +
@@ -5244,7 +5254,7 @@ const dashboardHTML = `<!DOCTYPE html>
             html += '<div class="detail-item"><div class="detail-label">Usecase</div><div class="detail-value"><span class="badge usecase">' + (data.usecase || '-') + '</span></div></div>';
             html += '<div class="detail-item"><div class="detail-label">Has Images</div><div class="detail-value">' + (data.has_images ? '<span class="badge images">Yes</span>' : 'No') + '</div></div>';
             html += '<div class="detail-item"><div class="detail-label">Cached</div><div class="detail-value">' + (data.cached ? '<span class="badge cached">Yes</span>' : 'No') + '</div></div>';
-            html += '<div class="detail-item"><div class="detail-label">Client IP</div><div class="detail-value"><span class="client-ip">' + (data.client_ip || 'unknown') + '</span></div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Client IP</div><div class="detail-value"><span class="client-ip">' + formatClientIP(data.client_ip) + '</span></div></div>';
             html += '</div></div>';
 
             html += '<div class="modal-section"><h3>Performance</h3><div class="detail-grid">';
