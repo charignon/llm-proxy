@@ -87,18 +87,17 @@ var routingTable = map[string]map[string]*RouteConfig{
 }
 
 // Vision routing (requests with images)
+// Precision levels: very_high, medium, low (no "high" level)
 var visionRoutingTable = map[string]map[string]*RouteConfig{
 	// sensitive: false (can use cloud)
 	"false": {
 		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-5-20250929"}, // Claude has great vision
-		"high":      {Provider: "openai", Model: "gpt-4o"},
-		"medium":    {Provider: "ollama", Model: "qwen3-vl:30b"},
+		"medium":    {Provider: "openai", Model: "gpt-4o"},
 		"low":       {Provider: "ollama", Model: "qwen3-vl:30b"},
 	},
 	// sensitive: true (local only)
 	"true": {
 		"very_high": {Provider: "ollama", Model: "qwen3-vl:235b"}, // Largest local vision model (143GB)
-		"high":      {Provider: "ollama", Model: "qwen3-vl:30b"},
 		"medium":    {Provider: "ollama", Model: "qwen3-vl:30b"},
 		"low":       {Provider: "ollama", Model: "qwen3-vl:30b"},
 	},
