@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"llm-proxy/internal/adapters/cache"
 	"llm-proxy/internal/adapters/providers"
 	"llm-proxy/internal/domain"
 	"llm-proxy/internal/ports"
@@ -115,12 +116,15 @@ var usecaseRoutesMutex sync.RWMutex
 var db *sql.DB
 var dbMutex sync.Mutex
 
-// Cache
-var cache = make(map[string]*CacheEntry)
-var cacheMutex sync.RWMutex
+// Cache - using the port interface
+var requestCache ports.Cache
 
 // CacheEntry is an alias to the domain type for cached entries.
 type CacheEntry = domain.CacheEntry
+
+func initCache() {
+	requestCache = cache.NewMemoryCache(cacheTTLHours)
+}
 
 // Pending requests tracker
 var pendingRequests = make(map[string]*PendingRequest)
@@ -604,71 +608,21 @@ func generateCacheKey(req *ChatCompletionRequest, route *RouteConfig) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
+// Cache wrapper functions - delegate to the requestCache port
 func getCached(key string) ([]byte, bool) {
-	cacheMutex.RLock()
-	defer cacheMutex.RUnlock()
-
-	entry, ok := cache[key]
-	if !ok {
-		return nil, false
-	}
-
-	// Check TTL
-	if time.Since(entry.CreatedAt) > time.Duration(cacheTTLHours)*time.Hour {
-		return nil, false
-	}
-
-	// Don't return entries with nil/empty responses (e.g., from errors)
-	if entry.Response == nil || len(entry.Response) == 0 {
-		return nil, false
-	}
-
-	return entry.Response, true
+	return requestCache.Get(key)
 }
 
 func setCache(key string, request, response []byte) {
-	cacheMutex.Lock()
-	defer cacheMutex.Unlock()
-
-	cache[key] = &CacheEntry{
-		Request:   request,
-		Response:  response,
-		CreatedAt: time.Now(),
-	}
+	requestCache.Set(key, request, response)
 }
 
 func getCachedRequest(key string) ([]byte, bool) {
-	cacheMutex.RLock()
-	defer cacheMutex.RUnlock()
-
-	entry, ok := cache[key]
-	if !ok {
-		return nil, false
-	}
-
-	// Check TTL
-	if time.Since(entry.CreatedAt) > time.Duration(cacheTTLHours)*time.Hour {
-		return nil, false
-	}
-
-	return entry.Request, true
+	return requestCache.GetRequest(key)
 }
 
 func getCachedResponse(key string) ([]byte, bool) {
-	cacheMutex.RLock()
-	defer cacheMutex.RUnlock()
-
-	entry, ok := cache[key]
-	if !ok {
-		return nil, false
-	}
-
-	// Check TTL
-	if time.Since(entry.CreatedAt) > time.Duration(cacheTTLHours)*time.Hour {
-		return nil, false
-	}
-
-	return entry.Response, true
+	return requestCache.GetResponse(key)
 }
 
 // Pending request management
@@ -2200,15 +2154,11 @@ func handleClearCache(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheMutex.Lock()
-	count := len(cache)
-	cache = make(map[string]*CacheEntry)
-	cacheMutex.Unlock()
+	requestCache.Clear()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"cleared": count,
-		"message": fmt.Sprintf("Cleared %d cached entries", count),
+		"message": "Cache cleared",
 	})
 }
 
@@ -6874,6 +6824,9 @@ func main() {
 	if err := initDB(); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
+
+	// Initialize cache
+	initCache()
 
 	// SECURITY ASSERTION: Verify sensitive routes only use Ollama (local)
 	// This runs on startup to catch configuration errors before serving requests
