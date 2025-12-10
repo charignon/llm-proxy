@@ -4702,7 +4702,7 @@ const dashboardHTML = `<!DOCTYPE html>
                     info = req.audio_duration_ms ? (req.audio_duration_ms / 1000).toFixed(1) + 's' : '-';
                 }
 
-                const clientIP = req.client_ip || '-';
+                const clientIP = req.client_ip || 'unknown';
                 tr.innerHTML = '<td>' + time + '</td>' +
                     '<td>' + typeBadge + ' ' + replayBadge + '</td>' +
                     '<td><span class="badge ' + req.provider + '">' + req.provider + '</span></td>' +
