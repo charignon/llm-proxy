@@ -24,6 +24,7 @@ import (
 	"llm-proxy/internal/adapters/cache"
 	"llm-proxy/internal/adapters/providers"
 	"llm-proxy/internal/adapters/repository"
+	"llm-proxy/internal/app"
 	"llm-proxy/internal/domain"
 	"llm-proxy/internal/ports"
 
@@ -108,10 +109,8 @@ var visionRoutingTable = map[string]map[string]*RouteConfig{
 	},
 }
 
-// Usecase routing overrides: usecase -> type -> sensitive -> precision -> RouteConfig
-// type is "text" or "vision"
-var usecaseRoutes = make(map[string]map[string]map[string]map[string]*RouteConfig)
-var usecaseRoutesMutex sync.RWMutex
+// Router service for request routing decisions
+var router *app.Router
 
 // Database
 var db *sql.DB
@@ -392,9 +391,6 @@ func initDB() error {
 	}
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_route_overrides_usecase ON route_overrides(usecase)`)
 
-	// Load existing route overrides into memory
-	loadRouteOverrides()
-
 	// Fix empty provider values from routing failures
 	db.Exec(`UPDATE requests SET provider = 'routing_failed' WHERE provider = '' OR provider IS NULL`)
 	// Default existing rows to 'llm' type
@@ -417,11 +413,8 @@ func loadRouteOverrides() {
 	}
 	defer rows.Close()
 
-	usecaseRoutesMutex.Lock()
-	defer usecaseRoutesMutex.Unlock()
-
-	// Clear existing overrides
-	usecaseRoutes = make(map[string]map[string]map[string]map[string]*RouteConfig)
+	// Build routes map from database
+	usecaseRoutes := make(map[string]map[string]map[string]map[string]*RouteConfig)
 
 	for rows.Next() {
 		var usecase, routeType, precision, provider, model string
@@ -453,6 +446,8 @@ func loadRouteOverrides() {
 		}
 	}
 
+	// Load into router
+	router.LoadUsecaseRoutes(usecaseRoutes)
 	log.Printf("Loaded %d usecase route configurations", len(usecaseRoutes))
 }
 
@@ -473,30 +468,8 @@ func saveRouteOverride(usecase, routeType string, sensitive bool, precision, pro
 		return err
 	}
 
-	// Update in-memory cache
-	usecaseRoutesMutex.Lock()
-	defer usecaseRoutesMutex.Unlock()
-
-	sensitiveStr := "false"
-	if sensitive {
-		sensitiveStr = "true"
-	}
-
-	if usecaseRoutes[usecase] == nil {
-		usecaseRoutes[usecase] = make(map[string]map[string]map[string]*RouteConfig)
-	}
-	if usecaseRoutes[usecase][routeType] == nil {
-		usecaseRoutes[usecase][routeType] = make(map[string]map[string]*RouteConfig)
-	}
-	if usecaseRoutes[usecase][routeType][sensitiveStr] == nil {
-		usecaseRoutes[usecase][routeType][sensitiveStr] = make(map[string]*RouteConfig)
-	}
-
-	usecaseRoutes[usecase][routeType][sensitiveStr][precision] = &RouteConfig{
-		Provider: provider,
-		Model:    model,
-	}
-
+	// Update router's in-memory cache
+	router.SetUsecaseRoute(usecase, routeType, sensitive, precision, provider, model)
 	return nil
 }
 
@@ -516,34 +489,13 @@ func deleteRouteOverride(usecase, routeType string, sensitive bool, precision st
 		return err
 	}
 
-	// Update in-memory cache
-	usecaseRoutesMutex.Lock()
-	defer usecaseRoutesMutex.Unlock()
-
-	sensitiveStr := "false"
-	if sensitive {
-		sensitiveStr = "true"
-	}
-
-	if usecaseRoutes[usecase] != nil &&
-		usecaseRoutes[usecase][routeType] != nil &&
-		usecaseRoutes[usecase][routeType][sensitiveStr] != nil {
-		delete(usecaseRoutes[usecase][routeType][sensitiveStr], precision)
-	}
-
+	// Update router's in-memory cache
+	router.DeleteUsecaseRoute(usecase, routeType, sensitive, precision)
 	return nil
 }
 
 func getUsecaseRoute(usecase, routeType, sensitive, precision string) *RouteConfig {
-	usecaseRoutesMutex.RLock()
-	defer usecaseRoutesMutex.RUnlock()
-
-	if usecaseRoutes[usecase] != nil &&
-		usecaseRoutes[usecase][routeType] != nil &&
-		usecaseRoutes[usecase][routeType][sensitive] != nil {
-		return usecaseRoutes[usecase][routeType][sensitive][precision]
-	}
-	return nil
+	return router.GetUsecaseRoute(usecase, routeType, sensitive, precision)
 }
 
 // logRequest delegates to the requestLogger port.
@@ -675,72 +627,9 @@ func getPendingRequests() []*PendingRequest {
 	return result
 }
 
+// resolveRoute delegates to the router service.
 func resolveRoute(req *ChatCompletionRequest) (*RouteConfig, error) {
-	// If model is explicitly specified (not a routing keyword), use it directly
-	if req.Model != "" && req.Model != "auto" && req.Model != "route" {
-		model := req.Model
-		// Check if it's a known model and determine provider
-		provider := "openai"
-		if strings.HasPrefix(model, "ollama/") {
-			// Strip ollama/ prefix - we added it for clarity in model lists
-			provider = "ollama"
-			model = strings.TrimPrefix(model, "ollama/")
-		} else if strings.HasPrefix(model, "claude") {
-			provider = "anthropic"
-		} else if strings.Contains(model, ":") || model == "llama3" || model == "gemma3" || model == "llava" || strings.HasPrefix(model, "qwen") {
-			provider = "ollama"
-		}
-		return &RouteConfig{Provider: provider, Model: model}, nil
-	}
-
-	// Use routing table - choose text or vision based on content
-	// Default to sensitive=true (local Ollama) for privacy
-	sensitive := "true"
-	if req.Sensitive != nil && !*req.Sensitive {
-		sensitive = "false"
-	}
-
-	precision := req.Precision
-	if precision == "" {
-		precision = "medium"
-	}
-
-	// Determine route type
-	routeType := "text"
-	if req.HasImages() {
-		routeType = "vision"
-	}
-
-	// Check for usecase-specific override first
-	if req.Usecase != "" {
-		if override := getUsecaseRoute(req.Usecase, routeType, sensitive, precision); override != nil {
-			return override, nil
-		}
-	}
-
-	// Select appropriate base routing table
-	var selectedTable map[string]map[string]*RouteConfig
-	if routeType == "vision" {
-		selectedTable = visionRoutingTable
-	} else {
-		selectedTable = routingTable
-	}
-
-	routes, ok := selectedTable[sensitive]
-	if !ok {
-		return nil, fmt.Errorf("invalid sensitive value")
-	}
-
-	route, ok := routes[precision]
-	if !ok {
-		return nil, fmt.Errorf("invalid precision value: %s", precision)
-	}
-
-	if route == nil {
-		return nil, fmt.Errorf("capability not available: sensitive=%s, precision=%s", sensitive, precision)
-	}
-
-	return route, nil
+	return router.ResolveRoute(req)
 }
 
 // ChatProvider is an alias to the port interface.
@@ -2874,8 +2763,7 @@ func handleRouteOverride(w http.ResponseWriter, r *http.Request) {
 
 // handleUsecases returns list of usecases that have route overrides
 func handleUsecases(w http.ResponseWriter, r *http.Request) {
-	usecaseRoutesMutex.RLock()
-	defer usecaseRoutesMutex.RUnlock()
+	usecaseRoutes := router.GetAllUsecaseRoutes()
 
 	usecases := []string{}
 	for usecase := range usecaseRoutes {
@@ -6806,6 +6694,12 @@ func main() {
 
 	// Initialize request logger (uses the database)
 	requestLogger = repository.NewSQLiteLogger(db)
+
+	// Initialize router with routing tables
+	router = app.NewRouter(routingTable, visionRoutingTable)
+
+	// Load usecase route overrides from database
+	loadRouteOverrides()
 
 	// Initialize cache
 	initCache()
