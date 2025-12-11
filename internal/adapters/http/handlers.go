@@ -28,6 +28,9 @@ type ChatHandler struct {
 	// Pending request tracking
 	AddPending    func(req *domain.ChatCompletionRequest, route *domain.RouteConfig, startTime time.Time) string
 	RemovePending func(id string)
+
+	// Model availability check (returns true if model is disabled)
+	IsModelDisabled func(model string) bool
 }
 
 // MetricsRecorder interface for recording request metrics.
@@ -77,9 +80,14 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Allow usecase from header (for clients like aider that can't add custom body fields)
+	if req.Usecase == "" {
+		req.Usecase = r.Header.Get("X-Usecase")
+	}
+
 	// Validate usecase is provided
 	if req.Usecase == "" {
-		http.Error(w, "Missing required field: usecase. Please provide a usecase to identify the caller.", http.StatusBadRequest)
+		http.Error(w, "Missing required field: usecase. Please provide a usecase to identify the caller (body field or X-Usecase header).", http.StatusBadRequest)
 		return
 	}
 
@@ -111,6 +119,19 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Logger.LogRequest(logEntry)
 
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Check if model is disabled
+	if h.IsModelDisabled != nil && h.IsModelDisabled(route.Model) {
+		logEntry.Provider = route.Provider
+		logEntry.Model = route.Model
+		logEntry.Success = false
+		logEntry.Error = fmt.Sprintf("model %s is disabled", route.Model)
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		h.Logger.LogRequest(logEntry)
+
+		http.Error(w, fmt.Sprintf("Model %s is currently disabled", route.Model), http.StatusServiceUnavailable)
 		return
 	}
 

@@ -138,6 +138,37 @@ func initCache() {
 	requestCache = cache.NewMemoryCache(cacheTTLHours)
 }
 
+// Disabled models set (models that are turned off in the UI)
+var disabledModels = make(map[string]bool)
+var disabledModelsMutex sync.RWMutex
+
+func isModelDisabled(model string) bool {
+	disabledModelsMutex.RLock()
+	defer disabledModelsMutex.RUnlock()
+	return disabledModels[model]
+}
+
+func loadDisabledModels() {
+	rows, err := db.Query(`SELECT model FROM disabled_models`)
+	if err != nil {
+		log.Printf("Failed to load disabled models: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	disabledModelsMutex.Lock()
+	defer disabledModelsMutex.Unlock()
+	disabledModels = make(map[string]bool)
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err != nil {
+			continue
+		}
+		disabledModels[model] = true
+	}
+	log.Printf("Loaded %d disabled models", len(disabledModels))
+}
+
 // Pending requests tracker
 var pendingRequests = make(map[string]*PendingRequest)
 var pendingMutex sync.RWMutex
@@ -405,6 +436,16 @@ func initDB() error {
 		return err
 	}
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_route_overrides_usecase ON route_overrides(usecase)`)
+
+	// Create disabled_models table to track which models are turned off
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS disabled_models (
+			model TEXT PRIMARY KEY NOT NULL
+		)
+	`)
+	if err != nil {
+		return err
+	}
 
 	// Fix empty provider values from routing failures
 	db.Exec(`UPDATE requests SET provider = 'routing_failed' WHERE provider = '' OR provider IS NULL`)
@@ -3748,6 +3789,111 @@ func handleAvailableModels(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(models)
 }
 
+// handleModelsConfig returns all models with their enabled/disabled status
+// GET: returns {models: [{provider, model, enabled},...]}
+// POST: sets enabled status for a model {model: string, enabled: bool}
+func handleModelsConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		// Build list of all models with their enabled status
+		type ModelConfig struct {
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+			Enabled  bool   `json:"enabled"`
+		}
+		var configs []ModelConfig
+
+		// Anthropic models
+		anthropicModels := []string{
+			"claude-opus-4-5-20251101",
+			"claude-sonnet-4-5-20250929",
+			"claude-haiku-4-5-20251001",
+		}
+		for _, m := range anthropicModels {
+			configs = append(configs, ModelConfig{
+				Provider: "anthropic",
+				Model:    m,
+				Enabled:  !isModelDisabled(m),
+			})
+		}
+
+		// OpenAI models
+		openaiModels := []string{
+			"gpt-5.1",
+			"gpt-4o",
+			"gpt-4o-mini",
+			"gpt-4-turbo",
+			"gpt-3.5-turbo",
+			"o1",
+			"o1-mini",
+		}
+		for _, m := range openaiModels {
+			configs = append(configs, ModelConfig{
+				Provider: "openai",
+				Model:    m,
+				Enabled:  !isModelDisabled(m),
+			})
+		}
+
+		// Ollama models
+		ollamaModels := getOllamaModels()
+		for _, m := range ollamaModels {
+			configs = append(configs, ModelConfig{
+				Provider: "ollama",
+				Model:    m,
+				Enabled:  !isModelDisabled(m),
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"models": configs})
+		return
+	}
+
+	if r.Method == "POST" {
+		var req struct {
+			Model   string `json:"model"`
+			Enabled bool   `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		dbMutex.Lock()
+		defer dbMutex.Unlock()
+
+		if req.Enabled {
+			// Remove from disabled_models table
+			_, err := db.Exec(`DELETE FROM disabled_models WHERE model = ?`, req.Model)
+			if err != nil {
+				http.Error(w, "Database error", http.StatusInternalServerError)
+				return
+			}
+			disabledModelsMutex.Lock()
+			delete(disabledModels, req.Model)
+			disabledModelsMutex.Unlock()
+			log.Printf("Enabled model: %s", req.Model)
+		} else {
+			// Add to disabled_models table
+			_, err := db.Exec(`INSERT OR IGNORE INTO disabled_models (model) VALUES (?)`, req.Model)
+			if err != nil {
+				http.Error(w, "Database error", http.StatusInternalServerError)
+				return
+			}
+			disabledModelsMutex.Lock()
+			disabledModels[req.Model] = true
+			disabledModelsMutex.Unlock()
+			log.Printf("Disabled model: %s", req.Model)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"success": true})
+		return
+	}
+
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
 func handleTTSHistory(w http.ResponseWriter, r *http.Request) {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
@@ -6007,6 +6153,7 @@ const dashboardHTML = `<!DOCTYPE html>
             <button class="nav-tab active" onclick="switchTab('llm')">Requests</button>
             <button class="nav-tab" onclick="window.location.href='/test'">Playground</button>
             <button class="nav-tab" onclick="switchTab('routing')">Routing</button>
+            <button class="nav-tab" onclick="switchTab('models')">Models</button>
             <button class="nav-tab" onclick="window.location.href='/analytics'">Analytics</button>
             <button class="nav-tab" onclick="window.location.href='/stats'">Stats</button>
             <button class="nav-tab" onclick="switchTab('system')">System</button>
@@ -6181,6 +6328,15 @@ const dashboardHTML = `<!DOCTYPE html>
             <div class="section">
                 <h2 class="section-title">CPU Cores</h2>
                 <div id="cpu-cores-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px;"></div>
+            </div>
+        </div>
+
+        <!-- Models Tab -->
+        <div id="tab-models" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">Model Availability</h2>
+                <p style="color: #888; font-size: 13px; margin-bottom: 20px;">Toggle models on/off to control which models the proxy can forward requests to. Disabled models will return a 503 error.</p>
+                <div id="models-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;"></div>
             </div>
         </div>
 
@@ -6893,6 +7049,10 @@ const dashboardHTML = `<!DOCTYPE html>
                 loadRoutes();
                 loadModelVolumes();
             }
+            // Models tab
+            if (tabName === 'models') {
+                loadModelsConfig();
+            }
             // System metrics tab
             if (tabName === 'system') {
                 loadSystemMetrics();
@@ -7020,6 +7180,72 @@ const dashboardHTML = `<!DOCTYPE html>
                     '<div style="font-size: 11px; color: #888; margin-top: 4px;">' + Math.round(m.avg_latency_ms) + 'ms avg | ' + costStr + '</div>';
 
                 grid.appendChild(card);
+            }
+        }
+
+        async function loadModelsConfig() {
+            const resp = await fetch('/api/models/config');
+            const data = await resp.json();
+            const grid = document.getElementById('models-grid');
+            grid.innerHTML = '';
+
+            // Group models by provider
+            const byProvider = {};
+            for (const m of data.models || []) {
+                if (!byProvider[m.provider]) byProvider[m.provider] = [];
+                byProvider[m.provider].push(m);
+            }
+
+            const providerColors = {
+                'anthropic': '#d97706',
+                'openai': '#10b981',
+                'ollama': '#6366f1'
+            };
+
+            for (const provider of ['anthropic', 'openai', 'ollama']) {
+                const models = byProvider[provider] || [];
+                if (models.length === 0) continue;
+
+                const card = document.createElement('div');
+                card.style.cssText = 'background: #1e1e2e; border: 1px solid #374151; border-radius: 12px; padding: 16px;';
+
+                const header = document.createElement('div');
+                header.style.cssText = 'font-size: 14px; font-weight: 600; color: ' + providerColors[provider] + '; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;';
+                header.textContent = provider;
+                card.appendChild(header);
+
+                for (const m of models) {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #374151;';
+                    row.innerHTML =
+                        '<div style="font-size: 13px; color: ' + (m.enabled ? '#e0e0e0' : '#666') + '; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px;" title="' + m.model + '">' + m.model + '</div>' +
+                        '<label class="toggle-switch" style="position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0;">' +
+                            '<input type="checkbox" ' + (m.enabled ? 'checked' : '') + ' onchange="toggleModel(\'' + m.model + '\', this.checked)" style="opacity: 0; width: 0; height: 0;">' +
+                            '<span style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: ' + (m.enabled ? '#22c55e' : '#374151') + '; transition: .3s; border-radius: 24px;"></span>' +
+                            '<span style="position: absolute; content: \\'\\'; height: 18px; width: 18px; left: ' + (m.enabled ? '23px' : '3px') + '; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%;"></span>' +
+                        '</label>';
+                    card.appendChild(row);
+                }
+
+                // Remove last border
+                if (card.lastChild) card.lastChild.style.borderBottom = 'none';
+
+                grid.appendChild(card);
+            }
+        }
+
+        async function toggleModel(model, enabled) {
+            const resp = await fetch('/api/models/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: model, enabled: enabled })
+            });
+            if (!resp.ok) {
+                alert('Failed to toggle model');
+                loadModelsConfig(); // Reload to restore state
+            } else {
+                // Refresh the UI to show updated state
+                loadModelsConfig();
             }
         }
 
@@ -8935,6 +9161,9 @@ func main() {
 	// Load usecase route overrides from database
 	loadRouteOverrides()
 
+	// Load disabled models from database
+	loadDisabledModels()
+
 	// Initialize cache
 	initCache()
 
@@ -8947,15 +9176,16 @@ func main() {
 
 	// Initialize chat handler (primary adapter)
 	chatHandler = &httphandlers.ChatHandler{
-		Router:        router,
-		Providers:     chatProviders,
-		Cache:         requestCache,
-		Logger:        requestLogger,
-		Metrics:       metrics,
-		GenerateKey:   generateCacheKey,
-		CalculateCost: calculateCost,
-		AddPending:    addPendingRequest,
-		RemovePending: removePendingRequest,
+		Router:          router,
+		Providers:       chatProviders,
+		Cache:           requestCache,
+		Logger:          requestLogger,
+		Metrics:         metrics,
+		GenerateKey:     generateCacheKey,
+		CalculateCost:   calculateCost,
+		AddPending:      addPendingRequest,
+		RemovePending:   removePendingRequest,
+		IsModelDisabled: isModelDisabled,
 	}
 
 	// Routes
@@ -8976,6 +9206,7 @@ func main() {
 	http.HandleFunc("/api/usecases/history", handleUsecasesHistory)
 	http.HandleFunc("/api/usecases/distribution", handleUsecaseDistribution)
 	http.HandleFunc("/api/models", handleAvailableModels)
+	http.HandleFunc("/api/models/config", handleModelsConfig)
 	http.HandleFunc("/api/models/vision", handleVisionModels)
 	http.HandleFunc("/api/history", handleRequestHistory)
 	http.HandleFunc("/api/request", handleRequestDetail)
