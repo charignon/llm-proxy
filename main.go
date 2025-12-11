@@ -2120,7 +2120,16 @@ func convertAnthropicToOpenAI(antReq *AnthropicMessagesRequest) *domain.ChatComp
 			}
 			if len(toolCalls) > 0 {
 				openaiMsg.ToolCalls = toolCalls
+				// OpenAI requires content to be a string (can be empty) when tool_calls present
+				if openaiMsg.Content == nil {
+					openaiMsg.Content = ""
+				}
 			}
+		}
+
+		// Ensure content is never nil for OpenAI compatibility
+		if openaiMsg.Content == nil {
+			openaiMsg.Content = ""
 		}
 
 		messages = append(messages, openaiMsg)
