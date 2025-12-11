@@ -7222,7 +7222,7 @@ const dashboardHTML = `<!DOCTYPE html>
                         '<label class="toggle-switch" style="position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0;">' +
                             '<input type="checkbox" ' + (m.enabled ? 'checked' : '') + ' onchange="toggleModel(\'' + m.model + '\', this.checked)" style="opacity: 0; width: 0; height: 0;">' +
                             '<span style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: ' + (m.enabled ? '#22c55e' : '#374151') + '; transition: .3s; border-radius: 24px;"></span>' +
-                            '<span style="position: absolute; content: \\'\\'; height: 18px; width: 18px; left: ' + (m.enabled ? '23px' : '3px') + '; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%;"></span>' +
+                            '<span style="position: absolute; height: 18px; width: 18px; left: ' + (m.enabled ? '23px' : '3px') + '; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%;"></span>' +
                         '</label>';
                     card.appendChild(row);
                 }
