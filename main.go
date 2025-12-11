@@ -1429,6 +1429,14 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	// Convert Anthropic request to OpenAI format for internal routing
 	openaiReq := convertAnthropicToOpenAI(&antReq)
 
+	// Allow model override via X-Model-Override header
+	// This is useful when Claude Code always sends claude-* models but you want to use Ollama
+	modelOverride := r.Header.Get("X-Model-Override")
+	if modelOverride != "" {
+		openaiReq.Model = modelOverride
+		antReq.Model = modelOverride // Update for logging
+	}
+
 	// Use X-Usecase header or default to "claude-code"
 	usecase := r.Header.Get("X-Usecase")
 	if usecase == "" {
@@ -1463,6 +1471,20 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 			Error: AnthropicError{
 				Type:    "invalid_request_error",
 				Message: "Route resolution failed: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	// Check if model is disabled
+	if isModelDisabled(route.Model) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(AnthropicErrorResponse{
+			Type: "error",
+			Error: AnthropicError{
+				Type:    "api_error",
+				Message: fmt.Sprintf("Model %s is currently disabled", route.Model),
 			},
 		})
 		return
