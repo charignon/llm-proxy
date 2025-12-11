@@ -1239,6 +1239,546 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ==================== Anthropic API Compatibility ====================
+// These types and handlers implement the Anthropic /v1/messages API format
+// to allow Claude Code to use llm-proxy with any backend (including Ollama).
+
+// AnthropicMessagesRequest represents an Anthropic API request
+type AnthropicMessagesRequest struct {
+	Model       string                    `json:"model"`
+	MaxTokens   int                       `json:"max_tokens"`
+	System      interface{}               `json:"system,omitempty"` // string or []AnthropicSystemBlock
+	Messages    []AnthropicMessage        `json:"messages"`
+	Tools       []AnthropicTool           `json:"tools,omitempty"`
+	ToolChoice  interface{}               `json:"tool_choice,omitempty"`
+	Stream      bool                      `json:"stream,omitempty"`
+	Temperature float64                   `json:"temperature,omitempty"`
+	TopP        float64                   `json:"top_p,omitempty"`
+	TopK        int                       `json:"top_k,omitempty"`
+	StopSeqs    []string                  `json:"stop_sequences,omitempty"`
+	Metadata    *AnthropicRequestMetadata `json:"metadata,omitempty"`
+}
+
+// AnthropicRequestMetadata contains request metadata
+type AnthropicRequestMetadata struct {
+	UserID string `json:"user_id,omitempty"`
+}
+
+// AnthropicSystemBlock represents a system block with cache control
+type AnthropicSystemBlock struct {
+	Type         string                    `json:"type"`
+	Text         string                    `json:"text,omitempty"`
+	CacheControl *AnthropicCacheControl    `json:"cache_control,omitempty"`
+}
+
+// AnthropicCacheControl for prompt caching
+type AnthropicCacheControl struct {
+	Type string `json:"type"` // "ephemeral"
+}
+
+// AnthropicMessage represents a message in Anthropic format
+type AnthropicMessage struct {
+	Role    string      `json:"role"`
+	Content interface{} `json:"content"` // string or []AnthropicContentBlock
+}
+
+// AnthropicContentBlock represents a content block
+type AnthropicContentBlock struct {
+	Type         string                    `json:"type"`
+	Text         string                    `json:"text,omitempty"`
+	ID           string                    `json:"id,omitempty"`
+	Name         string                    `json:"name,omitempty"`
+	Input        map[string]interface{}    `json:"input,omitempty"`
+	ToolUseID    string                    `json:"tool_use_id,omitempty"`
+	Content      interface{}               `json:"content,omitempty"` // for tool_result
+	Source       *AnthropicImageSource     `json:"source,omitempty"`
+	CacheControl *AnthropicCacheControl    `json:"cache_control,omitempty"`
+}
+
+// AnthropicImageSource for image content
+type AnthropicImageSource struct {
+	Type      string `json:"type"`       // "base64" or "url"
+	MediaType string `json:"media_type"` // e.g., "image/png"
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
+}
+
+// AnthropicTool represents a tool definition
+type AnthropicTool struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	InputSchema map[string]interface{} `json:"input_schema"`
+}
+
+// AnthropicMessagesResponse represents an Anthropic API response
+type AnthropicMessagesResponse struct {
+	ID           string                  `json:"id"`
+	Type         string                  `json:"type"`
+	Role         string                  `json:"role"`
+	Content      []AnthropicContentBlock `json:"content"`
+	Model        string                  `json:"model"`
+	StopReason   string                  `json:"stop_reason"`
+	StopSequence *string                 `json:"stop_sequence"`
+	Usage        AnthropicUsage          `json:"usage"`
+}
+
+// AnthropicUsage contains token usage
+type AnthropicUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+}
+
+// AnthropicError represents an API error
+type AnthropicError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// AnthropicErrorResponse wraps an error
+type AnthropicErrorResponse struct {
+	Type  string         `json:"type"`
+	Error AnthropicError `json:"error"`
+}
+
+// handleAnthropicMessages handles /v1/messages requests in Anthropic format
+func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(AnthropicErrorResponse{
+			Type: "error",
+			Error: AnthropicError{
+				Type:    "invalid_request_error",
+				Message: "Method not allowed",
+			},
+		})
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(AnthropicErrorResponse{
+			Type: "error",
+			Error: AnthropicError{
+				Type:    "invalid_request_error",
+				Message: "Failed to read request body",
+			},
+		})
+		return
+	}
+
+	var antReq AnthropicMessagesRequest
+	if err := json.Unmarshal(body, &antReq); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(AnthropicErrorResponse{
+			Type: "error",
+			Error: AnthropicError{
+				Type:    "invalid_request_error",
+				Message: "Invalid JSON: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	// Streaming not supported yet
+	if antReq.Stream {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(AnthropicErrorResponse{
+			Type: "error",
+			Error: AnthropicError{
+				Type:    "invalid_request_error",
+				Message: "Streaming not supported by llm-proxy Anthropic endpoint. Use stream: false",
+			},
+		})
+		return
+	}
+
+	// Convert Anthropic request to OpenAI format for internal routing
+	openaiReq := convertAnthropicToOpenAI(&antReq)
+
+	// Use X-Usecase header or default to "claude-code"
+	usecase := r.Header.Get("X-Usecase")
+	if usecase == "" {
+		usecase = "claude-code"
+	}
+	openaiReq.Usecase = usecase
+
+	// Default to non-sensitive for claude-code (allows cloud routing)
+	// Can be overridden via X-Sensitive header
+	sensitive := false
+	if r.Header.Get("X-Sensitive") == "true" {
+		sensitive = true
+	}
+	openaiReq.Sensitive = &sensitive
+
+	// Default precision
+	precision := r.Header.Get("X-Precision")
+	if precision == "" {
+		precision = "medium"
+	}
+	openaiReq.Precision = precision
+
+	startTime := time.Now()
+
+	// Resolve route
+	route, err := router.ResolveRoute(openaiReq)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(AnthropicErrorResponse{
+			Type: "error",
+			Error: AnthropicError{
+				Type:    "invalid_request_error",
+				Message: "Route resolution failed: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	// Get provider
+	provider, ok := chatProviders[route.Provider]
+	if !ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(AnthropicErrorResponse{
+			Type: "error",
+			Error: AnthropicError{
+				Type:    "api_error",
+				Message: "Provider not available: " + route.Provider,
+			},
+		})
+		return
+	}
+
+	// Execute request
+	resp, err := provider.Chat(openaiReq, route.Model)
+	latencyMs := time.Since(startTime).Milliseconds()
+
+	if err != nil {
+		// Log the failed request
+		logEntry := &domain.RequestLog{
+			Timestamp:      startTime,
+			RequestType:    "anthropic-messages",
+			Provider:       route.Provider,
+			Model:          route.Model,
+			RequestedModel: antReq.Model,
+			Usecase:        usecase,
+			HasImages:      openaiReq.HasImages(),
+			Sensitive:      sensitive,
+			Precision:      precision,
+			Success:        false,
+			Error:          err.Error(),
+			LatencyMs:      latencyMs,
+			RequestBody:    body,
+		}
+		requestLogger.LogRequest(logEntry)
+		metrics.recordRequest(route.Provider, route.Model, "error", latencyMs, 0, 0, 0, false)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(AnthropicErrorResponse{
+			Type: "error",
+			Error: AnthropicError{
+				Type:    "api_error",
+				Message: err.Error(),
+			},
+		})
+		return
+	}
+
+	// Convert OpenAI response to Anthropic format
+	antResp := convertOpenAIToAnthropic(resp, antReq.Model)
+
+	// Log successful request
+	inputTokens := 0
+	outputTokens := 0
+	if resp.Usage != nil {
+		inputTokens = resp.Usage.PromptTokens
+		outputTokens = resp.Usage.CompletionTokens
+	}
+	cost := calculateCost(route.Model, inputTokens, outputTokens)
+
+	logEntry := &domain.RequestLog{
+		Timestamp:      startTime,
+		RequestType:    "anthropic-messages",
+		Provider:       route.Provider,
+		Model:          route.Model,
+		RequestedModel: antReq.Model,
+		Usecase:        usecase,
+		HasImages:      openaiReq.HasImages(),
+		Sensitive:      sensitive,
+		Precision:      precision,
+		Success:        true,
+		LatencyMs:      latencyMs,
+		InputTokens:    inputTokens,
+		OutputTokens:   outputTokens,
+		CostUSD:        cost,
+		RequestBody:    body,
+	}
+	respBody, _ := json.Marshal(antResp)
+	logEntry.ResponseBody = respBody
+	requestID := requestLogger.LogRequest(logEntry)
+	metrics.recordRequest(route.Provider, route.Model, "success", latencyMs, inputTokens, outputTokens, cost, false)
+
+	// Set response headers
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-LLM-Proxy-Request-ID", fmt.Sprintf("%d", requestID))
+	w.Header().Set("X-LLM-Proxy-Provider", route.Provider)
+	w.Header().Set("X-LLM-Proxy-Model", route.Model)
+	w.Header().Set("X-LLM-Proxy-Latency-Ms", fmt.Sprintf("%d", latencyMs))
+	json.NewEncoder(w).Encode(antResp)
+}
+
+// convertAnthropicToOpenAI converts an Anthropic request to OpenAI format
+func convertAnthropicToOpenAI(antReq *AnthropicMessagesRequest) *domain.ChatCompletionRequest {
+	var messages []domain.Message
+
+	// Handle system message(s)
+	switch sys := antReq.System.(type) {
+	case string:
+		if sys != "" {
+			messages = append(messages, domain.Message{
+				Role:    "system",
+				Content: sys,
+			})
+		}
+	case []interface{}:
+		// Array of system blocks
+		var systemText strings.Builder
+		for _, block := range sys {
+			if m, ok := block.(map[string]interface{}); ok {
+				if m["type"] == "text" {
+					if text, ok := m["text"].(string); ok {
+						if systemText.Len() > 0 {
+							systemText.WriteString("\n\n")
+						}
+						systemText.WriteString(text)
+					}
+				}
+			}
+		}
+		if systemText.Len() > 0 {
+			messages = append(messages, domain.Message{
+				Role:    "system",
+				Content: systemText.String(),
+			})
+		}
+	}
+
+	// Convert messages
+	for _, msg := range antReq.Messages {
+		openaiMsg := domain.Message{Role: msg.Role}
+
+		switch content := msg.Content.(type) {
+		case string:
+			openaiMsg.Content = content
+		case []interface{}:
+			// Array of content blocks
+			var contentParts []domain.ContentPart
+			var toolCalls []domain.ToolCall
+
+			for _, block := range content {
+				if m, ok := block.(map[string]interface{}); ok {
+					blockType, _ := m["type"].(string)
+					switch blockType {
+					case "text":
+						text, _ := m["text"].(string)
+						contentParts = append(contentParts, domain.ContentPart{
+							Type: "text",
+							Text: text,
+						})
+					case "image":
+						// Anthropic image format -> OpenAI format
+						if source, ok := m["source"].(map[string]interface{}); ok {
+							mediaType, _ := source["media_type"].(string)
+							data, _ := source["data"].(string)
+							contentParts = append(contentParts, domain.ContentPart{
+								Type: "image_url",
+								ImageURL: &domain.ImageURL{
+									URL: fmt.Sprintf("data:%s;base64,%s", mediaType, data),
+								},
+							})
+						}
+					case "tool_use":
+						// Assistant's tool calls
+						id, _ := m["id"].(string)
+						name, _ := m["name"].(string)
+						input, _ := m["input"].(map[string]interface{})
+						inputJSON, _ := json.Marshal(input)
+						toolCalls = append(toolCalls, domain.ToolCall{
+							ID:   id,
+							Type: "function",
+							Function: domain.ToolCallFunction{
+								Name:      name,
+								Arguments: string(inputJSON),
+							},
+						})
+					case "tool_result":
+						// This is a user message with tool results - convert to OpenAI tool role
+						toolUseID, _ := m["tool_use_id"].(string)
+						var resultContent string
+						switch c := m["content"].(type) {
+						case string:
+							resultContent = c
+						case []interface{}:
+							// Array of text blocks
+							for _, part := range c {
+								if pm, ok := part.(map[string]interface{}); ok {
+									if pm["type"] == "text" {
+										if text, ok := pm["text"].(string); ok {
+											resultContent += text
+										}
+									}
+								}
+							}
+						}
+						// Add as a separate tool message
+						messages = append(messages, domain.Message{
+							Role:       "tool",
+							Content:    resultContent,
+							ToolCallID: toolUseID,
+						})
+						continue
+					}
+				}
+			}
+
+			// Set content
+			if len(contentParts) > 0 {
+				// Convert to []interface{} for JSON marshaling
+				var parts []interface{}
+				for _, cp := range contentParts {
+					part := map[string]interface{}{"type": cp.Type}
+					if cp.Type == "text" {
+						part["text"] = cp.Text
+					} else if cp.Type == "image_url" && cp.ImageURL != nil {
+						part["image_url"] = map[string]interface{}{"url": cp.ImageURL.URL}
+					}
+					parts = append(parts, part)
+				}
+				if len(parts) == 1 {
+					if parts[0].(map[string]interface{})["type"] == "text" {
+						openaiMsg.Content = parts[0].(map[string]interface{})["text"]
+					} else {
+						openaiMsg.Content = parts
+					}
+				} else {
+					openaiMsg.Content = parts
+				}
+			}
+			if len(toolCalls) > 0 {
+				openaiMsg.ToolCalls = toolCalls
+			}
+		}
+
+		messages = append(messages, openaiMsg)
+	}
+
+	// Convert tools
+	var tools []domain.Tool
+	for _, t := range antReq.Tools {
+		tools = append(tools, domain.Tool{
+			Type: "function",
+			Function: domain.ToolFunction{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.InputSchema,
+			},
+		})
+	}
+
+	return &domain.ChatCompletionRequest{
+		Model:       antReq.Model,
+		Messages:    messages,
+		MaxTokens:   antReq.MaxTokens,
+		Temperature: antReq.Temperature,
+		Tools:       tools,
+		ToolChoice:  antReq.ToolChoice,
+	}
+}
+
+// convertOpenAIToAnthropic converts an OpenAI response to Anthropic format
+func convertOpenAIToAnthropic(resp *domain.ChatCompletionResponse, requestedModel string) *AnthropicMessagesResponse {
+	var contentBlocks []AnthropicContentBlock
+
+	if len(resp.Choices) > 0 {
+		choice := resp.Choices[0]
+
+		// Add text content
+		if content, ok := choice.Message.Content.(string); ok && content != "" {
+			contentBlocks = append(contentBlocks, AnthropicContentBlock{
+				Type: "text",
+				Text: content,
+			})
+		}
+
+		// Add tool use blocks
+		for _, tc := range choice.Message.ToolCalls {
+			var input map[string]interface{}
+			json.Unmarshal([]byte(tc.Function.Arguments), &input)
+			contentBlocks = append(contentBlocks, AnthropicContentBlock{
+				Type:  "tool_use",
+				ID:    tc.ID,
+				Name:  tc.Function.Name,
+				Input: input,
+			})
+		}
+	}
+
+	// If no content, add empty text block
+	if len(contentBlocks) == 0 {
+		contentBlocks = append(contentBlocks, AnthropicContentBlock{
+			Type: "text",
+			Text: "",
+		})
+	}
+
+	// Map OpenAI finish reasons to Anthropic stop reasons
+	stopReason := "end_turn"
+	if len(resp.Choices) > 0 {
+		switch resp.Choices[0].FinishReason {
+		case "stop":
+			stopReason = "end_turn"
+		case "length":
+			stopReason = "max_tokens"
+		case "tool_calls":
+			stopReason = "tool_use"
+		case "content_filter":
+			stopReason = "end_turn"
+		}
+	}
+
+	// Use requested model in response (Claude Code expects this)
+	model := requestedModel
+	if model == "" {
+		model = resp.Model
+	}
+
+	usage := AnthropicUsage{}
+	if resp.Usage != nil {
+		usage.InputTokens = resp.Usage.PromptTokens
+		usage.OutputTokens = resp.Usage.CompletionTokens
+	}
+
+	return &AnthropicMessagesResponse{
+		ID:         resp.ID,
+		Type:       "message",
+		Role:       "assistant",
+		Content:    contentBlocks,
+		Model:      model,
+		StopReason: stopReason,
+		Usage:      usage,
+	}
+}
+
+// ==================== End Anthropic API Compatibility ====================
+
 // EstimateRequest is a simplified request for route estimation
 type EstimateRequest struct {
 	Model     string `json:"model"`
@@ -7969,6 +8509,7 @@ func main() {
 	http.HandleFunc("/health", handleHealth)
 	http.HandleFunc("/metrics", handleMetrics)
 	http.Handle("/v1/chat/completions", chatHandler)
+	http.HandleFunc("/v1/messages", handleAnthropicMessages) // Anthropic API compatibility for Claude Code
 	http.HandleFunc("/v1/estimate", handleEstimate)
 	http.HandleFunc("/v1/models", handleModels)
 	http.HandleFunc("/api/stats", handleStats)
