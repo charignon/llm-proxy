@@ -1385,20 +1385,6 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Streaming not supported yet
-	if antReq.Stream {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(AnthropicErrorResponse{
-			Type: "error",
-			Error: AnthropicError{
-				Type:    "invalid_request_error",
-				Message: "Streaming not supported by llm-proxy Anthropic endpoint. Use stream: false",
-			},
-		})
-		return
-	}
-
 	// Convert Anthropic request to OpenAI format for internal routing
 	openaiReq := convertAnthropicToOpenAI(&antReq)
 
@@ -1438,6 +1424,12 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 				Message: "Route resolution failed: " + err.Error(),
 			},
 		})
+		return
+	}
+
+	// Handle streaming vs non-streaming
+	if antReq.Stream {
+		handleAnthropicMessagesStreaming(w, r, &antReq, openaiReq, route, body, usecase, sensitive, precision, startTime)
 		return
 	}
 
@@ -1533,6 +1525,460 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-LLM-Proxy-Model", route.Model)
 	w.Header().Set("X-LLM-Proxy-Latency-Ms", fmt.Sprintf("%d", latencyMs))
 	json.NewEncoder(w).Encode(antResp)
+}
+
+// handleAnthropicMessagesStreaming handles streaming responses in Anthropic SSE format
+func handleAnthropicMessagesStreaming(w http.ResponseWriter, r *http.Request, antReq *AnthropicMessagesRequest, openaiReq *domain.ChatCompletionRequest, route *domain.RouteConfig, body []byte, usecase string, sensitive bool, precision string, startTime time.Time) {
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-LLM-Proxy-Provider", route.Provider)
+	w.Header().Set("X-LLM-Proxy-Model", route.Model)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Generate message ID
+	msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
+
+	// Helper to write SSE event
+	writeEvent := func(event string, data interface{}) {
+		jsonData, _ := json.Marshal(data)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, jsonData)
+		flusher.Flush()
+	}
+
+	// Estimate input tokens
+	inputTokens := 0
+	for _, msg := range openaiReq.Messages {
+		if content, ok := msg.Content.(string); ok {
+			inputTokens += len(content) / 4
+		}
+	}
+
+	// Send message_start event
+	writeEvent("message_start", map[string]interface{}{
+		"type": "message_start",
+		"message": map[string]interface{}{
+			"id":            msgID,
+			"type":          "message",
+			"role":          "assistant",
+			"content":       []interface{}{},
+			"model":         antReq.Model,
+			"stop_reason":   nil,
+			"stop_sequence": nil,
+			"usage": map[string]interface{}{
+				"input_tokens":  inputTokens,
+				"output_tokens": 1,
+			},
+		},
+	})
+
+	// For Ollama, we need to stream from the Ollama API
+	if route.Provider == "ollama" {
+		streamAnthropicFromOllama(w, flusher, writeEvent, openaiReq, route.Model, antReq.Model, msgID, body, usecase, sensitive, precision, startTime, inputTokens)
+		return
+	}
+
+	// For non-Ollama providers, get the full response and simulate streaming
+	provider, ok := chatProviders[route.Provider]
+	if !ok {
+		writeEvent("error", map[string]interface{}{
+			"type": "error",
+			"error": map[string]interface{}{
+				"type":    "api_error",
+				"message": "Provider not available: " + route.Provider,
+			},
+		})
+		return
+	}
+
+	resp, err := provider.Chat(openaiReq, route.Model)
+	if err != nil {
+		writeEvent("error", map[string]interface{}{
+			"type": "error",
+			"error": map[string]interface{}{
+				"type":    "api_error",
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	// Simulate streaming the response
+	if len(resp.Choices) > 0 {
+		choice := resp.Choices[0]
+
+		// Handle text content
+		if content, ok := choice.Message.Content.(string); ok && content != "" {
+			// Send content_block_start
+			writeEvent("content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": 0,
+				"content_block": map[string]interface{}{
+					"type": "text",
+					"text": "",
+				},
+			})
+
+			// Stream text in chunks
+			chunkSize := 20
+			for i := 0; i < len(content); i += chunkSize {
+				end := i + chunkSize
+				if end > len(content) {
+					end = len(content)
+				}
+				chunk := content[i:end]
+				writeEvent("content_block_delta", map[string]interface{}{
+					"type":  "content_block_delta",
+					"index": 0,
+					"delta": map[string]interface{}{
+						"type": "text_delta",
+						"text": chunk,
+					},
+				})
+			}
+
+			// Send content_block_stop
+			writeEvent("content_block_stop", map[string]interface{}{
+				"type":  "content_block_stop",
+				"index": 0,
+			})
+		}
+
+		// Handle tool calls
+		for i, tc := range choice.Message.ToolCalls {
+			idx := i
+			if choice.Message.Content != nil {
+				idx = i + 1
+			}
+
+			var input map[string]interface{}
+			json.Unmarshal([]byte(tc.Function.Arguments), &input)
+
+			// Send content_block_start for tool_use
+			writeEvent("content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": idx,
+				"content_block": map[string]interface{}{
+					"type":  "tool_use",
+					"id":    tc.ID,
+					"name":  tc.Function.Name,
+					"input": map[string]interface{}{},
+				},
+			})
+
+			// Send input as delta
+			writeEvent("content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": idx,
+				"delta": map[string]interface{}{
+					"type":         "input_json_delta",
+					"partial_json": tc.Function.Arguments,
+				},
+			})
+
+			// Send content_block_stop
+			writeEvent("content_block_stop", map[string]interface{}{
+				"type":  "content_block_stop",
+				"index": idx,
+			})
+		}
+	}
+
+	// Calculate output tokens
+	outputTokens := 0
+	if resp.Usage != nil {
+		outputTokens = resp.Usage.CompletionTokens
+	}
+
+	// Determine stop reason
+	stopReason := "end_turn"
+	if len(resp.Choices) > 0 {
+		switch resp.Choices[0].FinishReason {
+		case "stop":
+			stopReason = "end_turn"
+		case "length":
+			stopReason = "max_tokens"
+		case "tool_calls":
+			stopReason = "tool_use"
+		}
+	}
+
+	// Send message_delta
+	writeEvent("message_delta", map[string]interface{}{
+		"type": "message_delta",
+		"delta": map[string]interface{}{
+			"stop_reason":   stopReason,
+			"stop_sequence": nil,
+		},
+		"usage": map[string]interface{}{
+			"output_tokens": outputTokens,
+		},
+	})
+
+	// Send message_stop
+	writeEvent("message_stop", map[string]interface{}{
+		"type": "message_stop",
+	})
+
+	// Log the request
+	latencyMs := time.Since(startTime).Milliseconds()
+	cost := calculateCost(route.Model, inputTokens, outputTokens)
+	logEntry := &domain.RequestLog{
+		Timestamp:      startTime,
+		RequestType:    "anthropic-messages-stream",
+		Provider:       route.Provider,
+		Model:          route.Model,
+		RequestedModel: antReq.Model,
+		Usecase:        usecase,
+		HasImages:      openaiReq.HasImages(),
+		Sensitive:      sensitive,
+		Precision:      precision,
+		Success:        true,
+		LatencyMs:      latencyMs,
+		InputTokens:    inputTokens,
+		OutputTokens:   outputTokens,
+		CostUSD:        cost,
+		RequestBody:    body,
+	}
+	requestLogger.LogRequest(logEntry)
+	metrics.recordRequest(route.Provider, route.Model, "success", latencyMs, inputTokens, outputTokens, cost, false)
+}
+
+// streamAnthropicFromOllama streams Ollama responses in Anthropic SSE format
+func streamAnthropicFromOllama(w http.ResponseWriter, flusher http.Flusher, writeEvent func(string, interface{}), openaiReq *domain.ChatCompletionRequest, model string, requestedModel string, msgID string, body []byte, usecase string, sensitive bool, precision string, startTime time.Time, inputTokens int) {
+	// Convert messages to Ollama format
+	type ollamaMessage struct {
+		Role    string   `json:"role"`
+		Content string   `json:"content"`
+		Images  []string `json:"images,omitempty"`
+	}
+
+	var messages []ollamaMessage
+	for _, msg := range openaiReq.Messages {
+		ollamaMsg := ollamaMessage{Role: msg.Role}
+		switch c := msg.Content.(type) {
+		case string:
+			ollamaMsg.Content = c
+		case []interface{}:
+			var textParts []string
+			for _, part := range c {
+				if m, ok := part.(map[string]interface{}); ok {
+					if m["type"] == "text" {
+						textParts = append(textParts, m["text"].(string))
+					} else if m["type"] == "image_url" {
+						if imgURL, ok := m["image_url"].(map[string]interface{}); ok {
+							url := imgURL["url"].(string)
+							if strings.HasPrefix(url, "data:") {
+								parts := strings.SplitN(url, ",", 2)
+								if len(parts) == 2 {
+									ollamaMsg.Images = append(ollamaMsg.Images, parts[1])
+								}
+							}
+						}
+					}
+				}
+			}
+			ollamaMsg.Content = strings.Join(textParts, "\n")
+		}
+		messages = append(messages, ollamaMsg)
+	}
+
+	ollamaReq := map[string]interface{}{
+		"model":    model,
+		"messages": messages,
+		"stream":   true,
+	}
+	if len(openaiReq.Tools) > 0 {
+		ollamaReq["tools"] = openaiReq.Tools
+	}
+
+	reqBody, _ := json.Marshal(ollamaReq)
+	httpReq, _ := http.NewRequest("POST", "http://"+ollamaHost+"/api/chat", bytes.NewReader(reqBody))
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 240 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		writeEvent("error", map[string]interface{}{
+			"type": "error",
+			"error": map[string]interface{}{
+				"type":    "api_error",
+				"message": "Ollama request failed: " + err.Error(),
+			},
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		writeEvent("error", map[string]interface{}{
+			"type": "error",
+			"error": map[string]interface{}{
+				"type":    "api_error",
+				"message": fmt.Sprintf("Ollama error %d: %s", resp.StatusCode, string(respBody)),
+			},
+		})
+		return
+	}
+
+	// Send content_block_start for text
+	writeEvent("content_block_start", map[string]interface{}{
+		"type":  "content_block_start",
+		"index": 0,
+		"content_block": map[string]interface{}{
+			"type": "text",
+			"text": "",
+		},
+	})
+
+	// Stream from Ollama
+	decoder := json.NewDecoder(resp.Body)
+	var fullContent strings.Builder
+	var toolCalls []map[string]interface{}
+
+	for {
+		var chunk struct {
+			Model   string `json:"model"`
+			Message struct {
+				Role      string `json:"role"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id,omitempty"`
+					Function struct {
+						Name      string                 `json:"name"`
+						Arguments map[string]interface{} `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls,omitempty"`
+			} `json:"message"`
+			Done bool `json:"done"`
+		}
+
+		if err := decoder.Decode(&chunk); err != nil {
+			if err == io.EOF {
+				break
+			}
+			break
+		}
+
+		// Stream text content
+		if chunk.Message.Content != "" {
+			fullContent.WriteString(chunk.Message.Content)
+			writeEvent("content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": 0,
+				"delta": map[string]interface{}{
+					"type": "text_delta",
+					"text": chunk.Message.Content,
+				},
+			})
+		}
+
+		// Collect tool calls
+		for _, tc := range chunk.Message.ToolCalls {
+			argsJSON, _ := json.Marshal(tc.Function.Arguments)
+			toolID := tc.ID
+			if toolID == "" {
+				toolID = fmt.Sprintf("toolu_%d", time.Now().UnixNano())
+			}
+			toolCalls = append(toolCalls, map[string]interface{}{
+				"id":        toolID,
+				"name":      tc.Function.Name,
+				"arguments": string(argsJSON),
+			})
+		}
+
+		if chunk.Done {
+			break
+		}
+	}
+
+	// Send content_block_stop for text
+	writeEvent("content_block_stop", map[string]interface{}{
+		"type":  "content_block_stop",
+		"index": 0,
+	})
+
+	// Send tool use blocks
+	stopReason := "end_turn"
+	for i, tc := range toolCalls {
+		stopReason = "tool_use"
+		idx := i + 1
+
+		writeEvent("content_block_start", map[string]interface{}{
+			"type":  "content_block_start",
+			"index": idx,
+			"content_block": map[string]interface{}{
+				"type":  "tool_use",
+				"id":    tc["id"],
+				"name":  tc["name"],
+				"input": map[string]interface{}{},
+			},
+		})
+
+		writeEvent("content_block_delta", map[string]interface{}{
+			"type":  "content_block_delta",
+			"index": idx,
+			"delta": map[string]interface{}{
+				"type":         "input_json_delta",
+				"partial_json": tc["arguments"],
+			},
+		})
+
+		writeEvent("content_block_stop", map[string]interface{}{
+			"type":  "content_block_stop",
+			"index": idx,
+		})
+	}
+
+	// Estimate output tokens
+	outputTokens := len(fullContent.String()) / 4
+
+	// Send message_delta
+	writeEvent("message_delta", map[string]interface{}{
+		"type": "message_delta",
+		"delta": map[string]interface{}{
+			"stop_reason":   stopReason,
+			"stop_sequence": nil,
+		},
+		"usage": map[string]interface{}{
+			"output_tokens": outputTokens,
+		},
+	})
+
+	// Send message_stop
+	writeEvent("message_stop", map[string]interface{}{
+		"type": "message_stop",
+	})
+
+	// Log the request
+	latencyMs := time.Since(startTime).Milliseconds()
+	cost := calculateCost(model, inputTokens, outputTokens)
+	logEntry := &domain.RequestLog{
+		Timestamp:      startTime,
+		RequestType:    "anthropic-messages-stream",
+		Provider:       "ollama",
+		Model:          model,
+		RequestedModel: requestedModel,
+		Usecase:        usecase,
+		HasImages:      openaiReq.HasImages(),
+		Sensitive:      sensitive,
+		Precision:      precision,
+		Success:        true,
+		LatencyMs:      latencyMs,
+		InputTokens:    inputTokens,
+		OutputTokens:   outputTokens,
+		CostUSD:        cost,
+		RequestBody:    body,
+	}
+	requestLogger.LogRequest(logEntry)
+	metrics.recordRequest("ollama", model, "success", latencyMs, inputTokens, outputTokens, cost, false)
 }
 
 // convertAnthropicToOpenAI converts an Anthropic request to OpenAI format
