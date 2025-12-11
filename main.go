@@ -1478,6 +1478,23 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Check if model is disabled
 	if isModelDisabled(route.Model) {
+		// Log the blocked request
+		logEntry := &domain.RequestLog{
+			Timestamp:      startTime,
+			Provider:       route.Provider,
+			Model:          route.Model,
+			RequestedModel: antReq.Model,
+			Sensitive:      sensitive,
+			Precision:      precision,
+			Usecase:        usecase,
+			Success:        false,
+			Error:          fmt.Sprintf("model_disabled: %s", route.Model),
+			LatencyMs:      time.Since(startTime).Milliseconds(),
+			RequestBody:    body,
+			ClientIP:       getClientIP(r),
+		}
+		requestLogger.LogRequest(logEntry)
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(AnthropicErrorResponse{
