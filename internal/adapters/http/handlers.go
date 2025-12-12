@@ -2,6 +2,7 @@
 package http
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -255,9 +256,15 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 		"model":    route.Model,
 		"messages": req.Messages,
 		"stream":   true,
+		"stream_options": map[string]bool{
+			"include_usage": true, // Get token counts in streaming mode
+		},
 	}
 	if req.MaxTokens > 0 {
-		if strings.HasPrefix(route.Model, "gpt-4o") || strings.HasPrefix(route.Model, "gpt-5") || strings.HasPrefix(route.Model, "o1") {
+		// Newer OpenAI models use max_completion_tokens
+		if strings.HasPrefix(route.Model, "gpt-4o") || strings.HasPrefix(route.Model, "gpt-4.1") ||
+			strings.HasPrefix(route.Model, "gpt-5") || strings.HasPrefix(route.Model, "o1") ||
+			strings.HasPrefix(route.Model, "o3") || strings.HasPrefix(route.Model, "o4") {
 			openaiReq["max_completion_tokens"] = req.MaxTokens
 		} else {
 			openaiReq["max_tokens"] = req.MaxTokens
@@ -316,26 +323,68 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 
-	// Stream the response
-	buf := make([]byte, 4096)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			w.Write(buf[:n])
-			flusher.Flush()
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			break
+	// Stream the response while capturing content and tokens
+	var responseContent strings.Builder
+	var inputTokens, outputTokens int
+	scanner := bufio.NewScanner(resp.Body)
+	// Increase buffer size for large chunks
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Forward the line to client
+		fmt.Fprintln(w, line)
+		flusher.Flush()
+
+		// Parse SSE data lines to extract content and usage
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				continue
+			}
+			// Parse the chunk to extract content delta and usage
+			var chunk struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+				Usage *struct {
+					PromptTokens     int `json:"prompt_tokens"`
+					CompletionTokens int `json:"completion_tokens"`
+				} `json:"usage"`
+			}
+			if err := json.Unmarshal([]byte(data), &chunk); err == nil {
+				// Accumulate content
+				if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
+					responseContent.WriteString(chunk.Choices[0].Delta.Content)
+				}
+				// Capture usage from final chunk (OpenAI sends this with stream_options)
+				if chunk.Usage != nil {
+					inputTokens = chunk.Usage.PromptTokens
+					outputTokens = chunk.Usage.CompletionTokens
+				}
+			}
 		}
 	}
 
-	// Log success
+	// Build a synthetic response for logging
+	syntheticResp := map[string]interface{}{
+		"choices": []map[string]interface{}{
+			{"message": map[string]string{"role": "assistant", "content": responseContent.String()}},
+		},
+		"usage": map[string]int{"prompt_tokens": inputTokens, "completion_tokens": outputTokens},
+	}
+	respBytes, _ := json.Marshal(syntheticResp)
+
+	// Log success with captured data
 	logEntry.Success = true
 	logEntry.LatencyMs = time.Since(startTime).Milliseconds()
 	logEntry.RequestType = "stream"
+	logEntry.ResponseBody = respBytes
+	logEntry.InputTokens = inputTokens
+	logEntry.OutputTokens = outputTokens
+	logEntry.CostUSD = h.CalculateCost(route.Model, inputTokens, outputTokens)
 	h.Logger.LogRequest(logEntry)
-	h.Metrics.RecordRequest(route.Provider, route.Model, "success", logEntry.LatencyMs, 0, 0, 0, false)
+	h.Metrics.RecordRequest(route.Provider, route.Model, "success", logEntry.LatencyMs, inputTokens, outputTokens, logEntry.CostUSD, false)
 }
