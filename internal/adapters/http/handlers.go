@@ -238,6 +238,18 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 
+	// Check cache first (unless no_cache is set)
+	cacheKey := h.GenerateKey(req, route)
+	logEntry.CacheKey = cacheKey
+
+	if !req.NoCache {
+		if cached, ok := h.Cache.Get(cacheKey); ok {
+			// Cache hit - fake stream the cached response
+			h.fakeStreamCachedResponse(w, cached, route, logEntry, startTime)
+			return
+		}
+	}
+
 	// Get OpenAI provider to access API key
 	provider, ok := h.Providers[route.Provider]
 	if !ok {
@@ -368,7 +380,7 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 		}
 	}
 
-	// Build a synthetic response for logging
+	// Build a synthetic response for logging and caching
 	syntheticResp := map[string]interface{}{
 		"choices": []map[string]interface{}{
 			{"message": map[string]string{"role": "assistant", "content": responseContent.String()}},
@@ -376,6 +388,9 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 		"usage": map[string]int{"prompt_tokens": inputTokens, "completion_tokens": outputTokens},
 	}
 	respBytes, _ := json.Marshal(syntheticResp)
+
+	// Cache the response for future streaming requests
+	h.Cache.Set(cacheKey, body, respBytes)
 
 	// Log success with captured data
 	logEntry.Success = true
@@ -387,4 +402,87 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 	logEntry.CostUSD = h.CalculateCost(route.Model, inputTokens, outputTokens)
 	h.Logger.LogRequest(logEntry)
 	h.Metrics.RecordRequest(route.Provider, route.Model, "success", logEntry.LatencyMs, inputTokens, outputTokens, logEntry.CostUSD, false)
+}
+
+// fakeStreamCachedResponse sends a cached response as a fake SSE stream.
+func (h *ChatHandler) fakeStreamCachedResponse(w http.ResponseWriter, cached []byte, route *domain.RouteConfig, logEntry *domain.RequestLog, startTime time.Time) {
+	// Parse cached response
+	var resp domain.ChatCompletionResponse
+	if err := json.Unmarshal(cached, &resp); err != nil {
+		http.Error(w, "Failed to parse cached response", http.StatusInternalServerError)
+		return
+	}
+
+	// Set up SSE response
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-LLM-Proxy-Provider", route.Provider)
+	w.Header().Set("X-LLM-Proxy-Model", route.Model)
+	w.Header().Set("X-LLM-Proxy-Cached", "true")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Get response content
+	var content string
+	if len(resp.Choices) > 0 {
+		if c, ok := resp.Choices[0].Message.Content.(string); ok {
+			content = c
+		}
+	}
+
+	// Stream content in chunks (simulate real streaming)
+	chunkSize := 20 // characters per chunk
+	for i := 0; i < len(content); i += chunkSize {
+		end := i + chunkSize
+		if end > len(content) {
+			end = len(content)
+		}
+		chunk := content[i:end]
+
+		// Build SSE chunk
+		sseChunk := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"delta": map[string]string{"content": chunk}},
+			},
+		}
+		chunkJSON, _ := json.Marshal(sseChunk)
+		fmt.Fprintf(w, "data: %s\n\n", chunkJSON)
+		flusher.Flush()
+	}
+
+	// Send final chunk with usage
+	var inputTokens, outputTokens int
+	if resp.Usage != nil {
+		inputTokens = resp.Usage.PromptTokens
+		outputTokens = resp.Usage.CompletionTokens
+	}
+	finalChunk := map[string]interface{}{
+		"choices": []map[string]interface{}{
+			{"delta": map[string]interface{}{}, "finish_reason": "stop"},
+		},
+		"usage": map[string]int{
+			"prompt_tokens":     inputTokens,
+			"completion_tokens": outputTokens,
+		},
+	}
+	finalJSON, _ := json.Marshal(finalChunk)
+	fmt.Fprintf(w, "data: %s\n\n", finalJSON)
+	fmt.Fprintln(w, "data: [DONE]")
+	flusher.Flush()
+
+	// Log cache hit
+	logEntry.Cached = true
+	logEntry.Success = true
+	logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+	logEntry.RequestType = "stream"
+	logEntry.ResponseBody = cached
+	logEntry.InputTokens = inputTokens
+	logEntry.OutputTokens = outputTokens
+	h.Logger.LogRequest(logEntry)
+	h.Metrics.RecordRequest(route.Provider, route.Model, "success", logEntry.LatencyMs, 0, 0, 0, true)
 }
