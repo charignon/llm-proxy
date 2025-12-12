@@ -288,6 +288,9 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 	}
 	if len(req.Tools) > 0 {
 		openaiReq["tools"] = req.Tools
+		fmt.Printf("[DEBUG] Forwarding %d tools to OpenAI\n", len(req.Tools))
+	} else {
+		fmt.Printf("[DEBUG] No tools in request\n")
 	}
 	if req.ToolChoice != nil {
 		openaiReq["tool_choice"] = req.ToolChoice
