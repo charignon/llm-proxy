@@ -1761,11 +1761,16 @@ type AnthropicImageSource struct {
 	URL       string `json:"url,omitempty"`
 }
 
-// AnthropicTool represents a tool definition
+// AnthropicTool represents a tool definition (regular tools or server tools like web_search)
 type AnthropicTool struct {
-	Name        string                 `json:"name"`
+	// Regular tool fields
+	Name        string                 `json:"name,omitempty"`
 	Description string                 `json:"description,omitempty"`
-	InputSchema map[string]interface{} `json:"input_schema"`
+	InputSchema map[string]interface{} `json:"input_schema,omitempty"`
+	// Server tool fields (e.g., web_search_20250305)
+	Type           string   `json:"type,omitempty"`
+	AllowedDomains []string `json:"allowed_domains,omitempty"`
+	BlockedDomains []string `json:"blocked_domains,omitempty"`
 }
 
 // AnthropicMessagesResponse represents an Anthropic API response
@@ -2635,14 +2640,24 @@ func convertAnthropicToOpenAI(antReq *AnthropicMessagesRequest) *domain.ChatComp
 	// Convert tools
 	var tools []domain.Tool
 	for _, t := range antReq.Tools {
-		tools = append(tools, domain.Tool{
-			Type: "function",
-			Function: domain.ToolFunction{
-				Name:        t.Name,
-				Description: t.Description,
-				Parameters:  t.InputSchema,
-			},
-		})
+		// Check if this is a server tool (like web_search_20250305)
+		if strings.Contains(t.Type, "web_search") {
+			// Convert Anthropic web_search server tool to OpenAI web_search tool
+			tools = append(tools, domain.Tool{
+				Type: "web_search",
+				// Function is nil for server tools
+			})
+		} else {
+			// Regular function tool
+			tools = append(tools, domain.Tool{
+				Type: "function",
+				Function: &domain.ToolFunction{
+					Name:        t.Name,
+					Description: t.Description,
+					Parameters:  t.InputSchema,
+				},
+			})
+		}
 	}
 
 	return &domain.ChatCompletionRequest{

@@ -273,14 +273,19 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 			"include_usage": true, // Get token counts in streaming mode
 		},
 	}
-	if req.MaxTokens > 0 {
+	// Use MaxCompletionTokens if set, otherwise fall back to MaxTokens
+	maxTokens := req.MaxCompletionTokens
+	if maxTokens == 0 {
+		maxTokens = req.MaxTokens
+	}
+	if maxTokens > 0 {
 		// Newer OpenAI models use max_completion_tokens
 		if strings.HasPrefix(route.Model, "gpt-4o") || strings.HasPrefix(route.Model, "gpt-4.1") ||
 			strings.HasPrefix(route.Model, "gpt-5") || strings.HasPrefix(route.Model, "o1") ||
 			strings.HasPrefix(route.Model, "o3") || strings.HasPrefix(route.Model, "o4") {
-			openaiReq["max_completion_tokens"] = req.MaxTokens
+			openaiReq["max_completion_tokens"] = maxTokens
 		} else {
-			openaiReq["max_tokens"] = req.MaxTokens
+			openaiReq["max_tokens"] = maxTokens
 		}
 	}
 	if req.Temperature > 0 {

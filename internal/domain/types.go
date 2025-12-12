@@ -13,10 +13,11 @@ type RouteConfig struct {
 // ChatCompletionRequest represents a chat completion request in the domain.
 // Uses OpenAI-compatible format as the canonical representation.
 type ChatCompletionRequest struct {
-	Model       string      `json:"model"`
-	Messages    []Message   `json:"messages"`
-	MaxTokens   int         `json:"max_tokens,omitempty"`
-	Temperature float64     `json:"temperature,omitempty"`
+	Model                 string      `json:"model"`
+	Messages              []Message   `json:"messages"`
+	MaxTokens             int         `json:"max_tokens,omitempty"`
+	MaxCompletionTokens   int         `json:"max_completion_tokens,omitempty"` // Newer OpenAI API field
+	Temperature           float64     `json:"temperature,omitempty"`
 	Stream      bool        `json:"stream,omitempty"`
 	Tools       []Tool      `json:"tools,omitempty"`
 	ToolChoice  interface{} `json:"tool_choice,omitempty"`
@@ -50,10 +51,10 @@ type ImageURL struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// Tool represents a function tool definition.
+// Tool represents a tool definition (function tools or server tools like web_search).
 type Tool struct {
-	Type     string       `json:"type"`
-	Function ToolFunction `json:"function"`
+	Type     string        `json:"type"`
+	Function *ToolFunction `json:"function,omitempty"`
 }
 
 // ToolFunction describes a callable function.

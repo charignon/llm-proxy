@@ -195,7 +195,7 @@ func (p *AnthropicProvider) Chat(req *domain.ChatCompletionRequest, model string
 	// Convert OpenAI tools to Anthropic format
 	if len(req.Tools) > 0 {
 		for _, tool := range req.Tools {
-			if tool.Type == "function" {
+			if tool.Type == "function" && tool.Function != nil {
 				antTool := anthropicTool{
 					Name:        tool.Function.Name,
 					Description: tool.Function.Description,
@@ -207,6 +207,7 @@ func (p *AnthropicProvider) Chat(req *domain.ChatCompletionRequest, model string
 				}
 				anthropicReq.Tools = append(anthropicReq.Tools, antTool)
 			}
+			// TODO: Handle server tools like web_search when routing to Anthropic
 		}
 	}
 
