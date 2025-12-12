@@ -2640,8 +2640,12 @@ func convertAnthropicToOpenAI(antReq *AnthropicMessagesRequest) *domain.ChatComp
 	// Convert tools
 	var tools []domain.Tool
 	for _, t := range antReq.Tools {
+		// Debug: log each tool
+		log.Printf("[DEBUG] Tool received: name=%q type=%q has_input_schema=%v", t.Name, t.Type, t.InputSchema != nil)
+
 		// Check if this is a server tool (like web_search_20250305)
 		if strings.Contains(t.Type, "web_search") {
+			log.Printf("[DEBUG] Detected web_search server tool, converting to OpenAI format")
 			// Convert Anthropic web_search server tool to OpenAI web_search tool
 			tools = append(tools, domain.Tool{
 				Type: "web_search",
