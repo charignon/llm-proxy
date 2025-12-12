@@ -1249,6 +1249,345 @@ func urlEncode(s string) string {
 	return url.QueryEscape(s)
 }
 
+// WebSearchRequest represents a web search request
+type WebSearchRequest struct {
+	Query          string   `json:"query"`
+	Provider       string   `json:"provider"` // "anthropic" or "openai"
+	Model          string   `json:"model"`
+	MaxUses        int      `json:"max_uses"`
+	AllowedDomains []string `json:"allowed_domains,omitempty"`
+	Usecase        string   `json:"usecase,omitempty"`
+}
+
+// WebSearchResponse represents a web search response
+type WebSearchResponse struct {
+	Response    string              `json:"response"`
+	Model       string              `json:"model"`
+	Provider    string              `json:"provider"`
+	SearchCount int                 `json:"search_count"`
+	Sources     []WebSearchSource   `json:"sources,omitempty"`
+	CostUSD     float64             `json:"cost_usd,omitempty"`
+	Error       string              `json:"error,omitempty"`
+}
+
+type WebSearchSource struct {
+	URL     string `json:"url"`
+	Title   string `json:"title"`
+	Snippet string `json:"snippet,omitempty"`
+}
+
+func handleWebSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request", http.StatusBadRequest)
+		return
+	}
+
+	var req WebSearchRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.Query == "" {
+		http.Error(w, "Missing required field: query", http.StatusBadRequest)
+		return
+	}
+
+	if req.MaxUses == 0 {
+		req.MaxUses = 5
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	var resp WebSearchResponse
+	if req.Provider == "openai" {
+		resp = doOpenAIWebSearch(req)
+	} else {
+		resp = doAnthropicWebSearch(req)
+	}
+
+	json.NewEncoder(w).Encode(resp)
+}
+
+func doAnthropicWebSearch(req WebSearchRequest) WebSearchResponse {
+	if anthropicKey == "" {
+		return WebSearchResponse{Error: "Anthropic API key not configured"}
+	}
+
+	model := req.Model
+	if model == "" {
+		model = "claude-sonnet-4-5-20250929"
+	}
+
+	// Build web search tool
+	webSearchTool := map[string]interface{}{
+		"type":     "web_search_20250305",
+		"name":     "web_search",
+		"max_uses": req.MaxUses,
+	}
+	if len(req.AllowedDomains) > 0 {
+		webSearchTool["allowed_domains"] = req.AllowedDomains
+	}
+
+	// Build Anthropic request
+	anthropicReq := map[string]interface{}{
+		"model":      model,
+		"max_tokens": 4096,
+		"messages": []map[string]interface{}{
+			{"role": "user", "content": req.Query},
+		},
+		"tools": []map[string]interface{}{webSearchTool},
+	}
+
+	reqBody, _ := json.Marshal(anthropicReq)
+
+	httpReq, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(reqBody))
+	if err != nil {
+		return WebSearchResponse{Error: "Failed to create request: " + err.Error()}
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", anthropicKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	httpResp, err := client.Do(httpReq)
+	if err != nil {
+		return WebSearchResponse{Error: "Request failed: " + err.Error()}
+	}
+	defer httpResp.Body.Close()
+
+	respBody, _ := io.ReadAll(httpResp.Body)
+
+	if httpResp.StatusCode != 200 {
+		return WebSearchResponse{Error: fmt.Sprintf("API error %d: %s", httpResp.StatusCode, string(respBody))}
+	}
+
+	var anthropicResp struct {
+		Content []struct {
+			Type      string `json:"type"`
+			Text      string `json:"text"`
+			Name      string `json:"name"`
+			Input     struct {
+				Query string `json:"query"`
+			} `json:"input"`
+			Content []struct {
+				Type  string `json:"type"`
+				URL   string `json:"url"`
+				Title string `json:"title"`
+			} `json:"content"`
+			Citations []struct {
+				URL       string `json:"url"`
+				Title     string `json:"title"`
+				CitedText string `json:"cited_text"`
+			} `json:"citations"`
+		} `json:"content"`
+		Model string `json:"model"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+			ServerToolUse struct {
+				WebSearchRequests int `json:"web_search_requests"`
+			} `json:"server_tool_use"`
+		} `json:"usage"`
+	}
+
+	if err := json.Unmarshal(respBody, &anthropicResp); err != nil {
+		return WebSearchResponse{Error: "Failed to parse response: " + err.Error()}
+	}
+
+	// Extract response text and sources
+	var textParts []string
+	var sources []WebSearchSource
+	searchCount := 0
+
+	for _, block := range anthropicResp.Content {
+		if block.Type == "text" {
+			textParts = append(textParts, block.Text)
+			// Add citations as sources
+			for _, cite := range block.Citations {
+				sources = append(sources, WebSearchSource{
+					URL:     cite.URL,
+					Title:   cite.Title,
+					Snippet: cite.CitedText,
+				})
+			}
+		} else if block.Type == "web_search_tool_result" {
+			searchCount++
+			for _, result := range block.Content {
+				if result.Type == "web_search_result" {
+					sources = append(sources, WebSearchSource{
+						URL:   result.URL,
+						Title: result.Title,
+					})
+				}
+			}
+		}
+	}
+
+	if anthropicResp.Usage.ServerToolUse.WebSearchRequests > 0 {
+		searchCount = anthropicResp.Usage.ServerToolUse.WebSearchRequests
+	}
+
+	// Calculate cost - pricing is [2]float64{inputPerMillion, outputPerMillion}
+	pricing, ok := modelPricing[model]
+	if !ok {
+		pricing = modelPricing["claude-sonnet-4-5-20250929"]
+	}
+	tokenCost := (float64(anthropicResp.Usage.InputTokens)*pricing[0] +
+		float64(anthropicResp.Usage.OutputTokens)*pricing[1]) / 1000000
+	searchCost := float64(searchCount) * 0.01 // $10 per 1000 searches = $0.01 per search
+	totalCost := tokenCost + searchCost
+
+	return WebSearchResponse{
+		Response:    strings.Join(textParts, "\n"),
+		Model:       anthropicResp.Model,
+		Provider:    "anthropic",
+		SearchCount: searchCount,
+		Sources:     sources,
+		CostUSD:     totalCost,
+	}
+}
+
+func doOpenAIWebSearch(req WebSearchRequest) WebSearchResponse {
+	if openaiKey == "" {
+		return WebSearchResponse{Error: "OpenAI API key not configured"}
+	}
+
+	model := req.Model
+	if model == "" {
+		model = "gpt-4o"
+	}
+
+	// Build web search tool
+	webSearchTool := map[string]interface{}{
+		"type": "web_search",
+	}
+	if len(req.AllowedDomains) > 0 {
+		webSearchTool["filters"] = map[string]interface{}{
+			"allowed_domains": req.AllowedDomains,
+		}
+	}
+
+	// Build OpenAI Responses API request
+	openaiReq := map[string]interface{}{
+		"model": model,
+		"input": req.Query,
+		"tools": []map[string]interface{}{webSearchTool},
+	}
+
+	reqBody, _ := json.Marshal(openaiReq)
+
+	httpReq, err := http.NewRequest("POST", "https://api.openai.com/v1/responses", bytes.NewReader(reqBody))
+	if err != nil {
+		return WebSearchResponse{Error: "Failed to create request: " + err.Error()}
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+openaiKey)
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	httpResp, err := client.Do(httpReq)
+	if err != nil {
+		return WebSearchResponse{Error: "Request failed: " + err.Error()}
+	}
+	defer httpResp.Body.Close()
+
+	respBody, _ := io.ReadAll(httpResp.Body)
+
+	if httpResp.StatusCode != 200 {
+		return WebSearchResponse{Error: fmt.Sprintf("API error %d: %s", httpResp.StatusCode, string(respBody))}
+	}
+
+	var openaiResp struct {
+		Output []struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Type        string `json:"type"`
+				Text        string `json:"text"`
+				Annotations []struct {
+					Type  string `json:"type"`
+					URL   string `json:"url"`
+					Title string `json:"title"`
+				} `json:"annotations"`
+			} `json:"content"`
+			Action struct {
+				Type    string `json:"type"`
+				Sources []struct {
+					URL   string `json:"url"`
+					Title string `json:"title"`
+				} `json:"sources"`
+			} `json:"action"`
+		} `json:"output"`
+		Model string `json:"model"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+
+	if err := json.Unmarshal(respBody, &openaiResp); err != nil {
+		return WebSearchResponse{Error: "Failed to parse response: " + err.Error()}
+	}
+
+	// Extract response text and sources
+	var textParts []string
+	var sources []WebSearchSource
+	searchCount := 0
+
+	for _, output := range openaiResp.Output {
+		if output.Type == "message" {
+			for _, content := range output.Content {
+				if content.Type == "output_text" {
+					textParts = append(textParts, content.Text)
+				}
+				for _, ann := range content.Annotations {
+					if ann.Type == "url_citation" {
+						sources = append(sources, WebSearchSource{
+							URL:   ann.URL,
+							Title: ann.Title,
+						})
+					}
+				}
+			}
+		} else if output.Type == "web_search_call" {
+			searchCount++
+			for _, src := range output.Action.Sources {
+				sources = append(sources, WebSearchSource{
+					URL:   src.URL,
+					Title: src.Title,
+				})
+			}
+		}
+	}
+
+	// Calculate cost (approximate - OpenAI charges per search)
+	// pricing is [2]float64{inputPerMillion, outputPerMillion}
+	pricing, ok := modelPricing[model]
+	if !ok {
+		pricing = modelPricing["gpt-4o"]
+	}
+	tokenCost := (float64(openaiResp.Usage.InputTokens)*pricing[0] +
+		float64(openaiResp.Usage.OutputTokens)*pricing[1]) / 1000000
+	searchCost := float64(searchCount) * 0.03 // $30 per 1000 searches = $0.03 per search for gpt-4o
+	totalCost := tokenCost + searchCost
+
+	return WebSearchResponse{
+		Response:    strings.Join(textParts, "\n"),
+		Model:       openaiResp.Model,
+		Provider:    "openai",
+		SearchCount: searchCount,
+		Sources:     sources,
+		CostUSD:     totalCost,
+	}
+}
+
 // handleChatCompletions is now handled by httphandlers.ChatHandler
 
 func handleModels(w http.ResponseWriter, r *http.Request) {
@@ -8398,6 +8737,7 @@ const testPlaygroundHTML = `<!DOCTYPE html>
         <div class="tabs">
             <button class="tab active" onclick="switchTab('chat')">Chat Completion</button>
             <button class="tab" onclick="switchTab('vision')">Vision Analysis</button>
+            <button class="tab" onclick="switchTab('websearch')">Web Search</button>
             <button class="tab" onclick="switchTab('whisper')">Speech to Text</button>
             <button class="tab" onclick="switchTab('tts')">Text to Speech</button>
         </div>
@@ -8490,6 +8830,61 @@ const testPlaygroundHTML = `<!DOCTYPE html>
             <div id="vision-result" class="result-box" style="display:none;">
                 <div class="result-header" id="vision-result-header"></div>
                 <div class="result-content" id="vision-result-content"></div>
+            </div>
+        </div>
+
+        <!-- Web Search Panel -->
+        <div id="websearch-panel" class="panel">
+            <div class="form-group">
+                <label>Search Query</label>
+                <textarea id="websearch-query" placeholder="What would you like to search for?">What are the latest developments in AI in December 2025?</textarea>
+            </div>
+
+            <div class="row">
+                <div class="form-group">
+                    <label>Provider</label>
+                    <select id="websearch-provider">
+                        <option value="anthropic">Anthropic (Claude)</option>
+                        <option value="openai">OpenAI (GPT)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Max Searches</label>
+                    <select id="websearch-max-uses">
+                        <option value="1">1</option>
+                        <option value="3">3</option>
+                        <option value="5" selected>5</option>
+                        <option value="10">10</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Allowed Domains (optional, comma-separated)</label>
+                <input type="text" id="websearch-domains" placeholder="e.g. wikipedia.org, github.com, docs.python.org">
+            </div>
+
+            <div class="form-group">
+                <label>Model</label>
+                <select id="websearch-model">
+                    <optgroup label="Anthropic">
+                        <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5</option>
+                        <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
+                        <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>
+                    </optgroup>
+                    <optgroup label="OpenAI">
+                        <option value="gpt-4o">GPT-4o</option>
+                        <option value="gpt-4o-mini">GPT-4o Mini</option>
+                    </optgroup>
+                </select>
+            </div>
+
+            <button class="submit-btn" id="websearch-submit" onclick="submitWebSearch()">🔍 Search</button>
+
+            <div id="websearch-result" class="result-box" style="display:none;">
+                <div class="result-header" id="websearch-result-header"></div>
+                <div id="websearch-sources" style="margin-bottom:16px;"></div>
+                <div class="result-content" id="websearch-result-content"></div>
             </div>
         </div>
 
@@ -9133,6 +9528,90 @@ const testPlaygroundHTML = `<!DOCTYPE html>
 
             btn.disabled = false;
             btn.innerHTML = 'Speak';
+        }
+
+        // Web Search handling
+        async function submitWebSearch() {
+            const query = document.getElementById('websearch-query').value.trim();
+            if (!query) {
+                alert('Please enter a search query');
+                return;
+            }
+
+            const btn = document.getElementById('websearch-submit');
+            const resultBox = document.getElementById('websearch-result');
+            const resultHeader = document.getElementById('websearch-result-header');
+            const sourcesDiv = document.getElementById('websearch-sources');
+            const resultContent = document.getElementById('websearch-result-content');
+
+            const provider = document.getElementById('websearch-provider').value;
+            const maxUses = parseInt(document.getElementById('websearch-max-uses').value);
+            const model = document.getElementById('websearch-model').value;
+            const domainsRaw = document.getElementById('websearch-domains').value.trim();
+            const allowedDomains = domainsRaw ? domainsRaw.split(',').map(d => d.trim()).filter(d => d) : [];
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Searching...';
+            resultBox.style.display = 'block';
+            resultHeader.innerHTML = '<div class="result-meta"><span>Status:</span> <strong>Searching...</strong></div>';
+            sourcesDiv.innerHTML = '';
+            resultContent.textContent = '';
+
+            const startTime = Date.now();
+
+            try {
+                const resp = await fetch('/v1/websearch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        query: query,
+                        provider: provider,
+                        model: model,
+                        max_uses: maxUses,
+                        allowed_domains: allowedDomains.length > 0 ? allowedDomains : undefined,
+                        usecase: PLAYGROUND_USECASE
+                    })
+                });
+
+                const latency = Date.now() - startTime;
+                const data = await resp.json();
+
+                if (resp.ok) {
+                    const providerBadge = provider === 'anthropic' ? 'anthropic' : 'openai';
+                    resultHeader.innerHTML =
+                        '<div class="result-meta"><span>Provider:</span> <span class="badge ' + providerBadge + '">' + provider + '</span></div>' +
+                        '<div class="result-meta"><span>Model:</span> <strong>' + (data.model || model) + '</strong></div>' +
+                        '<div class="result-meta"><span>Searches:</span> <strong>' + (data.search_count || 0) + '</strong></div>' +
+                        '<div class="result-meta"><span>Latency:</span> <strong>' + latency + 'ms</strong></div>' +
+                        (data.cost_usd ? '<div class="result-meta"><span>Cost:</span> <strong>$' + data.cost_usd.toFixed(6) + '</strong></div>' : '');
+
+                    // Display sources/citations
+                    if (data.sources && data.sources.length > 0) {
+                        let sourcesHtml = '<div style="margin-bottom:16px"><div style="color:#888;font-size:12px;margin-bottom:8px">Sources (' + data.sources.length + ')</div>';
+                        for (const src of data.sources) {
+                            sourcesHtml += '<div style="margin-bottom:6px;padding:8px;background:#0f172a;border-radius:6px;border-left:2px solid #3b82f6">';
+                            sourcesHtml += '<a href="' + escapeHtml(src.url || '') + '" target="_blank" style="color:#60a5fa;text-decoration:none;font-size:13px">' + escapeHtml(src.title || src.url) + '</a>';
+                            if (src.snippet) {
+                                sourcesHtml += '<div style="color:#94a3b8;font-size:11px;margin-top:4px">' + escapeHtml(src.snippet) + '</div>';
+                            }
+                            sourcesHtml += '</div>';
+                        }
+                        sourcesHtml += '</div>';
+                        sourcesDiv.innerHTML = sourcesHtml;
+                    }
+
+                    resultContent.textContent = data.response || data.content || JSON.stringify(data, null, 2);
+                } else {
+                    resultHeader.innerHTML = '<div class="result-meta error">Error: ' + resp.status + '</div>';
+                    resultContent.textContent = data.error || JSON.stringify(data, null, 2);
+                }
+            } catch (err) {
+                resultHeader.innerHTML = '<div class="result-meta error">Request failed</div>';
+                resultContent.textContent = err.message;
+            }
+
+            btn.disabled = false;
+            btn.innerHTML = '🔍 Search';
         }
     </script>
 </body>
@@ -9781,6 +10260,7 @@ func main() {
 	http.HandleFunc("/v1/audio/transcriptions", handleWhisperTranscription)
 	http.HandleFunc("/v1/audio/transcriptions/stream", handleWhisperStream)
 	http.HandleFunc("/v1/audio/speech", handleTTS)
+	http.HandleFunc("/v1/websearch", handleWebSearch)
 
 	log.Printf("LLM Proxy starting on port %s", port)
 	log.Printf("Whisper server: %s", whisperServerURL)
