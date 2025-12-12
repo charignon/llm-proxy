@@ -7629,7 +7629,9 @@ const dashboardHTML = `<!DOCTYPE html>
                     const desc = tool.function?.description || tool.description || '';
                     const params = tool.function?.parameters || tool.parameters;
                     const paramNames = params?.properties ? Object.keys(params.properties).join(', ') : '';
-                    const tooltip = desc + (paramNames ? '\\n\\nParams: ' + paramNames : '');
+                    const tooltip =
+                        (desc && desc.trim() ? desc : ('Tool: ' + name)) +
+                        (paramNames ? '\\n\\nParams: ' + paramNames : '');
                     html += '<span class="badge tool-badge" title="' + escapeHtml(tooltip) + '" style="background:#374151;color:#e2e8f0;padding:4px 8px;font-size:12px;cursor:help">' + escapeHtml(name) + '</span>';
                 }
                 html += '</div>';
