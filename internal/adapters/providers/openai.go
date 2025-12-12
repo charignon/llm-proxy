@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -34,7 +35,28 @@ func (p *OpenAIProvider) Chat(req *domain.ChatCompletionRequest, model string) (
 		return nil, fmt.Errorf("OPENAI_API_KEY not set")
 	}
 
-	// Convert request
+	// Check if request has web_search tool - if so, use Responses API
+	hasWebSearch := false
+	var functionTools []domain.Tool
+	for _, tool := range req.Tools {
+		if tool.Type == "web_search" {
+			hasWebSearch = true
+		} else {
+			functionTools = append(functionTools, tool)
+		}
+	}
+
+	if hasWebSearch {
+		log.Printf("[DEBUG] Using OpenAI Responses API for web_search")
+		return p.chatWithResponses(req, model, functionTools)
+	}
+
+	// Standard Chat Completions API path
+	return p.chatWithCompletions(req, model)
+}
+
+// chatWithCompletions uses the standard Chat Completions API
+func (p *OpenAIProvider) chatWithCompletions(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
 	openaiReq := map[string]interface{}{
 		"model":    model,
 		"messages": req.Messages,
@@ -88,4 +110,142 @@ func (p *OpenAIProvider) Chat(req *domain.ChatCompletionRequest, model string) (
 	}
 	result.Provider = "openai"
 	return &result, nil
+}
+
+// chatWithResponses uses the Responses API which supports web_search
+func (p *OpenAIProvider) chatWithResponses(req *domain.ChatCompletionRequest, model string, functionTools []domain.Tool) (*domain.ChatCompletionResponse, error) {
+	// Build input from messages (Responses API uses a different format)
+	var input []map[string]interface{}
+	for _, msg := range req.Messages {
+		inputMsg := map[string]interface{}{
+			"role":    msg.Role,
+			"content": msg.Content,
+		}
+		input = append(input, inputMsg)
+	}
+
+	// Build tools array with web_search
+	var tools []map[string]interface{}
+	tools = append(tools, map[string]interface{}{"type": "web_search"})
+
+	// Add function tools if any
+	for _, tool := range functionTools {
+		if tool.Function != nil {
+			tools = append(tools, map[string]interface{}{
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":        tool.Function.Name,
+					"description": tool.Function.Description,
+					"parameters":  tool.Function.Parameters,
+				},
+			})
+		}
+	}
+
+	openaiReq := map[string]interface{}{
+		"model": model,
+		"input": input,
+		"tools": tools,
+	}
+
+	// Add max tokens if set
+	maxTokens := req.MaxCompletionTokens
+	if maxTokens == 0 {
+		maxTokens = req.MaxTokens
+	}
+	if maxTokens > 0 {
+		openaiReq["max_output_tokens"] = maxTokens
+	}
+
+	body, _ := json.Marshal(openaiReq)
+	log.Printf("[DEBUG] Responses API request: %s", string(body)[:min(500, len(body))])
+
+	httpReq, _ := http.NewRequest("POST", "https://api.openai.com/v1/responses", bytes.NewReader(body))
+	httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 240 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != 200 {
+		log.Printf("[ERROR] Responses API error: %s", string(respBody))
+		return nil, fmt.Errorf("OpenAI Responses API error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	log.Printf("[DEBUG] Responses API response: %s", string(respBody)[:min(500, len(respBody))])
+
+	// Parse Responses API response format
+	var responsesResult struct {
+		ID      string `json:"id"`
+		Status  string `json:"status"`
+		Output  []struct {
+			Type    string `json:"type"`
+			ID      string `json:"id"`
+			Status  string `json:"status"`
+			Role    string `json:"role"`
+			Content []struct {
+				Type        string `json:"type"`
+				Text        string `json:"text"`
+				Annotations []struct {
+					Type  string `json:"type"`
+					URL   string `json:"url"`
+					Title string `json:"title"`
+				} `json:"annotations,omitempty"`
+			} `json:"content,omitempty"`
+		} `json:"output"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+
+	if err := json.Unmarshal(respBody, &responsesResult); err != nil {
+		return nil, fmt.Errorf("failed to parse Responses API response: %v", err)
+	}
+
+	// Convert to ChatCompletionResponse format
+	var textContent string
+	for _, output := range responsesResult.Output {
+		if output.Type == "message" {
+			for _, content := range output.Content {
+				if content.Type == "output_text" || content.Type == "text" {
+					textContent += content.Text
+				}
+			}
+		}
+	}
+
+	result := &domain.ChatCompletionResponse{
+		ID:       responsesResult.ID,
+		Model:    model,
+		Provider: "openai",
+		Choices: []domain.Choice{
+			{
+				Message: domain.Message{
+					Role:    "assistant",
+					Content: textContent,
+				},
+				FinishReason: "stop",
+			},
+		},
+		Usage: &domain.Usage{
+			PromptTokens:     responsesResult.Usage.InputTokens,
+			CompletionTokens: responsesResult.Usage.OutputTokens,
+		},
+	}
+
+	return result, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
