@@ -436,13 +436,15 @@ func (h *ChatHandler) fakeStreamCachedResponse(w http.ResponseWriter, cached []b
 	}
 
 	// Stream content in chunks (simulate real streaming)
-	chunkSize := 20 // characters per chunk
-	for i := 0; i < len(content); i += chunkSize {
+	// Use runes to avoid breaking UTF-8 multi-byte characters
+	runes := []rune(content)
+	chunkSize := 20 // runes per chunk
+	for i := 0; i < len(runes); i += chunkSize {
 		end := i + chunkSize
-		if end > len(content) {
-			end = len(content)
+		if end > len(runes) {
+			end = len(runes)
 		}
-		chunk := content[i:end]
+		chunk := string(runes[i:end])
 
 		// Build SSE chunk
 		sseChunk := map[string]interface{}{
