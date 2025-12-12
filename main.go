@@ -2444,6 +2444,9 @@ type RequestHistoryEntry struct {
 	Voice           string `json:"voice,omitempty"`
 	AudioDurationMs int64  `json:"audio_duration_ms,omitempty"`
 	InputChars      int    `json:"input_chars,omitempty"`
+	// Tool info
+	Tools       []string `json:"tools,omitempty"`        // Tool names from request
+	HasWebSearch bool     `json:"has_web_search,omitempty"` // Convenience flag for web_search tool
 }
 
 type RequestHistoryResponse struct {
@@ -2548,7 +2551,7 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 	query := `
 		SELECT id, timestamp, request_type, provider, model, sensitive, precision, usecase, has_images,
 		       latency_ms, cost_usd, success, cache_key, input_tokens, output_tokens, is_replay,
-		       voice, audio_duration_ms, input_chars, client_ip
+		       voice, audio_duration_ms, input_chars, client_ip, request_body
 		FROM requests
 	` + whereClause + " ORDER BY id DESC LIMIT ? OFFSET ?"
 
@@ -2571,10 +2574,11 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 		var voice sql.NullString
 		var isReplay sql.NullBool
 		var clientIP sql.NullString
+		var requestBody sql.NullString
 		rows.Scan(&entry.ID, &entry.Timestamp, &requestType, &entry.Provider, &entry.Model,
 			&entry.Sensitive, &precision, &usecase, &entry.HasImages, &entry.LatencyMs,
 			&entry.CostUSD, &entry.Success, &cacheKey, &entry.InputTokens, &entry.OutputTokens,
-			&isReplay, &voice, &entry.AudioDurationMs, &entry.InputChars, &clientIP)
+			&isReplay, &voice, &entry.AudioDurationMs, &entry.InputChars, &clientIP, &requestBody)
 		if requestType.Valid {
 			entry.RequestType = requestType.String
 		} else {
@@ -2597,6 +2601,37 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		if clientIP.Valid {
 			entry.ClientIP = clientIP.String
+		}
+		// Extract tool names from request body
+		if requestBody.Valid && requestBody.String != "" {
+			var reqData struct {
+				Tools []struct {
+					Type     string `json:"type"`
+					Name     string `json:"name"`
+					Function struct {
+						Name string `json:"name"`
+					} `json:"function"`
+				} `json:"tools"`
+			}
+			if json.Unmarshal([]byte(requestBody.String), &reqData) == nil && len(reqData.Tools) > 0 {
+				for _, tool := range reqData.Tools {
+					// Get tool name from different formats
+					toolName := tool.Name
+					if toolName == "" && tool.Function.Name != "" {
+						toolName = tool.Function.Name
+					}
+					if toolName == "" && tool.Type != "" {
+						toolName = tool.Type // Use type as name for server tools like web_search_20250305
+					}
+					if toolName != "" {
+						entry.Tools = append(entry.Tools, toolName)
+						// Check for web search tools
+						if strings.Contains(toolName, "web_search") {
+							entry.HasWebSearch = true
+						}
+					}
+				}
+			}
 		}
 		history = append(history, entry)
 	}
@@ -5908,6 +5943,7 @@ const dashboardHTML = `<!DOCTYPE html>
         .badge.precision { background: #8b5cf6; color: #fff; }
         .badge.usecase { background: #f59e0b; color: #000; }
         .badge.images { background: #06b6d4; color: #000; }
+        .badge.websearch { background: #3b82f6; color: #fff; font-size: 10px; }
         .exclude-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: 12px; background: #374151; color: #9ca3af; font-size: 12px; cursor: pointer; border: 1px solid transparent; transition: all 0.15s; }
         .exclude-chip:hover { background: #4b5563; }
         .exclude-chip.excluded { background: #7f1d1d; color: #fca5a5; border-color: #ef4444; }
@@ -6842,6 +6878,7 @@ const dashboardHTML = `<!DOCTYPE html>
                 const usecase = req.usecase ? '<span class="badge usecase">' + req.usecase + '</span>' : '-';
                 const hasImages = req.has_images ? '<span class="badge images">img</span>' : '';
                 const replayBadge = req.is_replay ? '<span class="badge replay">replay</span>' : '';
+                const webSearchBadge = req.has_web_search ? '<span class="badge websearch" title="Web Search">🔍</span>' : '';
                 const reqType = req.request_type || 'llm';
                 const typeBadge = '<span class="badge type-' + reqType + '">' + reqType.toUpperCase() + '</span>';
 
@@ -6865,7 +6902,7 @@ const dashboardHTML = `<!DOCTYPE html>
                     '<td><span style="font-family:monospace;font-size:11px;color:#888" title="' + hash + '">' + hash.substring(0, 8) + '</span></td>' +
                     '<td>' + typeBadge + ' ' + replayBadge + '</td>' +
                     '<td><span class="badge ' + req.provider + '">' + req.provider + '</span></td>' +
-                    '<td>' + req.model + ' ' + hasImages + '</td>' +
+                    '<td>' + req.model + ' ' + hasImages + ' ' + webSearchBadge + '</td>' +
                     '<td>' + usecase + '</td>' +
                     '<td>' + info + '</td>' +
                     '<td>' + req.latency_ms + 'ms</td>' +
@@ -7648,11 +7685,88 @@ const dashboardHTML = `<!DOCTYPE html>
             // Response (collapsible)
             if (data.response) {
                 let responseContent = '';
+                let webSearchResults = [];
+                let citations = [];
+
+                // Handle OpenAI-style response (choices array)
                 if (data.response.choices && data.response.choices.length > 0) {
                     const choice = data.response.choices[0];
                     if (choice.message && choice.message.content) {
                         responseContent = choice.message.content;
                     }
+                }
+
+                // Handle Anthropic-style response (content array with web_search blocks)
+                if (data.response.content && Array.isArray(data.response.content)) {
+                    let textParts = [];
+                    for (const block of data.response.content) {
+                        if (block.type === 'text') {
+                            textParts.push(block.text || '');
+                            // Check for citations in text blocks
+                            if (block.citations && Array.isArray(block.citations)) {
+                                citations = citations.concat(block.citations);
+                            }
+                        } else if (block.type === 'server_tool_use' && block.name === 'web_search') {
+                            // Capture search query
+                            if (block.input && block.input.query) {
+                                webSearchResults.push({ type: 'query', query: block.input.query, id: block.id });
+                            }
+                        } else if (block.type === 'web_search_tool_result') {
+                            // Capture search results
+                            if (block.content && Array.isArray(block.content)) {
+                                const results = block.content.filter(r => r.type === 'web_search_result');
+                                webSearchResults.push({ type: 'results', results: results, tool_use_id: block.tool_use_id });
+                            }
+                        }
+                    }
+                    if (textParts.length > 0) {
+                        responseContent = textParts.join('');
+                    }
+                }
+
+                // Show web search section if present
+                if (webSearchResults.length > 0) {
+                    html += '<div class="modal-section">';
+                    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">🔍 Web Search</summary>';
+                    html += '<div style="margin-top:12px">';
+                    for (const item of webSearchResults) {
+                        if (item.type === 'query') {
+                            html += '<div style="margin-bottom:12px;padding:10px;background:#1e293b;border-radius:8px;border-left:3px solid #3b82f6">';
+                            html += '<div style="color:#93c5fd;font-size:12px;margin-bottom:4px">Search Query</div>';
+                            html += '<div style="color:#e2e8f0;font-weight:500">' + escapeHtml(item.query) + '</div>';
+                            html += '</div>';
+                        } else if (item.type === 'results' && item.results) {
+                            html += '<div style="margin-bottom:12px">';
+                            html += '<div style="color:#888;font-size:12px;margin-bottom:8px">' + item.results.length + ' results</div>';
+                            for (const result of item.results) {
+                                html += '<div style="margin-bottom:8px;padding:8px;background:#0f172a;border-radius:6px">';
+                                html += '<a href="' + escapeHtml(result.url || '') + '" target="_blank" style="color:#60a5fa;text-decoration:none;font-weight:500">' + escapeHtml(result.title || 'Untitled') + '</a>';
+                                if (result.page_age) {
+                                    html += '<span style="color:#64748b;font-size:11px;margin-left:8px">' + escapeHtml(result.page_age) + '</span>';
+                                }
+                                html += '<div style="color:#64748b;font-size:11px;margin-top:2px">' + escapeHtml(result.url || '') + '</div>';
+                                html += '</div>';
+                            }
+                            html += '</div>';
+                        }
+                    }
+                    html += '</div></details></div>';
+                }
+
+                // Show citations if present
+                if (citations.length > 0) {
+                    html += '<div class="modal-section">';
+                    html += '<details><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">📑 Citations <span style="color:#888;font-weight:normal">(' + citations.length + ')</span></summary>';
+                    html += '<div style="margin-top:12px">';
+                    for (const cite of citations) {
+                        html += '<div style="margin-bottom:8px;padding:8px;background:#0f172a;border-radius:6px;border-left:2px solid #22c55e">';
+                        html += '<a href="' + escapeHtml(cite.url || '') + '" target="_blank" style="color:#60a5fa;text-decoration:none;font-size:13px">' + escapeHtml(cite.title || 'Source') + '</a>';
+                        if (cite.cited_text) {
+                            html += '<div style="color:#94a3b8;font-size:12px;margin-top:4px;font-style:italic">"' + escapeHtml(cite.cited_text) + '"</div>';
+                        }
+                        html += '</div>';
+                    }
+                    html += '</div></details></div>';
                 }
 
                 // Check for thinking content wrapped in <think> tags
@@ -7677,7 +7791,7 @@ const dashboardHTML = `<!DOCTYPE html>
                     html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">Response</summary>';
                     html += '<div class="code-block" style="margin-top:12px">' + escapeHtml(responseContent) + '</div>';
                     html += '</details></div>';
-                } else {
+                } else if (!webSearchResults.length) {
                     html += '<div class="modal-section">';
                     html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">Response (raw)</summary>';
                     html += '<div class="code-block" style="margin-top:12px">' + escapeHtml(JSON.stringify(data.response, null, 2)) + '</div>';
