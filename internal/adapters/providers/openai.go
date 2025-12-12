@@ -36,11 +36,16 @@ func (p *OpenAIProvider) Chat(req *domain.ChatCompletionRequest, model string) (
 	}
 
 	// Check if request has web_search tool - if so, use Responses API
+	// LiteLLM may send it as type="web_search" or as type="function" with name containing "web_search"
 	hasWebSearch := false
 	var functionTools []domain.Tool
 	for _, tool := range req.Tools {
-		if tool.Type == "web_search" {
+		isWebSearch := tool.Type == "web_search" ||
+			(tool.Type == "function" && tool.Function != nil &&
+				(tool.Function.Name == "web_search" || strings.Contains(tool.Function.Name, "WebSearch")))
+		if isWebSearch {
 			hasWebSearch = true
+			log.Printf("[DEBUG] Detected web_search tool: type=%s, name=%v", tool.Type, tool.Function)
 		} else {
 			functionTools = append(functionTools, tool)
 		}
