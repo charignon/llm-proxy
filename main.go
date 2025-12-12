@@ -8872,7 +8872,13 @@ const testPlaygroundHTML = `<!DOCTYPE html>
                         <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
                         <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>
                     </optgroup>
-                    <optgroup label="OpenAI">
+                    <optgroup label="OpenAI GPT-5">
+                        <option value="gpt-5.2">GPT-5.2</option>
+                        <option value="gpt-5.1">GPT-5.1</option>
+                    </optgroup>
+                    <optgroup label="OpenAI GPT-4">
+                        <option value="gpt-4.1">GPT-4.1</option>
+                        <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
                         <option value="gpt-4o">GPT-4o</option>
                         <option value="gpt-4o-mini">GPT-4o Mini</option>
                     </optgroup>
