@@ -1268,6 +1268,11 @@ type WebSearchResponse struct {
 	Sources     []WebSearchSource   `json:"sources,omitempty"`
 	CostUSD     float64             `json:"cost_usd,omitempty"`
 	Error       string              `json:"error,omitempty"`
+	// Internal fields for logging (not sent to client)
+	InputTokens  int    `json:"-"`
+	OutputTokens int    `json:"-"`
+	RawRequest   []byte `json:"-"`
+	RawResponse  []byte `json:"-"`
 }
 
 type WebSearchSource struct {
@@ -1281,6 +1286,8 @@ func handleWebSearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	startTime := time.Now()
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -1303,14 +1310,63 @@ func handleWebSearch(w http.ResponseWriter, r *http.Request) {
 		req.MaxUses = 5
 	}
 
+	// Prepare log entry
+	provider := req.Provider
+	if provider == "" {
+		provider = "anthropic"
+	}
+	model := req.Model
+	if model == "" {
+		if provider == "openai" {
+			model = "gpt-4o"
+		} else {
+			model = "claude-sonnet-4-5-20250929"
+		}
+	}
+
+	logEntry := &RequestLog{
+		Timestamp:      startTime,
+		RequestType:    "llm",
+		Provider:       provider,
+		Model:          model,
+		RequestedModel: model,
+		Usecase:        req.Usecase,
+		RequestBody:    body,
+		ClientIP:       getClientIP(r),
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 
 	var resp WebSearchResponse
-	if req.Provider == "openai" {
+	if provider == "openai" {
 		resp = doOpenAIWebSearch(req)
 	} else {
 		resp = doAnthropicWebSearch(req)
 	}
+
+	// Update log entry with response
+	logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+	logEntry.Success = resp.Error == ""
+	logEntry.Error = resp.Error
+	logEntry.CostUSD = resp.CostUSD
+	logEntry.InputTokens = resp.InputTokens
+	logEntry.OutputTokens = resp.OutputTokens
+	if resp.Model != "" {
+		logEntry.Model = resp.Model
+	}
+
+	// Store raw API request/response for request detail view
+	if resp.RawRequest != nil {
+		logEntry.RequestBody = resp.RawRequest
+	}
+	if resp.RawResponse != nil {
+		logEntry.ResponseBody = resp.RawResponse
+	}
+
+	logRequest(logEntry)
+
+	log.Printf("WebSearch complete (%dms): provider=%s, model=%s, searches=%d, cost=$%.6f",
+		logEntry.LatencyMs, provider, logEntry.Model, resp.SearchCount, resp.CostUSD)
 
 	json.NewEncoder(w).Encode(resp)
 }
@@ -1446,12 +1502,16 @@ func doAnthropicWebSearch(req WebSearchRequest) WebSearchResponse {
 	totalCost := tokenCost + searchCost
 
 	return WebSearchResponse{
-		Response:    strings.Join(textParts, "\n"),
-		Model:       anthropicResp.Model,
-		Provider:    "anthropic",
-		SearchCount: searchCount,
-		Sources:     sources,
-		CostUSD:     totalCost,
+		Response:     strings.Join(textParts, "\n"),
+		Model:        anthropicResp.Model,
+		Provider:     "anthropic",
+		SearchCount:  searchCount,
+		Sources:      sources,
+		CostUSD:      totalCost,
+		InputTokens:  anthropicResp.Usage.InputTokens,
+		OutputTokens: anthropicResp.Usage.OutputTokens,
+		RawRequest:   reqBody,
+		RawResponse:  respBody,
 	}
 }
 
@@ -1579,12 +1639,16 @@ func doOpenAIWebSearch(req WebSearchRequest) WebSearchResponse {
 	totalCost := tokenCost + searchCost
 
 	return WebSearchResponse{
-		Response:    strings.Join(textParts, "\n"),
-		Model:       openaiResp.Model,
-		Provider:    "openai",
-		SearchCount: searchCount,
-		Sources:     sources,
-		CostUSD:     totalCost,
+		Response:     strings.Join(textParts, "\n"),
+		Model:        openaiResp.Model,
+		Provider:     "openai",
+		SearchCount:  searchCount,
+		Sources:      sources,
+		CostUSD:      totalCost,
+		InputTokens:  openaiResp.Usage.InputTokens,
+		OutputTokens: openaiResp.Usage.OutputTokens,
+		RawRequest:   reqBody,
+		RawResponse:  respBody,
 	}
 }
 
