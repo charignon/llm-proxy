@@ -51,19 +51,31 @@ var (
 
 // Model pricing per 1M tokens (input, output)
 var modelPricing = map[string][2]float64{
-	// OpenAI
-	"gpt-5.1":       {5.00, 20.00},  // GPT-5.1
-	"gpt-4o":        {2.50, 10.00},
-	"gpt-4o-mini":   {0.15, 0.60},
-	"gpt-4-turbo":   {10.00, 30.00},
-	"gpt-4":         {30.00, 60.00},
+	// OpenAI GPT-5 series
+	"gpt-5":   {1.25, 10.00},
+	"gpt-5.1": {1.25, 10.00},
+	"gpt-5.2": {1.75, 14.00},
+	// OpenAI GPT-4.1 series
+	"gpt-4.1":      {2.00, 8.00},
+	"gpt-4.1-mini": {0.40, 1.60},
+	"gpt-4.1-nano": {0.10, 0.40},
+	// OpenAI GPT-4o series
+	"gpt-4o":      {2.50, 10.00},
+	"gpt-4o-mini": {0.15, 0.60},
+	// OpenAI GPT-4 legacy
+	"gpt-4-turbo": {10.00, 30.00},
+	"gpt-4":       {30.00, 60.00},
+	// OpenAI GPT-3.5
 	"gpt-3.5-turbo": {0.50, 1.50},
-	"o1":            {15.00, 60.00},
-	"o1-mini":       {3.00, 12.00},
+	// OpenAI reasoning models (o-series)
+	"o1":      {15.00, 60.00},
+	"o1-mini": {1.10, 4.40},
+	"o3-mini": {1.10, 4.40},
+	"o4-mini": {1.10, 4.40},
 	// Anthropic - Claude 4.5 models only
-	"claude-opus-4-5-20251101":  {5.00, 25.00},
+	"claude-opus-4-5-20251101":   {5.00, 25.00},
 	"claude-sonnet-4-5-20250929": {3.00, 15.00},
-	"claude-haiku-4-5-20251001": {1.00, 5.00},
+	"claude-haiku-4-5-20251001":  {1.00, 5.00},
 	// Ollama (free)
 	"qwen3-vl:30b":  {0, 0},
 	"llama3:latest": {0, 0},
