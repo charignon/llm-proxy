@@ -1652,6 +1652,54 @@ func doOpenAIWebSearch(req WebSearchRequest) WebSearchResponse {
 	}
 }
 
+// handleResponses proxies requests to OpenAI's Responses API (used for web_search tool)
+func handleResponses(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if openaiKey == "" {
+		http.Error(w, "OpenAI API key not configured", http.StatusInternalServerError)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("[Responses API] Proxying request to OpenAI: %s", string(body)[:min(200, len(body))])
+
+	// Forward to OpenAI Responses API
+	httpReq, err := http.NewRequest("POST", "https://api.openai.com/v1/responses", bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, "Failed to create request: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+openaiKey)
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	httpResp, err := client.Do(httpReq)
+	if err != nil {
+		http.Error(w, "Request failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer httpResp.Body.Close()
+
+	respBody, _ := io.ReadAll(httpResp.Body)
+
+	log.Printf("[Responses API] OpenAI response status=%d body=%s", httpResp.StatusCode, string(respBody)[:min(300, len(respBody))])
+
+	// Forward response headers and body
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(httpResp.StatusCode)
+	w.Write(respBody)
+}
+
 // handleChatCompletions is now handled by httphandlers.ChatHandler
 
 func handleModels(w http.ResponseWriter, r *http.Request) {
@@ -10350,6 +10398,7 @@ func main() {
 	http.HandleFunc("/v1/audio/transcriptions/stream", handleWhisperStream)
 	http.HandleFunc("/v1/audio/speech", handleTTS)
 	http.HandleFunc("/v1/websearch", handleWebSearch)
+	http.HandleFunc("/v1/responses", handleResponses) // Proxy to OpenAI Responses API for web_search
 
 	log.Printf("LLM Proxy starting on port %s", port)
 	log.Printf("Whisper server: %s", whisperServerURL)
