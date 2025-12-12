@@ -7635,7 +7635,7 @@ const dashboardHTML = `<!DOCTYPE html>
                     const tooltip =
                         (desc && desc.trim() ? desc : ('Tool: ' + name)) +
                         (paramNames ? '\\n\\nParams: ' + paramNames : '');
-                    html += '<span class="badge tool-badge" title="' + escapeHtml(tooltip) + '" style="background:#374151;color:#e2e8f0;padding:4px 8px;font-size:12px;cursor:help">' + escapeHtml(name) + '</span>';
+                    html += '<span class="badge tool-badge" data-tooltip="' + escapeHtml(tooltip) + '" style="background:#374151;color:#e2e8f0;padding:4px 8px;font-size:12px;cursor:help">' + escapeHtml(name) + '</span>';
                 }
                 html += '</div>';
                 html += '<details style="margin-top:8px"><summary style="cursor:pointer;color:#6366f1;font-size:13px">Show full tool definitions</summary>';
