@@ -7832,6 +7832,51 @@ const dashboardHTML = `<!DOCTYPE html>
 
         function formatMessageContent(content) {
             if (typeof content === 'string') {
+                // Check for web search tool call pattern: [Tool: WebSearch (ID: ...)]
+                const toolCallMatch = content.match(/\[Tool:\s*WebSearch\s*\(ID:\s*([^)]+)\)\]\s*Input:\s*(\{[\s\S]*?\})/);
+                if (toolCallMatch) {
+                    const toolId = toolCallMatch[1];
+                    let inputJson = {};
+                    try { inputJson = JSON.parse(toolCallMatch[2]); } catch(e) {}
+                    let html = '<div style="padding:10px;background:#1e293b;border-radius:8px;border-left:3px solid #3b82f6;margin:8px 0">';
+                    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
+                    html += '<span style="font-size:16px">🔍</span>';
+                    html += '<span style="color:#93c5fd;font-weight:600">Web Search</span>';
+                    html += '<span style="color:#64748b;font-size:11px;font-family:monospace">' + escapeHtml(toolId) + '</span>';
+                    html += '</div>';
+                    if (inputJson.query) {
+                        html += '<div style="color:#e2e8f0;font-weight:500;margin-bottom:6px">"' + escapeHtml(inputJson.query) + '"</div>';
+                    }
+                    if (inputJson.allowed_domains && inputJson.allowed_domains.length > 0) {
+                        html += '<div style="color:#64748b;font-size:11px">Domains: ' + inputJson.allowed_domains.map(d => escapeHtml(d)).join(', ') + '</div>';
+                    }
+                    html += '</div>';
+                    return html;
+                }
+
+                // Check for web search tool result pattern: Tool result for call_...
+                const toolResultMatch = content.match(/Tool result for (call_[^:]+):\s*Web search results for query:\s*"([^"]+)"([\s\S]*)/);
+                if (toolResultMatch) {
+                    const toolId = toolResultMatch[1];
+                    const query = toolResultMatch[2];
+                    const resultContent = toolResultMatch[3].trim();
+                    let html = '<div style="padding:10px;background:#0f172a;border-radius:8px;border-left:3px solid #22c55e;margin:8px 0">';
+                    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
+                    html += '<span style="font-size:16px">📋</span>';
+                    html += '<span style="color:#86efac;font-weight:600">Search Results</span>';
+                    html += '<span style="color:#64748b;font-size:11px;font-family:monospace">' + escapeHtml(toolId) + '</span>';
+                    html += '</div>';
+                    html += '<div style="color:#94a3b8;font-size:12px;margin-bottom:6px">Query: "' + escapeHtml(query) + '"</div>';
+                    if (resultContent === '(no content)' || !resultContent) {
+                        html += '<div style="color:#f87171;font-style:italic">No results returned</div>';
+                    } else {
+                        // Try to parse as search results
+                        html += '<div style="color:#e2e8f0;font-size:13px;white-space:pre-wrap">' + escapeHtml(resultContent) + '</div>';
+                    }
+                    html += '</div>';
+                    return html;
+                }
+
                 return escapeHtml(content);
             }
             if (Array.isArray(content)) {
