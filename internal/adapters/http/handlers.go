@@ -239,10 +239,11 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 	}
 
 	// Check cache first (unless no_cache is set)
+	// DISABLED: Cache causing issues - model responses seem "dumb"
 	cacheKey := h.GenerateKey(req, route)
 	logEntry.CacheKey = cacheKey
 
-	if !req.NoCache {
+	if false && !req.NoCache { // Cache disabled
 		if cached, ok := h.Cache.Get(cacheKey); ok {
 			// Cache hit - fake stream the cached response
 			h.fakeStreamCachedResponse(w, cached, route, logEntry, startTime)
