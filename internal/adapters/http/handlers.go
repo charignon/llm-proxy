@@ -239,11 +239,10 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 	}
 
 	// Check cache first (unless no_cache is set)
-	// TEMP: Disable streaming cache for claude-hacky usecase while debugging
 	cacheKey := h.GenerateKey(req, route)
 	logEntry.CacheKey = cacheKey
 
-	if !req.NoCache && req.Usecase != "claude-hacky" {
+	if !req.NoCache {
 		if cached, ok := h.Cache.Get(cacheKey); ok {
 			// Cache hit - fake stream the cached response
 			h.fakeStreamCachedResponse(w, cached, route, logEntry, startTime)
@@ -288,9 +287,6 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 	}
 	if len(req.Tools) > 0 {
 		openaiReq["tools"] = req.Tools
-		fmt.Printf("[DEBUG] Forwarding %d tools to OpenAI\n", len(req.Tools))
-	} else {
-		fmt.Printf("[DEBUG] No tools in request\n")
 	}
 	if req.ToolChoice != nil {
 		openaiReq["tool_choice"] = req.ToolChoice
