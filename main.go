@@ -6610,6 +6610,30 @@ const dashboardHTML = `<!DOCTYPE html>
             }
             html += '</div></div></div>';
 
+            // Tools comparison
+            const tools1 = getToolNames(req1);
+            const tools2 = getToolNames(req2);
+            const toolsMatch = JSON.stringify(tools1) === JSON.stringify(tools2);
+            html += '<div class="modal-section"><h3>Tools ' + (toolsMatch ? '<span style="color:#22c55e">(' + tools1.length + ' tools, identical)</span>' : '<span style="color:#f59e0b">(different)</span>') + '</h3>';
+            if (toolsMatch && tools1.length > 0) {
+                html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+                for (const name of tools1) {
+                    html += '<span class="badge" style="background:#374151;color:#e2e8f0;padding:4px 8px;font-size:11px">' + escapeHtml(name) + '</span>';
+                }
+                html += '</div>';
+            } else if (!toolsMatch) {
+                html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+                html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req1.id + ' (' + tools1.length + ' tools)</div><div style="display:flex;flex-wrap:wrap;gap:4px">';
+                for (const name of tools1) { html += '<span class="badge" style="background:#374151;color:#e2e8f0;padding:3px 6px;font-size:10px">' + escapeHtml(name) + '</span>'; }
+                html += '</div></div>';
+                html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req2.id + ' (' + tools2.length + ' tools)</div><div style="display:flex;flex-wrap:wrap;gap:4px">';
+                for (const name of tools2) { html += '<span class="badge" style="background:#374151;color:#e2e8f0;padding:3px 6px;font-size:10px">' + escapeHtml(name) + '</span>'; }
+                html += '</div></div></div>';
+            } else {
+                html += '<div style="color:#888;font-style:italic">No tools</div>';
+            }
+            html += '</div>';
+
             // Response comparison
             html += '<div class="modal-section"><h3>Responses</h3>';
             html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
@@ -6655,6 +6679,11 @@ const dashboardHTML = `<!DOCTYPE html>
                 }
             }
             return JSON.stringify(req.response, null, 2);
+        }
+
+        function getToolNames(req) {
+            if (!req.request || !req.request.tools) return [];
+            return req.request.tools.map(t => t.function?.name || t.name || 'unknown');
         }
 
         // IP to hostname mapping
@@ -7562,6 +7591,22 @@ const dashboardHTML = `<!DOCTYPE html>
                     html += '</div>';
                 }
                 html += '</div>';
+            }
+
+            // Tools
+            if (data.request && data.request.tools && data.request.tools.length > 0) {
+                const tools = data.request.tools;
+                html += '<div class="modal-section">';
+                html += '<h3>Tools <span style="color:#888;font-weight:normal">(' + tools.length + ' tools)</span></h3>';
+                html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">';
+                for (const tool of tools) {
+                    const name = tool.function?.name || tool.name || 'unknown';
+                    html += '<span class="badge" style="background:#374151;color:#e2e8f0;padding:4px 8px;font-size:12px">' + escapeHtml(name) + '</span>';
+                }
+                html += '</div>';
+                html += '<details style="margin-top:8px"><summary style="cursor:pointer;color:#6366f1;font-size:13px">Show full tool definitions</summary>';
+                html += '<div class="code-block" style="margin-top:8px;max-height:400px;overflow-y:auto;font-size:11px">' + escapeHtml(JSON.stringify(tools, null, 2)) + '</div>';
+                html += '</details></div>';
             }
 
             // Response
