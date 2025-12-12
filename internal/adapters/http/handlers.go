@@ -138,7 +138,13 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logEntry.Provider = route.Provider
 	logEntry.Model = route.Model
 
-	// Check cache
+	// Handle streaming requests
+	if req.Stream {
+		h.handleStreaming(w, r, &req, route, body, logEntry, startTime)
+		return
+	}
+
+	// Check cache (only for non-streaming)
 	cacheKey := h.GenerateKey(&req, route)
 	logEntry.CacheKey = cacheKey
 
@@ -221,4 +227,115 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-LLM-Proxy-Request-ID", fmt.Sprintf("%d", requestID))
 	}
 	json.NewEncoder(w).Encode(resp)
+}
+
+// handleStreaming handles streaming chat completion requests by forwarding to OpenAI with stream=true.
+func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, req *domain.ChatCompletionRequest, route *domain.RouteConfig, body []byte, logEntry *domain.RequestLog, startTime time.Time) {
+	// Only OpenAI streaming is supported for now
+	if route.Provider != "openai" {
+		http.Error(w, fmt.Sprintf("Streaming not supported for provider: %s", route.Provider), http.StatusBadRequest)
+		return
+	}
+
+	// Get OpenAI provider to access API key
+	provider, ok := h.Providers[route.Provider]
+	if !ok {
+		http.Error(w, "OpenAI provider not configured", http.StatusInternalServerError)
+		return
+	}
+	openaiProvider, ok := provider.(interface{ GetAPIKey() string })
+	if !ok {
+		http.Error(w, "Provider does not support streaming", http.StatusInternalServerError)
+		return
+	}
+	apiKey := openaiProvider.GetAPIKey()
+
+	// Build OpenAI streaming request
+	openaiReq := map[string]interface{}{
+		"model":    route.Model,
+		"messages": req.Messages,
+		"stream":   true,
+	}
+	if req.MaxTokens > 0 {
+		if strings.HasPrefix(route.Model, "gpt-4o") || strings.HasPrefix(route.Model, "gpt-5") || strings.HasPrefix(route.Model, "o1") {
+			openaiReq["max_completion_tokens"] = req.MaxTokens
+		} else {
+			openaiReq["max_tokens"] = req.MaxTokens
+		}
+	}
+	if req.Temperature > 0 {
+		openaiReq["temperature"] = req.Temperature
+	}
+	if len(req.Tools) > 0 {
+		openaiReq["tools"] = req.Tools
+	}
+	if req.ToolChoice != nil {
+		openaiReq["tool_choice"] = req.ToolChoice
+	}
+
+	reqBody, _ := json.Marshal(openaiReq)
+
+	// Make streaming request to OpenAI
+	httpReq, _ := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", strings.NewReader(string(reqBody)))
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	client := &http.Client{Timeout: 300 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		logEntry.Success = false
+		logEntry.Error = err.Error()
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		h.Logger.LogRequest(logEntry)
+		http.Error(w, "OpenAI request failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		logEntry.Success = false
+		logEntry.Error = fmt.Sprintf("OpenAI error %d: %s", resp.StatusCode, string(respBody))
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		h.Logger.LogRequest(logEntry)
+		http.Error(w, string(respBody), resp.StatusCode)
+		return
+	}
+
+	// Set up SSE response
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-LLM-Proxy-Provider", route.Provider)
+	w.Header().Set("X-LLM-Proxy-Model", route.Model)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Stream the response
+	buf := make([]byte, 4096)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			w.Write(buf[:n])
+			flusher.Flush()
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	// Log success
+	logEntry.Success = true
+	logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+	logEntry.RequestType = "stream"
+	h.Logger.LogRequest(logEntry)
+	h.Metrics.RecordRequest(route.Provider, route.Model, "success", logEntry.LatencyMs, 0, 0, 0, false)
 }

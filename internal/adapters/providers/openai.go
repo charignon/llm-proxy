@@ -23,6 +23,11 @@ func NewOpenAIProvider(apiKey string) *OpenAIProvider {
 	return &OpenAIProvider{APIKey: apiKey}
 }
 
+// GetAPIKey returns the API key for streaming support.
+func (p *OpenAIProvider) GetAPIKey() string {
+	return p.APIKey
+}
+
 // Chat implements ChatProvider.Chat for OpenAI.
 func (p *OpenAIProvider) Chat(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
 	if p.APIKey == "" {
