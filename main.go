@@ -6597,18 +6597,40 @@ const dashboardHTML = `<!DOCTYPE html>
             html += '</div>';
 
             // User messages comparison
-            html += '<div class="modal-section"><h3>User Messages</h3>';
-            html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
-            html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req1.id + ' (' + user1.length + ' messages)</div>';
-            for (const msg of user1.slice(-3)) {
-                html += '<div class="code-block" style="margin-bottom:8px;max-height:150px;overflow-y:auto;border-left:3px solid #6366f1">' + escapeHtml(msg) + '</div>';
+            const userMsgsMatch = JSON.stringify(user1) === JSON.stringify(user2);
+            html += '<div class="modal-section"><h3>User Messages ';
+            if (userMsgsMatch) {
+                html += '<span style="color:#22c55e">(' + user1.length + ' messages, identical)</span>';
+            } else {
+                html += '<span style="color:#f59e0b">(different: ' + user1.length + ' vs ' + user2.length + ')</span>';
+            }
+            html += '</h3>';
+
+            if (userMsgsMatch && user1.length > 0) {
+                // Show single version when identical
+                html += '<div style="color:#888;font-size:12px;margin-bottom:8px">Last ' + Math.min(3, user1.length) + ' user message(s):</div>';
+                for (const msg of user1.slice(-3)) {
+                    html += '<div class="code-block" style="margin-bottom:8px;max-height:150px;overflow-y:auto">' + escapeHtml(msg) + '</div>';
+                }
+            } else if (!userMsgsMatch) {
+                // Show side by side when different
+                html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+                html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req1.id + ' (' + user1.length + ' messages)</div>';
+                for (const msg of user1.slice(-3)) {
+                    html += '<div class="code-block" style="margin-bottom:8px;max-height:150px;overflow-y:auto;border-left:3px solid #6366f1;font-size:12px">' + escapeHtml(msg) + '</div>';
+                }
+                if (user1.length === 0) html += '<div style="color:#888;font-style:italic">No user messages</div>';
+                html += '</div>';
+                html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req2.id + ' (' + user2.length + ' messages)</div>';
+                for (const msg of user2.slice(-3)) {
+                    html += '<div class="code-block" style="margin-bottom:8px;max-height:150px;overflow-y:auto;border-left:3px solid #ec4899;font-size:12px">' + escapeHtml(msg) + '</div>';
+                }
+                if (user2.length === 0) html += '<div style="color:#888;font-style:italic">No user messages</div>';
+                html += '</div></div>';
+            } else {
+                html += '<div style="color:#888;font-style:italic">No user messages</div>';
             }
             html += '</div>';
-            html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req2.id + ' (' + user2.length + ' messages)</div>';
-            for (const msg of user2.slice(-3)) {
-                html += '<div class="code-block" style="margin-bottom:8px;max-height:150px;overflow-y:auto;border-left:3px solid #ec4899">' + escapeHtml(msg) + '</div>';
-            }
-            html += '</div></div></div>';
 
             // Tools comparison
             const tools1 = getToolNames(req1);
@@ -7581,35 +7603,42 @@ const dashboardHTML = `<!DOCTYPE html>
             }
             html += '</div></div>';
 
-            // Request messages
+            // Request messages (collapsible)
             if (data.request && data.request.messages) {
-                html += '<div class="modal-section"><h3>Request Messages</h3>';
+                const msgCount = data.request.messages.length;
+                html += '<div class="modal-section">';
+                html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">Request Messages <span style="color:#888;font-weight:normal">(' + msgCount + ')</span></summary>';
+                html += '<div style="margin-top:12px">';
                 for (const msg of data.request.messages) {
                     html += '<div class="message-block">';
                     html += '<div class="message-role">' + msg.role + '</div>';
                     html += '<div class="message-content">' + formatMessageContent(msg.content) + '</div>';
                     html += '</div>';
                 }
-                html += '</div>';
+                html += '</div></details></div>';
             }
 
-            // Tools
+            // Tools (collapsible, with hover tooltips)
             if (data.request && data.request.tools && data.request.tools.length > 0) {
                 const tools = data.request.tools;
                 html += '<div class="modal-section">';
-                html += '<h3>Tools <span style="color:#888;font-weight:normal">(' + tools.length + ' tools)</span></h3>';
-                html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">';
+                html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">Tools <span style="color:#888;font-weight:normal">(' + tools.length + ')</span></summary>';
+                html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;margin-bottom:12px">';
                 for (const tool of tools) {
                     const name = tool.function?.name || tool.name || 'unknown';
-                    html += '<span class="badge" style="background:#374151;color:#e2e8f0;padding:4px 8px;font-size:12px">' + escapeHtml(name) + '</span>';
+                    const desc = tool.function?.description || tool.description || '';
+                    const params = tool.function?.parameters || tool.parameters;
+                    const paramNames = params?.properties ? Object.keys(params.properties).join(', ') : '';
+                    const tooltip = desc + (paramNames ? '\\n\\nParams: ' + paramNames : '');
+                    html += '<span class="badge tool-badge" title="' + escapeHtml(tooltip) + '" style="background:#374151;color:#e2e8f0;padding:4px 8px;font-size:12px;cursor:help">' + escapeHtml(name) + '</span>';
                 }
                 html += '</div>';
                 html += '<details style="margin-top:8px"><summary style="cursor:pointer;color:#6366f1;font-size:13px">Show full tool definitions</summary>';
                 html += '<div class="code-block" style="margin-top:8px;max-height:400px;overflow-y:auto;font-size:11px">' + escapeHtml(JSON.stringify(tools, null, 2)) + '</div>';
-                html += '</details></div>';
+                html += '</details></details></div>';
             }
 
-            // Response
+            // Response (collapsible)
             if (data.response) {
                 let responseContent = '';
                 if (data.response.choices && data.response.choices.length > 0) {
@@ -7625,23 +7654,27 @@ const dashboardHTML = `<!DOCTYPE html>
                     const thinkingContent = thinkMatch[1];
                     const actualResponse = thinkMatch[2];
 
-                    // Show thinking section first
-                    html += '<div class="modal-section"><h3>💭 Thinking</h3>';
-                    html += '<div class="code-block" style="background:#1e1b4b;border-left:3px solid #8b5cf6;max-height:300px;overflow-y:auto">' + escapeHtml(thinkingContent) + '</div>';
-                    html += '</div>';
+                    // Show thinking section first (collapsible, closed by default)
+                    html += '<div class="modal-section">';
+                    html += '<details><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">💭 Thinking</summary>';
+                    html += '<div class="code-block" style="margin-top:12px;background:#1e1b4b;border-left:3px solid #8b5cf6;max-height:300px;overflow-y:auto">' + escapeHtml(thinkingContent) + '</div>';
+                    html += '</details></div>';
 
-                    // Show actual response
-                    html += '<div class="modal-section"><h3>Response</h3>';
-                    html += '<div class="code-block">' + escapeHtml(actualResponse) + '</div>';
-                    html += '</div>';
+                    // Show actual response (collapsible, open by default)
+                    html += '<div class="modal-section">';
+                    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">Response</summary>';
+                    html += '<div class="code-block" style="margin-top:12px">' + escapeHtml(actualResponse) + '</div>';
+                    html += '</details></div>';
                 } else if (responseContent) {
-                    html += '<div class="modal-section"><h3>Response</h3>';
-                    html += '<div class="code-block">' + escapeHtml(responseContent) + '</div>';
-                    html += '</div>';
+                    html += '<div class="modal-section">';
+                    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">Response</summary>';
+                    html += '<div class="code-block" style="margin-top:12px">' + escapeHtml(responseContent) + '</div>';
+                    html += '</details></div>';
                 } else {
-                    html += '<div class="modal-section"><h3>Response</h3>';
-                    html += '<div class="code-block">' + escapeHtml(JSON.stringify(data.response, null, 2)) + '</div>';
-                    html += '</div>';
+                    html += '<div class="modal-section">';
+                    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">Response (raw)</summary>';
+                    html += '<div class="code-block" style="margin-top:12px">' + escapeHtml(JSON.stringify(data.response, null, 2)) + '</div>';
+                    html += '</details></div>';
                 }
             }
 
