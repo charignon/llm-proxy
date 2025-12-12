@@ -6261,9 +6261,10 @@ const dashboardHTML = `<!DOCTYPE html>
                     </select>
                     <span style="margin-left: 16px; color: #888;">Exclude:</span>
                     <div id="usecase-exclude-chips" style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;"></div>
+                    <button id="compare-btn" onclick="compareSelected()" style="margin-left: auto; padding: 8px 16px; border-radius: 6px; border: 1px solid #6366f1; background: #1e1e2e; color: #6366f1; cursor: pointer; font-size: 13px; display: none;">Compare Selected (0)</button>
                 </div>
                 <table id="recent-table">
-                    <thead><tr><th>Time</th><th>Type</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Usecase</th><th>Client IP</th><th>Info</th><th>Latency</th><th>Cost</th><th>Status</th></tr></thead>
+                    <thead><tr><th style="width:30px"><input type="checkbox" id="select-all-checkbox" onclick="toggleSelectAll(this)" title="Select all for comparison"></th><th>Time</th><th>Hash</th><th>Type</th><th>Provider</th><th>Model</th><th>Usecase</th><th>Info</th><th>Latency</th><th>Cost</th><th>Status</th></tr></thead>
                     <tbody></tbody>
                 </table>
                 <div id="pagination-controls" style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px; padding: 12px 16px; background: #1e1e2e; border-radius: 8px;">
@@ -6458,6 +6459,204 @@ const dashboardHTML = `<!DOCTYPE html>
         let currentTypeFilter = '';
         let currentFilters = {}; // For matrix filtering
 
+        // Request comparison tracking
+        let selectedForCompare = new Set();
+        let compareRequestsData = new Map(); // Cache loaded request data
+
+        // Simple hash function for request fingerprinting
+        function computeRequestHash(req) {
+            // Hash based on system message + first user message
+            let content = '';
+            if (req.request && req.request.messages) {
+                for (const msg of req.request.messages) {
+                    if (msg.role === 'system') {
+                        content += 'SYS:' + (typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content));
+                    }
+                }
+                // Add first user message
+                for (const msg of req.request.messages) {
+                    if (msg.role === 'user') {
+                        content += 'USR:' + (typeof msg.content === 'string' ? msg.content.substring(0, 100) : JSON.stringify(msg.content).substring(0, 100));
+                        break;
+                    }
+                }
+            }
+            // Simple hash
+            let hash = 0;
+            for (let i = 0; i < content.length; i++) {
+                const char = content.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash = hash & hash;
+            }
+            return Math.abs(hash).toString(16).padStart(8, '0');
+        }
+
+        function toggleCompareSelection(id, selected) {
+            if (selected) {
+                selectedForCompare.add(id);
+            } else {
+                selectedForCompare.delete(id);
+            }
+            updateCompareButton();
+        }
+
+        function toggleSelectAll(checkbox) {
+            const checkboxes = document.querySelectorAll('#recent-table tbody input[type="checkbox"]');
+            checkboxes.forEach(cb => {
+                cb.checked = checkbox.checked;
+                const id = parseInt(cb.closest('tr').querySelector('input[type="checkbox"]').onchange.toString().match(/\d+/)[0]);
+                if (checkbox.checked) {
+                    selectedForCompare.add(id);
+                } else {
+                    selectedForCompare.delete(id);
+                }
+            });
+            updateCompareButton();
+        }
+
+        function updateCompareButton() {
+            const btn = document.getElementById('compare-btn');
+            const count = selectedForCompare.size;
+            if (count >= 2) {
+                btn.style.display = 'block';
+                btn.textContent = 'Compare Selected (' + count + ')';
+                btn.style.background = '#6366f1';
+                btn.style.color = 'white';
+            } else if (count === 1) {
+                btn.style.display = 'block';
+                btn.textContent = 'Select 1 more to compare';
+                btn.style.background = '#1e1e2e';
+                btn.style.color = '#888';
+            } else {
+                btn.style.display = 'none';
+            }
+        }
+
+        async function compareSelected() {
+            if (selectedForCompare.size < 2) return;
+            const ids = Array.from(selectedForCompare).slice(0, 2); // Compare first 2 selected
+
+            // Load both requests
+            const [data1, data2] = await Promise.all([
+                fetch('/api/request?id=' + ids[0]).then(r => r.json()),
+                fetch('/api/request?id=' + ids[1]).then(r => r.json())
+            ]);
+
+            showCompareModal(data1, data2);
+        }
+
+        function showCompareModal(req1, req2) {
+            const overlay = document.getElementById('modal-overlay');
+            const body = document.getElementById('modal-body');
+            overlay.classList.add('active');
+
+            // Extract system messages
+            const sys1 = getSystemMessage(req1);
+            const sys2 = getSystemMessage(req2);
+            const sysMatch = sys1 === sys2;
+
+            // Extract user messages
+            const user1 = getUserMessages(req1);
+            const user2 = getUserMessages(req2);
+
+            // Extract responses
+            const resp1 = getResponseContent(req1);
+            const resp2 = getResponseContent(req2);
+
+            let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">';
+            html += '<h2 style="color:#a5b4fc;margin:0">Compare Requests</h2>';
+            html += '<button onclick="selectedForCompare.clear();updateCompareButton();closeModal()" style="padding:8px 16px;background:#374151;border:none;border-radius:6px;color:#e2e8f0;cursor:pointer">Clear Selection</button>';
+            html += '</div>';
+
+            // Metadata comparison
+            html += '<div class="modal-section"><h3>Metadata</h3>';
+            html += '<table style="width:100%;border-collapse:collapse">';
+            html += '<tr><th style="text-align:left;padding:8px;border-bottom:1px solid #374151;width:150px"></th>';
+            html += '<th style="text-align:left;padding:8px;border-bottom:1px solid #374151">Request #' + req1.id + '</th>';
+            html += '<th style="text-align:left;padding:8px;border-bottom:1px solid #374151">Request #' + req2.id + '</th></tr>';
+            html += compareRow('Time', new Date(req1.timestamp).toLocaleString(), new Date(req2.timestamp).toLocaleString());
+            html += compareRow('Model', req1.model, req2.model);
+            html += compareRow('Provider', req1.provider, req2.provider);
+            html += compareRow('Usecase', req1.usecase, req2.usecase);
+            html += compareRow('Latency', req1.latency_ms + 'ms', req2.latency_ms + 'ms');
+            html += compareRow('Input Tokens', req1.input_tokens, req2.input_tokens);
+            html += compareRow('Output Tokens', req1.output_tokens, req2.output_tokens);
+            html += compareRow('Cost', '$' + req1.cost_usd.toFixed(6), '$' + req2.cost_usd.toFixed(6));
+            html += '</table></div>';
+
+            // System message comparison
+            html += '<div class="modal-section"><h3>System Message ' + (sysMatch ? '<span style="color:#22c55e">(identical)</span>' : '<span style="color:#f59e0b">(different)</span>') + '</h3>';
+            if (sysMatch) {
+                html += '<div class="code-block" style="max-height:200px;overflow-y:auto">' + escapeHtml(sys1 || '(none)') + '</div>';
+            } else {
+                html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+                html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req1.id + '</div><div class="code-block" style="max-height:200px;overflow-y:auto;border-left:3px solid #6366f1">' + escapeHtml(sys1 || '(none)') + '</div></div>';
+                html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req2.id + '</div><div class="code-block" style="max-height:200px;overflow-y:auto;border-left:3px solid #ec4899">' + escapeHtml(sys2 || '(none)') + '</div></div>';
+                html += '</div>';
+            }
+            html += '</div>';
+
+            // User messages comparison
+            html += '<div class="modal-section"><h3>User Messages</h3>';
+            html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+            html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req1.id + ' (' + user1.length + ' messages)</div>';
+            for (const msg of user1.slice(-3)) {
+                html += '<div class="code-block" style="margin-bottom:8px;max-height:150px;overflow-y:auto;border-left:3px solid #6366f1">' + escapeHtml(msg) + '</div>';
+            }
+            html += '</div>';
+            html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req2.id + ' (' + user2.length + ' messages)</div>';
+            for (const msg of user2.slice(-3)) {
+                html += '<div class="code-block" style="margin-bottom:8px;max-height:150px;overflow-y:auto;border-left:3px solid #ec4899">' + escapeHtml(msg) + '</div>';
+            }
+            html += '</div></div></div>';
+
+            // Response comparison
+            html += '<div class="modal-section"><h3>Responses</h3>';
+            html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+            html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req1.id + '</div><div class="code-block" style="max-height:300px;overflow-y:auto;border-left:3px solid #6366f1">' + escapeHtml(resp1) + '</div></div>';
+            html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req2.id + '</div><div class="code-block" style="max-height:300px;overflow-y:auto;border-left:3px solid #ec4899">' + escapeHtml(resp2) + '</div></div>';
+            html += '</div></div>';
+
+            body.innerHTML = html;
+        }
+
+        function compareRow(label, val1, val2) {
+            const match = val1 === val2;
+            const style1 = match ? '' : 'color:#6366f1';
+            const style2 = match ? '' : 'color:#ec4899';
+            return '<tr><td style="padding:8px;border-bottom:1px solid #2d2d44;color:#888">' + label + '</td>' +
+                '<td style="padding:8px;border-bottom:1px solid #2d2d44;' + style1 + '">' + val1 + '</td>' +
+                '<td style="padding:8px;border-bottom:1px solid #2d2d44;' + style2 + '">' + val2 + '</td></tr>';
+        }
+
+        function getSystemMessage(req) {
+            if (!req.request || !req.request.messages) return '';
+            for (const msg of req.request.messages) {
+                if (msg.role === 'system') {
+                    return typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+                }
+            }
+            return '';
+        }
+
+        function getUserMessages(req) {
+            if (!req.request || !req.request.messages) return [];
+            return req.request.messages
+                .filter(m => m.role === 'user')
+                .map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content));
+        }
+
+        function getResponseContent(req) {
+            if (!req.response) return '(no response)';
+            if (req.response.choices && req.response.choices.length > 0) {
+                const choice = req.response.choices[0];
+                if (choice.message && choice.message.content) {
+                    return choice.message.content;
+                }
+            }
+            return JSON.stringify(req.response, null, 2);
+        }
+
         // IP to hostname mapping
         const ipToHostname = {
             '192.168.1.99': 'robot.lan',
@@ -6580,18 +6779,18 @@ const dashboardHTML = `<!DOCTYPE html>
             for (const req of data.requests || []) {
                 const tr = document.createElement('tr');
                 tr.className = 'clickable';
-                tr.onclick = () => showRequestDetail(req.id);
+                tr.onclick = (e) => { if (e.target.type !== 'checkbox') showRequestDetail(req.id); };
                 const time = new Date(req.timestamp).toLocaleTimeString();
                 const status = req.cached ? '<span class="badge cached">cached</span>' :
                     (req.success ? '<span class="badge success">ok</span>' : '<span class="badge error">error</span>');
-                const sensitiveClass = req.sensitive ? 'sensitive' : 'not-sensitive';
-                const sensitiveText = req.sensitive ? 'YES' : 'no';
-                const precision = req.precision || '-';
                 const usecase = req.usecase ? '<span class="badge usecase">' + req.usecase + '</span>' : '-';
                 const hasImages = req.has_images ? '<span class="badge images">img</span>' : '';
                 const replayBadge = req.is_replay ? '<span class="badge replay">replay</span>' : '';
                 const reqType = req.request_type || 'llm';
                 const typeBadge = '<span class="badge type-' + reqType + '">' + reqType.toUpperCase() + '</span>';
+
+                // Use cache_key as hash (already computed server-side)
+                const hash = req.cache_key ? req.cache_key.substring(0, 12) : '...';
 
                 // Info column: tokens for LLM, voice for TTS, duration for STT
                 let info = '';
@@ -6604,21 +6803,21 @@ const dashboardHTML = `<!DOCTYPE html>
                     info = req.audio_duration_ms ? (req.audio_duration_ms / 1000).toFixed(1) + 's' : '-';
                 }
 
-                const clientIP = formatClientIP(req.client_ip);
-                tr.innerHTML = '<td>' + time + '</td>' +
+                const isSelected = selectedForCompare.has(req.id);
+                tr.innerHTML = '<td onclick="event.stopPropagation()"><input type="checkbox" ' + (isSelected ? 'checked' : '') + ' onchange="toggleCompareSelection(' + req.id + ', this.checked)"></td>' +
+                    '<td>' + time + '</td>' +
+                    '<td><span style="font-family:monospace;font-size:11px;color:#888" title="' + hash + '">' + hash.substring(0, 8) + '</span></td>' +
                     '<td>' + typeBadge + ' ' + replayBadge + '</td>' +
                     '<td><span class="badge ' + req.provider + '">' + req.provider + '</span></td>' +
                     '<td>' + req.model + ' ' + hasImages + '</td>' +
-                    '<td><span class="badge ' + sensitiveClass + '">' + sensitiveText + '</span></td>' +
-                    '<td><span class="badge precision">' + precision + '</span></td>' +
                     '<td>' + usecase + '</td>' +
-                    '<td><span class="client-ip">' + clientIP + '</span></td>' +
                     '<td>' + info + '</td>' +
                     '<td>' + req.latency_ms + 'ms</td>' +
                     '<td>$' + req.cost_usd.toFixed(6) + '</td>' +
                     '<td>' + status + '</td>';
                 recentBody.appendChild(tr);
             }
+            updateCompareButton();
         }
 
         function filterByType(type) {
