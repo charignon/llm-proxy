@@ -6442,6 +6442,9 @@ const dashboardHTML = `<!DOCTYPE html>
 
     <button class="refresh-btn" id="refresh-btn" onclick="refresh()">&#8635;</button>
 
+    <!-- Global tooltip (for reliable hover tooltips) -->
+    <div id="global-tooltip" style="position:fixed;display:none;z-index:99999;max-width:520px;white-space:pre-wrap;pointer-events:none;background:#0b1220;border:1px solid #334155;color:#e2e8f0;padding:10px 12px;border-radius:10px;font-size:12px;line-height:1.35;box-shadow:0 12px 30px rgba(0,0,0,0.55)"></div>
+
     <!-- Request Detail Modal -->
     <div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
         <div class="modal" onclick="event.stopPropagation()">
@@ -7754,8 +7757,72 @@ const dashboardHTML = `<!DOCTYPE html>
 
         function closeModal(event) {
             if (event && event.target !== event.currentTarget) return;
+            hideGlobalTooltip();
             document.getElementById('modal-overlay').classList.remove('active');
         }
+
+        function getGlobalTooltipEl() {
+            return document.getElementById('global-tooltip');
+        }
+
+        function showGlobalTooltip(text, x, y) {
+            const el = getGlobalTooltipEl();
+            if (!el) return;
+            if (!text) {
+                el.style.display = 'none';
+                return;
+            }
+            el.textContent = text;
+            el.style.display = 'block';
+
+            const margin = 14;
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+
+            // Position near cursor; clamp within viewport.
+            let left = x + margin;
+            let top = y + margin;
+
+            // Ensure layout is up-to-date for measurements.
+            const rect = el.getBoundingClientRect();
+            if (left + rect.width + margin > vw) left = Math.max(margin, vw - rect.width - margin);
+            if (top + rect.height + margin > vh) top = Math.max(margin, vh - rect.height - margin);
+
+            el.style.left = left + 'px';
+            el.style.top = top + 'px';
+        }
+
+        function hideGlobalTooltip() {
+            const el = getGlobalTooltipEl();
+            if (!el) return;
+            el.style.display = 'none';
+        }
+
+        // Reliable hover tooltips for tool badges (native title tooltips are flaky)
+        document.addEventListener('mouseover', (e) => {
+            const target = e.target && e.target.closest ? e.target.closest('.tool-badge') : null;
+            if (!target) return;
+            const text = target.getAttribute('data-tooltip') || '';
+            showGlobalTooltip(text, e.clientX, e.clientY);
+        });
+        document.addEventListener('mousemove', (e) => {
+            const target = e.target && e.target.closest ? e.target.closest('.tool-badge') : null;
+            if (!target) return;
+            const el = getGlobalTooltipEl();
+            if (!el || el.style.display === 'none') return;
+            const text = target.getAttribute('data-tooltip') || '';
+            showGlobalTooltip(text, e.clientX, e.clientY);
+        });
+        document.addEventListener('mouseout', (e) => {
+            if (!e.target) return;
+            const from = e.target.closest ? e.target.closest('.tool-badge') : null;
+            if (!from) return;
+            const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.tool-badge') : null;
+            if (to) return; // moving between badges
+            hideGlobalTooltip();
+        });
+        window.addEventListener('scroll', hideGlobalTooltip, true);
+        window.addEventListener('blur', hideGlobalTooltip);
 
         async function copyRequestJson() {
             if (!currentRequestData) return;
