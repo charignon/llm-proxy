@@ -1654,6 +1654,14 @@ func doOpenAIWebSearch(req WebSearchRequest) WebSearchResponse {
 
 // handleResponses proxies requests to OpenAI's Responses API (used for web_search tool)
 func handleResponses(w http.ResponseWriter, r *http.Request) {
+	// FORBIDDEN: Direct passthrough to OpenAI Responses API is disabled
+	// All requests should use /v1/chat/completions which goes through proper routing
+	http.Error(w, `{"error": {"message": "FORBIDDEN: /v1/responses endpoint is disabled. Use /v1/chat/completions instead. Configure your client with wire_api='chat' to use the Chat Completions API.", "type": "forbidden", "code": "responses_api_disabled"}}`, http.StatusForbidden)
+	log.Printf("[Responses API] BLOCKED request - client should use chat completions API")
+	return
+
+	// Original passthrough code disabled:
+	/*
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1698,6 +1706,7 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(httpResp.StatusCode)
 	w.Write(respBody)
+	*/
 }
 
 // handleChatCompletions is now handled by httphandlers.ChatHandler
@@ -1907,11 +1916,11 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		antReq.Model = modelOverride // Update for logging
 	}
 
-	// Use X-Usecase header or default to "claude-code"
+	// Use X-Usecase header - require it to be set
 	usecase := r.Header.Get("X-Usecase")
-	if usecase == "" {
-		usecase = "claude-code"
-	}
+	// if usecase == "" {
+	// 	usecase = "claude-code"  // Commented out - require explicit usecase
+	// }
 	openaiReq.Usecase = usecase
 
 	// Default to non-sensitive for claude-code (allows cloud routing)
