@@ -3026,13 +3026,13 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 		if clientIP.Valid {
 			entry.ClientIP = clientIP.String
 		}
-		// Extract tool names from request body
+		// Extract tool names from request body (handles both Chat Completions and Responses API formats)
 		if requestBody.Valid && requestBody.String != "" {
 			var reqData struct {
 				Tools []struct {
 					Type     string `json:"type"`
 					Name     string `json:"name"`
-					Function struct {
+					Function *struct {
 						Name string `json:"name"`
 					} `json:"function"`
 				} `json:"tools"`
@@ -3041,17 +3041,54 @@ func handleRequestHistory(w http.ResponseWriter, r *http.Request) {
 				for _, tool := range reqData.Tools {
 					// Get tool name from different formats
 					toolName := tool.Name
-					if toolName == "" && tool.Function.Name != "" {
+					if toolName == "" && tool.Function != nil && tool.Function.Name != "" {
 						toolName = tool.Function.Name
 					}
 					if toolName == "" && tool.Type != "" {
-						toolName = tool.Type // Use type as name for server tools like web_search_20250305
+						// Use type as name for server tools like web_search, code_interpreter, etc.
+						toolName = tool.Type
 					}
 					if toolName != "" {
 						entry.Tools = append(entry.Tools, toolName)
 						// Check for web search tools
 						if strings.Contains(toolName, "web_search") {
 							entry.HasWebSearch = true
+						}
+					}
+				}
+			} else {
+				// Try parsing as generic map to handle unexpected tool formats
+				var genericReq map[string]interface{}
+				if json.Unmarshal([]byte(requestBody.String), &genericReq) == nil {
+					if tools, ok := genericReq["tools"].([]interface{}); ok {
+						for _, t := range tools {
+							if tool, ok := t.(map[string]interface{}); ok {
+								var toolName string
+								// Try direct name
+								if name, ok := tool["name"].(string); ok && name != "" {
+									toolName = name
+								}
+								// Try function.name
+								if toolName == "" {
+									if fn, ok := tool["function"].(map[string]interface{}); ok {
+										if name, ok := fn["name"].(string); ok && name != "" {
+											toolName = name
+										}
+									}
+								}
+								// Fall back to type
+								if toolName == "" {
+									if t, ok := tool["type"].(string); ok && t != "" {
+										toolName = t
+									}
+								}
+								if toolName != "" {
+									entry.Tools = append(entry.Tools, toolName)
+									if strings.Contains(toolName, "web_search") {
+										entry.HasWebSearch = true
+									}
+								}
+							}
 						}
 					}
 				}
@@ -3377,8 +3414,9 @@ func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 		reqBody = []byte(entry.RequestBody.String)
 	}
 	if reqBody != nil {
+		// Try parsing as Chat Completions format first
 		var req ChatCompletionRequest
-		if json.Unmarshal(reqBody, &req) == nil {
+		if json.Unmarshal(reqBody, &req) == nil && len(req.Messages) > 0 {
 			// Extract messages for display (but truncate images)
 			var displayMessages []map[string]interface{}
 			for _, msg := range req.Messages {
@@ -3418,6 +3456,93 @@ func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 				"no_cache":    req.NoCache,
 				"tools":       req.Tools,
 				"tool_choice": req.ToolChoice,
+			}
+		} else {
+			// Try parsing as Responses API format
+			var respReq struct {
+				Model        string      `json:"model"`
+				Input        interface{} `json:"input"`
+				Instructions string      `json:"instructions,omitempty"`
+				Tools        []struct {
+					Type     string `json:"type"`
+					Name     string `json:"name,omitempty"`
+					Function *struct {
+						Name        string                 `json:"name"`
+						Description string                 `json:"description,omitempty"`
+						Parameters  map[string]interface{} `json:"parameters,omitempty"`
+					} `json:"function,omitempty"`
+				} `json:"tools,omitempty"`
+				ToolChoice interface{} `json:"tool_choice,omitempty"`
+				Sensitive  *bool       `json:"sensitive,omitempty"`
+				Precision  string      `json:"precision,omitempty"`
+				Usecase    string      `json:"usecase,omitempty"`
+			}
+			if json.Unmarshal(reqBody, &respReq) == nil && (respReq.Input != nil || len(respReq.Tools) > 0) {
+				// Build messages from Responses API input
+				var displayMessages []map[string]interface{}
+				if respReq.Instructions != "" {
+					displayMessages = append(displayMessages, map[string]interface{}{
+						"role":    "system",
+						"content": respReq.Instructions,
+					})
+				}
+				switch input := respReq.Input.(type) {
+				case string:
+					displayMessages = append(displayMessages, map[string]interface{}{
+						"role":    "user",
+						"content": input,
+					})
+				case []interface{}:
+					// Array of input items
+					for _, item := range input {
+						if m, ok := item.(map[string]interface{}); ok {
+							displayMsg := map[string]interface{}{}
+							if role, ok := m["role"].(string); ok {
+								displayMsg["role"] = role
+							}
+							if content, ok := m["content"]; ok {
+								displayMsg["content"] = content
+							}
+							if len(displayMsg) > 0 {
+								displayMessages = append(displayMessages, displayMsg)
+							}
+						}
+					}
+				}
+
+				// Convert Responses API tools to display format
+				var displayTools []map[string]interface{}
+				for _, tool := range respReq.Tools {
+					displayTool := map[string]interface{}{
+						"type": tool.Type,
+					}
+					if tool.Name != "" {
+						displayTool["name"] = tool.Name
+					}
+					if tool.Function != nil {
+						displayTool["function"] = map[string]interface{}{
+							"name":        tool.Function.Name,
+							"description": tool.Function.Description,
+							"parameters":  tool.Function.Parameters,
+						}
+					}
+					displayTools = append(displayTools, displayTool)
+				}
+
+				sensitive := false
+				if respReq.Sensitive != nil {
+					sensitive = *respReq.Sensitive
+				}
+
+				response["request"] = map[string]interface{}{
+					"model":       respReq.Model,
+					"messages":    displayMessages,
+					"sensitive":   sensitive,
+					"precision":   respReq.Precision,
+					"usecase":     respReq.Usecase,
+					"tools":       displayTools,
+					"tool_choice": respReq.ToolChoice,
+				}
 			}
 		}
 	}
