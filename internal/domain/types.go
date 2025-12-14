@@ -26,6 +26,10 @@ type ChatCompletionRequest struct {
 	Precision string `json:"precision,omitempty"`
 	Usecase   string `json:"usecase,omitempty"`
 	NoCache   bool   `json:"no_cache,omitempty"`
+
+	// Proxy behavior overrides
+	StripReasoningSummary bool `json:"-"`
+
 	// Internal fields
 	IsReplay bool `json:"-"`
 }
@@ -165,6 +169,258 @@ type TTSRequest struct {
 // WhisperTranscriptionResponse represents a transcription result.
 type WhisperTranscriptionResponse struct {
 	Text string `json:"text"`
+}
+
+// ============================================================================
+// OpenAI Responses API Types (newer API for reasoning models, web search, etc.)
+// ============================================================================
+
+// ResponsesAPIMode controls how /v1/responses requests are handled
+type ResponsesAPIMode string
+
+const (
+	ResponsesAPIModeAuto      ResponsesAPIMode = "auto"       // Smart routing based on features
+	ResponsesAPIModeOpenAI    ResponsesAPIMode = "openai"     // Always forward to OpenAI
+	ResponsesAPIModeTranslate ResponsesAPIMode = "translate"  // Always translate to chat completions
+)
+
+// ResponsesRequest represents an OpenAI Responses API request
+type ResponsesRequest struct {
+	Model        string        `json:"model"`
+	Input        interface{}   `json:"input"` // string or []InputItem
+	Instructions string        `json:"instructions,omitempty"`
+	Tools        []ResponsesTool `json:"tools,omitempty"`
+	ToolChoice   interface{}   `json:"tool_choice,omitempty"`
+	Reasoning    *ReasoningConfig `json:"reasoning,omitempty"`
+	MaxOutputTokens int        `json:"max_output_tokens,omitempty"`
+	Temperature  *float64      `json:"temperature,omitempty"`
+	Stream       bool          `json:"stream,omitempty"`
+
+	// Previous response for multi-turn
+	PreviousResponseID string `json:"previous_response_id,omitempty"`
+
+	// Custom routing fields (llm-proxy extensions)
+	Sensitive *bool  `json:"sensitive,omitempty"`
+	Precision string `json:"precision,omitempty"`
+	Usecase   string `json:"usecase,omitempty"`
+}
+
+// ResponsesTool represents a tool in the Responses API
+type ResponsesTool struct {
+	Type     string        `json:"type"` // "function", "web_search", "code_interpreter", "file_search"
+	Function *ToolFunction `json:"function,omitempty"`
+}
+
+// ReasoningConfig controls reasoning behavior for o1/o3 models
+type ReasoningConfig struct {
+	Effort  string `json:"effort,omitempty"`  // "low", "medium", "high"
+	Summary string `json:"summary,omitempty"` // "auto", "concise", "detailed"
+}
+
+// InputItem represents an item in the input array (for multi-turn)
+type InputItem struct {
+	Type    string      `json:"type"` // "message", "item_reference"
+	Role    string      `json:"role,omitempty"`
+	Content interface{} `json:"content,omitempty"`
+	ID      string      `json:"id,omitempty"` // for item_reference
+}
+
+// ResponsesResponse represents an OpenAI Responses API response
+type ResponsesResponse struct {
+	ID        string       `json:"id"`
+	Object    string       `json:"object"` // "response"
+	CreatedAt int64        `json:"created_at"`
+	Status    string       `json:"status"` // "completed", "in_progress", "failed"
+	Model     string       `json:"model"`
+	Output    []OutputItem `json:"output"`
+	Usage     *ResponsesUsage `json:"usage,omitempty"`
+	Error     *ResponsesError `json:"error,omitempty"`
+}
+
+// OutputItem represents an item in the response output
+type OutputItem struct {
+	Type    string      `json:"type"` // "message", "web_search_call", "function_call", "reasoning"
+	ID      string      `json:"id,omitempty"`
+	Status  string      `json:"status,omitempty"`
+	Role    string      `json:"role,omitempty"`
+	Content []ContentItem `json:"content,omitempty"`
+	// For function calls
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+	CallID    string `json:"call_id,omitempty"`
+	// For reasoning
+	Summary []ContentItem `json:"summary,omitempty"`
+}
+
+// ContentItem represents content within an output item
+type ContentItem struct {
+	Type string `json:"type"` // "text", "refusal"
+	Text string `json:"text,omitempty"`
+}
+
+// ResponsesUsage contains token usage for Responses API
+type ResponsesUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
+	// Reasoning tokens (for o1/o3)
+	InputTokensDetails  *TokenDetails `json:"input_tokens_details,omitempty"`
+	OutputTokensDetails *TokenDetails `json:"output_tokens_details,omitempty"`
+}
+
+// TokenDetails provides breakdown of token usage
+type TokenDetails struct {
+	CachedTokens    int `json:"cached_tokens,omitempty"`
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+}
+
+// ResponsesError represents an error in the Responses API
+type ResponsesError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// RequiresOpenAI checks if this request needs OpenAI-specific features
+func (r *ResponsesRequest) RequiresOpenAI() (bool, string) {
+	// Check for built-in tools that only OpenAI supports
+	for _, tool := range r.Tools {
+		switch tool.Type {
+		case "web_search":
+			return true, "web_search tool requires OpenAI Responses API"
+		case "code_interpreter":
+			return true, "code_interpreter tool requires OpenAI Responses API"
+		case "file_search":
+			return true, "file_search tool requires OpenAI Responses API"
+		}
+	}
+
+	// Check for reasoning config (o1/o3 specific)
+	if r.Reasoning != nil {
+		return true, "reasoning config requires OpenAI Responses API"
+	}
+
+	return false, ""
+}
+
+// ToChatCompletionRequest converts a Responses API request to Chat Completions format
+func (r *ResponsesRequest) ToChatCompletionRequest() *ChatCompletionRequest {
+	req := &ChatCompletionRequest{
+		Model:     r.Model,
+		Stream:    r.Stream,
+		Sensitive: r.Sensitive,
+		Precision: r.Precision,
+		Usecase:   r.Usecase,
+	}
+
+	// Convert max tokens
+	if r.MaxOutputTokens > 0 {
+		req.MaxTokens = r.MaxOutputTokens
+	}
+
+	// Convert temperature
+	if r.Temperature != nil {
+		req.Temperature = *r.Temperature
+	}
+
+	// Build messages from instructions and input
+	if r.Instructions != "" {
+		req.Messages = append(req.Messages, Message{
+			Role:    "system",
+			Content: r.Instructions,
+		})
+	}
+
+	// Convert input to user message
+	switch input := r.Input.(type) {
+	case string:
+		req.Messages = append(req.Messages, Message{
+			Role:    "user",
+			Content: input,
+		})
+	case []interface{}:
+		// Array of input items - convert each
+		for _, item := range input {
+			if m, ok := item.(map[string]interface{}); ok {
+				msg := Message{}
+				if role, ok := m["role"].(string); ok {
+					msg.Role = role
+				}
+				if content, ok := m["content"]; ok {
+					msg.Content = content
+				}
+				if msg.Role != "" {
+					req.Messages = append(req.Messages, msg)
+				}
+			}
+		}
+	}
+
+	// Convert function tools (skip built-in tools like web_search)
+	for _, tool := range r.Tools {
+		if tool.Type == "function" && tool.Function != nil {
+			req.Tools = append(req.Tools, Tool{
+				Type:     "function",
+				Function: tool.Function,
+			})
+		}
+	}
+
+	if r.ToolChoice != nil {
+		req.ToolChoice = r.ToolChoice
+	}
+
+	return req
+}
+
+// ChatCompletionToResponsesResponse converts a Chat Completions response to Responses API format
+func ChatCompletionToResponsesResponse(resp *ChatCompletionResponse) *ResponsesResponse {
+	result := &ResponsesResponse{
+		ID:        "resp_" + resp.ID,
+		Object:    "response",
+		CreatedAt: resp.Created,
+		Status:    "completed",
+		Model:     resp.Model,
+		Output:    []OutputItem{},
+	}
+
+	// Convert choices to output items
+	for _, choice := range resp.Choices {
+		item := OutputItem{
+			Type: "message",
+			Role: choice.Message.Role,
+		}
+
+		// Convert content
+		switch content := choice.Message.Content.(type) {
+		case string:
+			item.Content = []ContentItem{{Type: "text", Text: content}}
+		}
+
+		// Convert tool calls
+		for _, tc := range choice.Message.ToolCalls {
+			result.Output = append(result.Output, OutputItem{
+				Type:      "function_call",
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+				CallID:    tc.ID,
+				Status:    "completed",
+			})
+		}
+
+		result.Output = append(result.Output, item)
+	}
+
+	// Convert usage
+	if resp.Usage != nil {
+		result.Usage = &ResponsesUsage{
+			InputTokens:  resp.Usage.PromptTokens,
+			OutputTokens: resp.Usage.CompletionTokens,
+			TotalTokens:  resp.Usage.TotalTokens,
+		}
+	}
+
+	return result
 }
 
 // HasImages checks if the request contains image content.

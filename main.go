@@ -134,6 +134,7 @@ var router *app.Router
 
 // HTTP handler for chat completions (primary adapter)
 var chatHandler *httphandlers.ChatHandler
+var responsesHandler *httphandlers.ResponsesHandler
 
 // Database
 var db *sql.DB
@@ -10371,6 +10372,27 @@ func main() {
 		IsModelDisabled: isModelDisabled,
 	}
 
+	// Initialize Responses API handler (OpenAI's newer API with smart routing)
+	// Mode can be: auto (smart routing), openai (always forward), translate (always convert to chat)
+	responsesMode := domain.ResponsesAPIModeAuto
+	if modeEnv := os.Getenv("RESPONSES_API_MODE"); modeEnv != "" {
+		switch modeEnv {
+		case "openai":
+			responsesMode = domain.ResponsesAPIModeOpenAI
+		case "translate":
+			responsesMode = domain.ResponsesAPIModeTranslate
+		}
+	}
+	responsesHandler = &httphandlers.ResponsesHandler{
+		ChatHandler:   chatHandler,
+		OpenAIKey:     openaiKey,
+		Mode:          responsesMode,
+		Logger:        requestLogger,
+		Metrics:       metrics,
+		CalculateCost: calculateCost,
+	}
+	log.Printf("Responses API mode: %s", responsesMode)
+
 	// Routes
 	http.HandleFunc("/", handleDashboard)
 	http.HandleFunc("/request/", handleRequestPage)
@@ -10407,7 +10429,7 @@ func main() {
 	http.HandleFunc("/v1/audio/transcriptions/stream", handleWhisperStream)
 	http.HandleFunc("/v1/audio/speech", handleTTS)
 	http.HandleFunc("/v1/websearch", handleWebSearch)
-	http.HandleFunc("/v1/responses", handleResponses) // Proxy to OpenAI Responses API for web_search
+	http.Handle("/v1/responses", responsesHandler) // Smart Responses API with auto/openai/translate modes
 
 	log.Printf("LLM Proxy starting on port %s", port)
 	log.Printf("Whisper server: %s", whisperServerURL)

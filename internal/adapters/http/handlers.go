@@ -3,9 +3,11 @@ package http
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -102,6 +104,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		RequestBody:    body,
 		ClientIP:       getClientIP(r),
 	}
+
 	if req.Sensitive != nil {
 		logEntry.Sensitive = *req.Sensitive
 	}
@@ -112,6 +115,12 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve routing
 	route, err := h.Router.ResolveRoute(&req)
+	if err == nil && route.Provider == "openai" {
+		// Configurable via env for now; will be exposed in the UI settings next.
+		if v := strings.ToLower(strings.TrimSpace(r.Header.Get("X-LLM-Proxy-Strip-Reasoning-Summary"))); v == "1" || v == "true" || v == "yes" {
+			req.StripReasoningSummary = true
+		}
+	}
 	if err != nil {
 		logEntry.Provider = "routing_failed"
 		logEntry.Success = false
@@ -493,4 +502,352 @@ func (h *ChatHandler) fakeStreamCachedResponse(w http.ResponseWriter, cached []b
 	logEntry.OutputTokens = outputTokens
 	h.Logger.LogRequest(logEntry)
 	h.Metrics.RecordRequest(route.Provider, route.Model, "success", logEntry.LatencyMs, 0, 0, 0, true)
+}
+
+// ============================================================================
+// Responses API Handler (OpenAI's newer API for reasoning models, web search)
+// ============================================================================
+
+// ResponsesHandler handles OpenAI Responses API requests with smart routing.
+type ResponsesHandler struct {
+	ChatHandler   *ChatHandler      // Reuse chat handler for translated requests
+	OpenAIKey     string            // API key for direct OpenAI forwarding
+	Mode          domain.ResponsesAPIMode // auto, openai, or translate
+	Logger        ports.RequestLogger
+	Metrics       MetricsRecorder
+	CalculateCost func(model string, inputTokens, outputTokens int) float64
+}
+
+// ServeHTTP handles Responses API requests.
+func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request", http.StatusBadRequest)
+		return
+	}
+
+	var req domain.ResponsesRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Allow usecase from header
+	if req.Usecase == "" {
+		req.Usecase = r.Header.Get("X-Usecase")
+	}
+
+	// Validate usecase
+	if req.Usecase == "" {
+		h.jsonError(w, http.StatusBadRequest, "missing_usecase",
+			"Missing required field: usecase. Please provide a usecase to identify the caller (body field or X-Usecase header).")
+		return
+	}
+
+	startTime := time.Now()
+
+	// Determine routing mode
+	mode := h.Mode
+	if modeHeader := r.Header.Get("X-Responses-API-Mode"); modeHeader != "" {
+		switch modeHeader {
+		case "openai":
+			mode = domain.ResponsesAPIModeOpenAI
+		case "translate":
+			mode = domain.ResponsesAPIModeTranslate
+		case "auto":
+			mode = domain.ResponsesAPIModeAuto
+		}
+	}
+
+	// Check if request requires OpenAI
+	requiresOpenAI, reason := req.RequiresOpenAI()
+
+	log.Printf("[Responses API] mode=%s, requiresOpenAI=%v (%s), model=%s, usecase=%s",
+		mode, requiresOpenAI, reason, req.Model, req.Usecase)
+
+	// Route based on mode and requirements
+	switch mode {
+	case domain.ResponsesAPIModeOpenAI:
+		// Always forward to OpenAI
+		h.forwardToOpenAI(w, r, body, &req, startTime)
+
+	case domain.ResponsesAPIModeTranslate:
+		// Always translate - fail if OpenAI-specific features needed
+		if requiresOpenAI {
+			h.jsonError(w, http.StatusBadRequest, "translation_impossible",
+				fmt.Sprintf("Cannot translate to Chat Completions: %s. Use mode=openai or mode=auto.", reason))
+			return
+		}
+		h.translateAndRoute(w, r, &req, startTime)
+
+	case domain.ResponsesAPIModeAuto:
+		fallthrough
+	default:
+		// Smart routing
+		if requiresOpenAI {
+			log.Printf("[Responses API] Auto-routing to OpenAI: %s", reason)
+			h.forwardToOpenAI(w, r, body, &req, startTime)
+		} else {
+			log.Printf("[Responses API] Auto-routing via translation to Chat Completions")
+			h.translateAndRoute(w, r, &req, startTime)
+		}
+	}
+}
+
+// forwardToOpenAI forwards the request directly to OpenAI's Responses API.
+func (h *ResponsesHandler) forwardToOpenAI(w http.ResponseWriter, r *http.Request, body []byte, req *domain.ResponsesRequest, startTime time.Time) {
+	if h.OpenAIKey == "" {
+		h.jsonError(w, http.StatusInternalServerError, "no_api_key",
+			"OpenAI API key not configured for Responses API forwarding")
+		return
+	}
+
+	log.Printf("[Responses API] Forwarding to OpenAI: model=%s, stream=%v", req.Model, req.Stream)
+
+	// Forward to OpenAI
+	httpReq, err := http.NewRequest("POST", "https://api.openai.com/v1/responses", bytes.NewReader(body))
+	if err != nil {
+		h.jsonError(w, http.StatusInternalServerError, "request_creation_failed", err.Error())
+		return
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+h.OpenAIKey)
+
+	client := &http.Client{Timeout: 300 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		h.jsonError(w, http.StatusBadGateway, "openai_request_failed", err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	// Log the request
+	logEntry := &domain.RequestLog{
+		Timestamp:      startTime,
+		RequestType:    "responses",
+		RequestedModel: req.Model,
+		Provider:       "openai",
+		Model:          req.Model,
+		Usecase:        req.Usecase,
+		RequestBody:    body,
+		ClientIP:       getClientIP(r),
+	}
+	if req.Sensitive != nil {
+		logEntry.Sensitive = *req.Sensitive
+	}
+
+	// Handle streaming responses
+	if req.Stream {
+		h.streamOpenAIResponse(w, resp, logEntry, startTime)
+		return
+	}
+
+	// Non-streaming: read and forward response
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		h.jsonError(w, http.StatusBadGateway, "response_read_failed", err.Error())
+		return
+	}
+
+	logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+	logEntry.ResponseBody = respBody
+
+	// Try to extract usage from response
+	var respData domain.ResponsesResponse
+	if json.Unmarshal(respBody, &respData) == nil && respData.Usage != nil {
+		logEntry.InputTokens = respData.Usage.InputTokens
+		logEntry.OutputTokens = respData.Usage.OutputTokens
+		logEntry.CostUSD = h.CalculateCost(req.Model, logEntry.InputTokens, logEntry.OutputTokens)
+	}
+
+	logEntry.Success = resp.StatusCode == 200
+	if resp.StatusCode != 200 {
+		logEntry.Error = string(respBody)
+	}
+
+	h.Logger.LogRequest(logEntry)
+	h.Metrics.RecordRequest("openai", req.Model, statusString(logEntry.Success), logEntry.LatencyMs,
+		logEntry.InputTokens, logEntry.OutputTokens, logEntry.CostUSD, false)
+
+	// Forward response
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-LLM-Proxy-Provider", "openai")
+	w.Header().Set("X-LLM-Proxy-Model", req.Model)
+	w.Header().Set("X-LLM-Proxy-Responses-Mode", "openai")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(respBody)
+}
+
+// streamOpenAIResponse streams the OpenAI Responses API response to the client.
+func (h *ResponsesHandler) streamOpenAIResponse(w http.ResponseWriter, resp *http.Response, logEntry *domain.RequestLog, startTime time.Time) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-LLM-Proxy-Provider", "openai")
+	w.Header().Set("X-LLM-Proxy-Responses-Mode", "openai")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Stream through while capturing data for logging
+	var responseBuilder strings.Builder
+	var inputTokens, outputTokens int
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		fmt.Fprintln(w, line)
+		flusher.Flush()
+
+		// Try to extract usage from final events
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			if data != "[DONE]" {
+				var event map[string]interface{}
+				if json.Unmarshal([]byte(data), &event) == nil {
+					// Capture usage if present
+					if usage, ok := event["usage"].(map[string]interface{}); ok {
+						if it, ok := usage["input_tokens"].(float64); ok {
+							inputTokens = int(it)
+						}
+						if ot, ok := usage["output_tokens"].(float64); ok {
+							outputTokens = int(ot)
+						}
+					}
+				}
+			}
+		}
+		responseBuilder.WriteString(line + "\n")
+	}
+
+	logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+	logEntry.Success = true
+	logEntry.RequestType = "responses-stream"
+	logEntry.InputTokens = inputTokens
+	logEntry.OutputTokens = outputTokens
+	logEntry.ResponseBody = []byte(responseBuilder.String())
+	h.Logger.LogRequest(logEntry)
+	h.Metrics.RecordRequest("openai", logEntry.Model, "success", logEntry.LatencyMs, inputTokens, outputTokens, 0, false)
+}
+
+// translateAndRoute translates the request to Chat Completions and routes through normal routing.
+func (h *ResponsesHandler) translateAndRoute(w http.ResponseWriter, r *http.Request, req *domain.ResponsesRequest, startTime time.Time) {
+	// Convert to Chat Completions request
+	chatReq := req.ToChatCompletionRequest()
+
+	log.Printf("[Responses API] Translated to Chat Completions: model=%s, messages=%d, tools=%d",
+		chatReq.Model, len(chatReq.Messages), len(chatReq.Tools))
+
+	// Serialize and create new request
+	chatBody, _ := json.Marshal(chatReq)
+
+	// Create a new HTTP request with the translated body
+	newReq, _ := http.NewRequest("POST", r.URL.String(), bytes.NewReader(chatBody))
+	newReq.Header = r.Header.Clone()
+	newReq.Header.Set("Content-Type", "application/json")
+	newReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(chatBody)))
+
+	// Use a response recorder to capture the chat response
+	recorder := &responseRecorder{
+		header: make(http.Header),
+		body:   &bytes.Buffer{},
+	}
+
+	// Call the chat handler
+	h.ChatHandler.ServeHTTP(recorder, newReq)
+
+	// If streaming, we need to pass through directly (can't easily convert)
+	if req.Stream {
+		// For streaming, just pass through the chat completions SSE format
+		// Client will need to handle it (or we'd need complex translation)
+		w.Header().Set("X-LLM-Proxy-Responses-Mode", "translate-passthrough")
+		for k, v := range recorder.header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(recorder.code)
+		w.Write(recorder.body.Bytes())
+		return
+	}
+
+	// Convert response back to Responses API format
+	if recorder.code != http.StatusOK {
+		w.Header().Set("X-LLM-Proxy-Responses-Mode", "translate")
+		for k, v := range recorder.header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(recorder.code)
+		w.Write(recorder.body.Bytes())
+		return
+	}
+
+	var chatResp domain.ChatCompletionResponse
+	if err := json.Unmarshal(recorder.body.Bytes(), &chatResp); err != nil {
+		h.jsonError(w, http.StatusInternalServerError, "response_parse_failed",
+			"Failed to parse Chat Completions response: "+err.Error())
+		return
+	}
+
+	// Convert to Responses API format
+	responsesResp := domain.ChatCompletionToResponsesResponse(&chatResp)
+
+	// Copy headers and send
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-LLM-Proxy-Responses-Mode", "translate")
+	if provider := recorder.header.Get("X-LLM-Proxy-Provider"); provider != "" {
+		w.Header().Set("X-LLM-Proxy-Provider", provider)
+	}
+	if model := recorder.header.Get("X-LLM-Proxy-Model"); model != "" {
+		w.Header().Set("X-LLM-Proxy-Model", model)
+	}
+
+	json.NewEncoder(w).Encode(responsesResp)
+}
+
+// jsonError writes a JSON error response in OpenAI format.
+func (h *ResponsesHandler) jsonError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"error": map[string]string{
+			"code":    code,
+			"message": message,
+		},
+	})
+}
+
+// statusString returns "success" or "error" based on boolean.
+func statusString(success bool) string {
+	if success {
+		return "success"
+	}
+	return "error"
+}
+
+// responseRecorder captures HTTP response for internal routing.
+type responseRecorder struct {
+	code   int
+	header http.Header
+	body   *bytes.Buffer
+}
+
+func (r *responseRecorder) Header() http.Header {
+	return r.header
+}
+
+func (r *responseRecorder) Write(b []byte) (int, error) {
+	return r.body.Write(b)
+}
+
+func (r *responseRecorder) WriteHeader(code int) {
+	r.code = code
 }

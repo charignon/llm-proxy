@@ -66,6 +66,14 @@ func (p *OpenAIProvider) chatWithCompletions(req *domain.ChatCompletionRequest, 
 		"model":    model,
 		"messages": req.Messages,
 	}
+
+	// Optionally strip reasoning summaries for OpenAI (Codex requests these by default,
+	// but org verification may be required upstream).
+	if req.StripReasoningSummary {
+		delete(openaiReq, "reasoning")
+		delete(openaiReq, "reasoning_summary")
+		delete(openaiReq, "reasoning_summaries")
+	}
 	// Use MaxCompletionTokens if set, otherwise fall back to MaxTokens
 	maxTokens := req.MaxCompletionTokens
 	if maxTokens == 0 {
