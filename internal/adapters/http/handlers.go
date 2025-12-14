@@ -613,6 +613,19 @@ func (h *ResponsesHandler) forwardToOpenAI(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Strip reasoning.summary which requires org verification
+	var reqMap map[string]interface{}
+	if err := json.Unmarshal(body, &reqMap); err == nil {
+		if reasoning, ok := reqMap["reasoning"].(map[string]interface{}); ok {
+			delete(reasoning, "summary") // Remove summary to avoid org verification error
+			if len(reasoning) == 0 {
+				delete(reqMap, "reasoning")
+			}
+			body, _ = json.Marshal(reqMap)
+			log.Printf("[Responses API] Stripped reasoning.summary from request")
+		}
+	}
+
 	log.Printf("[Responses API] Forwarding to OpenAI: model=%s, stream=%v", req.Model, req.Stream)
 
 	// Forward to OpenAI
