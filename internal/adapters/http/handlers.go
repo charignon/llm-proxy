@@ -613,16 +613,17 @@ func (h *ResponsesHandler) forwardToOpenAI(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Strip reasoning.summary which requires org verification
+	// Block reasoning.summary - requires org verification we don't have
 	var reqMap map[string]interface{}
 	if err := json.Unmarshal(body, &reqMap); err == nil {
 		if reasoning, ok := reqMap["reasoning"].(map[string]interface{}); ok {
-			delete(reasoning, "summary") // Remove summary to avoid org verification error
-			if len(reasoning) == 0 {
-				delete(reqMap, "reasoning")
+			if _, hasSummary := reasoning["summary"]; hasSummary {
+				log.Printf("[Responses API] BLOCKED: reasoning.summary not supported")
+				h.jsonError(w, http.StatusBadRequest, "reasoning_summary_blocked",
+					"reasoning.summary is not supported by this proxy (requires OpenAI org verification). "+
+						"Remove reasoning.summary from your request or configure your client to not send it.")
+				return
 			}
-			body, _ = json.Marshal(reqMap)
-			log.Printf("[Responses API] Stripped reasoning.summary from request")
 		}
 	}
 
