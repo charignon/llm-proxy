@@ -386,6 +386,20 @@ func getOllamaVisionModels() []string {
 	return visionModels
 }
 
+// withCORS wraps a handler to add CORS headers for cross-origin requests
+func withCORS(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		h(w, r)
+	}
+}
+
 // handleVisionModels returns only vision-capable models (local only)
 func handleVisionModels(w http.ResponseWriter, r *http.Request) {
 	visionModels := getOllamaVisionModels()
@@ -3938,7 +3952,6 @@ func handleTiming(w http.ResponseWriter, r *http.Request) {
 	defer dbMutex.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	timing := map[string]interface{}{}
 
@@ -4044,7 +4057,6 @@ func handleAnalytics(w http.ResponseWriter, r *http.Request) {
 	defer dbMutex.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	analytics := map[string]interface{}{}
 
@@ -10742,26 +10754,26 @@ func main() {
 	http.HandleFunc("/v1/messages", handleAnthropicMessages) // Anthropic API compatibility for Claude Code
 	http.HandleFunc("/v1/estimate", handleEstimate)
 	http.HandleFunc("/v1/models", handleModels)
-	http.HandleFunc("/api/stats", handleStats)
-	http.HandleFunc("/api/stats/models", handleModelStats)
-	http.HandleFunc("/api/timing", handleTiming)
-	http.HandleFunc("/api/routes", handleRoutes)
-	http.HandleFunc("/api/routes/override", handleRouteOverride)
-	http.HandleFunc("/api/usecases", handleUsecases)
-	http.HandleFunc("/api/usecases/history", handleUsecasesHistory)
-	http.HandleFunc("/api/usecases/distribution", handleUsecaseDistribution)
-	http.HandleFunc("/api/models", handleAvailableModels)
-	http.HandleFunc("/api/models/config", handleModelsConfig)
-	http.HandleFunc("/api/models/vision", handleVisionModels)
-	http.HandleFunc("/api/history", handleRequestHistory)
-	http.HandleFunc("/api/request", handleRequestDetail)
-	http.HandleFunc("/api/replay", handleReplayRequest)
-	http.HandleFunc("/api/cache/clear", handleClearCache)
-	http.HandleFunc("/api/pending", handlePendingRequests)
-	http.HandleFunc("/api/tts-history", handleTTSHistory)
-	http.HandleFunc("/api/stt-history", handleSTTHistory)
-	http.HandleFunc("/api/analytics", handleAnalytics)
-	http.HandleFunc("/api/system-metrics", handleSystemMetrics)
+	http.HandleFunc("/api/stats", withCORS(handleStats))
+	http.HandleFunc("/api/stats/models", withCORS(handleModelStats))
+	http.HandleFunc("/api/timing", withCORS(handleTiming))
+	http.HandleFunc("/api/routes", withCORS(handleRoutes))
+	http.HandleFunc("/api/routes/override", withCORS(handleRouteOverride))
+	http.HandleFunc("/api/usecases", withCORS(handleUsecases))
+	http.HandleFunc("/api/usecases/history", withCORS(handleUsecasesHistory))
+	http.HandleFunc("/api/usecases/distribution", withCORS(handleUsecaseDistribution))
+	http.HandleFunc("/api/models", withCORS(handleAvailableModels))
+	http.HandleFunc("/api/models/config", withCORS(handleModelsConfig))
+	http.HandleFunc("/api/models/vision", withCORS(handleVisionModels))
+	http.HandleFunc("/api/history", withCORS(handleRequestHistory))
+	http.HandleFunc("/api/request", withCORS(handleRequestDetail))
+	http.HandleFunc("/api/replay", withCORS(handleReplayRequest))
+	http.HandleFunc("/api/cache/clear", withCORS(handleClearCache))
+	http.HandleFunc("/api/pending", withCORS(handlePendingRequests))
+	http.HandleFunc("/api/tts-history", withCORS(handleTTSHistory))
+	http.HandleFunc("/api/stt-history", withCORS(handleSTTHistory))
+	http.HandleFunc("/api/analytics", withCORS(handleAnalytics))
+	http.HandleFunc("/api/system-metrics", withCORS(handleSystemMetrics))
 	http.HandleFunc("/analytics", handleAnalyticsPage)
 	http.HandleFunc("/stats", handleStatsPage)
 	http.HandleFunc("/test", handleTestPlayground)
