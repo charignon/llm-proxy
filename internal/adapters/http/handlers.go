@@ -613,6 +613,9 @@ func (h *ResponsesHandler) forwardToOpenAI(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Preserve original body for logging (before any modifications)
+	originalBody := body
+
 	// Strip reasoning.summary - requires org verification we don't have
 	var reqMap map[string]interface{}
 	if err := json.Unmarshal(body, &reqMap); err == nil {
@@ -650,7 +653,7 @@ func (h *ResponsesHandler) forwardToOpenAI(w http.ResponseWriter, r *http.Reques
 	}
 	defer resp.Body.Close()
 
-	// Log the request
+	// Log the request (use original body to preserve tool descriptions, etc.)
 	logEntry := &domain.RequestLog{
 		Timestamp:      startTime,
 		RequestType:    "responses",
@@ -658,7 +661,7 @@ func (h *ResponsesHandler) forwardToOpenAI(w http.ResponseWriter, r *http.Reques
 		Provider:       "openai",
 		Model:          req.Model,
 		Usecase:        req.Usecase,
-		RequestBody:    body,
+		RequestBody:    originalBody,
 		ClientIP:       getClientIP(r),
 	}
 	if req.Sensitive != nil {
