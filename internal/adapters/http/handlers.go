@@ -732,19 +732,30 @@ func (h *ResponsesHandler) streamOpenAIResponse(w http.ResponseWriter, resp *htt
 		fmt.Fprintln(w, line)
 		flusher.Flush()
 
-		// Try to extract usage from final events
+		// Try to extract usage from events
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data != "[DONE]" {
 				var event map[string]interface{}
 				if json.Unmarshal([]byte(data), &event) == nil {
-					// Capture usage if present
+					// Try direct usage field (some formats)
 					if usage, ok := event["usage"].(map[string]interface{}); ok {
 						if it, ok := usage["input_tokens"].(float64); ok {
 							inputTokens = int(it)
 						}
 						if ot, ok := usage["output_tokens"].(float64); ok {
 							outputTokens = int(ot)
+						}
+					}
+					// Try response.usage (Responses API response.done event)
+					if response, ok := event["response"].(map[string]interface{}); ok {
+						if usage, ok := response["usage"].(map[string]interface{}); ok {
+							if it, ok := usage["input_tokens"].(float64); ok {
+								inputTokens = int(it)
+							}
+							if ot, ok := usage["output_tokens"].(float64); ok {
+								outputTokens = int(ot)
+							}
 						}
 					}
 				}
