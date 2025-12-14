@@ -80,9 +80,10 @@ func (p *OpenAIProvider) chatWithCompletions(req *domain.ChatCompletionRequest, 
 		maxTokens = req.MaxTokens
 	}
 	if maxTokens > 0 {
-		// Newer OpenAI models (gpt-4o, o1, gpt-5.1, etc.) require max_completion_tokens
+		// Newer OpenAI models (gpt-4o, o1, gpt-5.x, codex, etc.) require max_completion_tokens
 		if strings.HasPrefix(model, "gpt-4o") || strings.HasPrefix(model, "gpt-5") || strings.HasPrefix(model, "o1") ||
-			strings.HasPrefix(model, "gpt-4.1") || strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4") {
+			strings.HasPrefix(model, "gpt-4.1") || strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4") ||
+			strings.Contains(model, "codex") {
 			openaiReq["max_completion_tokens"] = maxTokens
 		} else {
 			openaiReq["max_tokens"] = maxTokens

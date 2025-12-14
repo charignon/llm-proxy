@@ -74,16 +74,27 @@ var modelPricing = map[string][2]float64{
 	"o1-mini": {1.10, 4.40},
 	"o3-mini": {1.10, 4.40},
 	"o4-mini": {1.10, 4.40},
+	// OpenAI Codex models (agentic coding)
+	"gpt-5-codex":        {1.25, 10.00},
+	"gpt-5-codex-mini":   {0.25, 2.00},
+	"gpt-5.1-codex":      {1.25, 10.00},
+	"gpt-5.1-codex-max":  {1.25, 10.00},
+	"gpt-5.1-codex-mini": {0.25, 2.00},
 	// Anthropic - Claude 4.5 models only
 	"claude-opus-4-5-20251101":   {5.00, 25.00},
 	"claude-sonnet-4-5-20250929": {3.00, 15.00},
 	"claude-haiku-4-5-20251001":  {1.00, 5.00},
 	// Ollama (free)
-	"qwen3-vl:30b":  {0, 0},
-	"llama3:latest": {0, 0},
-	"llama3.3:70b":  {0, 0},
-	"gemma3:latest": {0, 0},
-	"llava":         {0, 0},
+	"qwen3-vl:30b":         {0, 0},
+	"qwen3-vl:235b":        {0, 0},
+	"llama3.3:70b":         {0, 0},
+	"llama3.1-large":       {0, 0},
+	"gemma3:latest":        {0, 0},
+	"mistral:7b":           {0, 0},
+	"devstral:24b":         {0, 0},
+	"deepseek-r1:70b":      {0, 0},
+	"qwen3-coder:30b":      {0, 0},
+	"deepseek-coder:33b":   {0, 0},
 	// Google Gemini models
 	"gemini-3.0-pro":                 {2.50, 15.00},
 	"gemini-3.0-flash":               {0.25, 1.00},
@@ -114,14 +125,14 @@ var routingTable = map[string]map[string]*RouteConfig{
 		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-5-20250929"},
 		"high":      {Provider: "openai", Model: "gpt-4o"},
 		"medium":    {Provider: "openai", Model: "gpt-4o-mini"},
-		"low":       {Provider: "ollama", Model: "llama3:latest"},
+		"low":       {Provider: "ollama", Model: "mistral:7b"},
 	},
 	// sensitive: true (text only, local)
 	"true": {
 		"very_high": nil, // Not available - Claude requires cloud
 		"high":      {Provider: "ollama", Model: "llama3.3:70b"},
 		"medium":    {Provider: "ollama", Model: "gemma3:latest"},
-		"low":       {Provider: "ollama", Model: "llama3:latest"},
+		"low":       {Provider: "ollama", Model: "mistral:7b"},
 	},
 }
 
@@ -285,14 +296,14 @@ func getOllamaModels() []string {
 	resp, err := client.Get("http://" + ollamaHost + "/api/tags")
 	if err != nil {
 		log.Printf("Failed to fetch Ollama models: %v", err)
-		return []string{"llama3:latest", "gemma3:latest"} // fallback
+		return []string{"mistral:7b", "gemma3:latest"} // fallback
 	}
 	defer resp.Body.Close()
 
 	var tagsResp OllamaTagsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tagsResp); err != nil {
 		log.Printf("Failed to decode Ollama models: %v", err)
-		return []string{"llama3:latest", "gemma3:latest"} // fallback
+		return []string{"mistral:7b", "gemma3:latest"} // fallback
 	}
 
 	models := make([]string, 0, len(tagsResp.Models))
