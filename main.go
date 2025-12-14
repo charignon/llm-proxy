@@ -42,6 +42,8 @@ var (
 	port             = getEnv("PORT", "8080")
 	openaiKey        = getEnv("OPENAI_API_KEY", "")
 	anthropicKey     = getEnv("ANTHROPIC_API_KEY", "")
+	geminiKey        = getEnv("GEMINI_API_KEY", "")
+	aidaToken        = getEnv("AIDA_TOKEN", "") // Google AIDA API token for Jules
 	ollamaHost       = getEnv("OLLAMA_HOST", "localhost:11434")
 	dataDir          = getEnv("DATA_DIR", "./data")
 	cacheTTLHours    = 24 * 7                                                // 1 week cache
@@ -82,6 +84,19 @@ var modelPricing = map[string][2]float64{
 	"llama3.3:70b":  {0, 0},
 	"gemma3:latest": {0, 0},
 	"llava":         {0, 0},
+	// Google Gemini models
+	"gemini-3.0-pro":                 {2.50, 15.00},
+	"gemini-3.0-flash":               {0.25, 1.00},
+	"gemini-2.5-pro":                 {1.25, 10.00},
+	"gemini-2.5-flash":               {0.15, 0.60},
+	"gemini-2.5-flash-lite":          {0.02, 0.10},
+	"gemini-2.0-flash":               {0.10, 0.40},
+	"gemini-2.0-flash-lite":          {0.02, 0.08},
+	"gemini-1.5-pro":                 {1.25, 5.00},
+	"gemini-1.5-flash":               {0.075, 0.30},
+	"gemini-1.5-flash-8b":            {0.0375, 0.15},
+	"gemini-exp-1206":                {0, 0}, // Free experimental
+	"gemini-2.0-flash-thinking-exp":  {0, 0}, // Free experimental
 }
 
 // RouteConfig is an alias to the domain type for routing decisions.
@@ -715,6 +730,7 @@ func initChatProviders() {
 		"openai":    providers.NewOpenAIProvider(openaiKey),
 		"anthropic": providers.NewAnthropicProvider(anthropicKey),
 		"ollama":    providers.NewOllamaProvider(ollamaHost),
+		"gemini":    providers.NewGeminiProvider(geminiKey),
 	}
 }
 
@@ -3458,14 +3474,18 @@ func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 				"tool_choice": req.ToolChoice,
 			}
 		} else {
-			// Try parsing as Responses API format
+			// Try parsing as Responses API format (handles both standard and Codex CLI formats)
 			var respReq struct {
 				Model        string      `json:"model"`
 				Input        interface{} `json:"input"`
 				Instructions string      `json:"instructions,omitempty"`
 				Tools        []struct {
-					Type     string `json:"type"`
-					Name     string `json:"name,omitempty"`
+					Type string `json:"type"`
+					// Codex CLI format: fields at top level
+					Name        string                 `json:"name,omitempty"`
+					Description string                 `json:"description,omitempty"`
+					Parameters  map[string]interface{} `json:"parameters,omitempty"`
+					// Standard OpenAI format: fields nested in function
 					Function *struct {
 						Name        string                 `json:"name"`
 						Description string                 `json:"description,omitempty"`
@@ -3510,21 +3530,42 @@ func handleRequestDetail(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
-				// Convert Responses API tools to display format
+				// Convert tools to display format (handle both Codex CLI and standard formats)
 				var displayTools []map[string]interface{}
 				for _, tool := range respReq.Tools {
 					displayTool := map[string]interface{}{
 						"type": tool.Type,
 					}
-					if tool.Name != "" {
-						displayTool["name"] = tool.Name
-					}
+
+					// Get name, description, parameters from either top-level (Codex) or nested (standard)
+					name := tool.Name
+					desc := tool.Description
+					params := tool.Parameters
+
 					if tool.Function != nil {
-						displayTool["function"] = map[string]interface{}{
-							"name":        tool.Function.Name,
-							"description": tool.Function.Description,
-							"parameters":  tool.Function.Parameters,
+						// Standard format - prefer nested values if present
+						if tool.Function.Name != "" {
+							name = tool.Function.Name
 						}
+						if tool.Function.Description != "" {
+							desc = tool.Function.Description
+						}
+						if tool.Function.Parameters != nil {
+							params = tool.Function.Parameters
+						}
+					}
+
+					// Build function object for UI compatibility (UI expects tool.function.name, tool.function.description)
+					if name != "" || desc != "" || params != nil {
+						displayTool["function"] = map[string]interface{}{
+							"name":        name,
+							"description": desc,
+							"parameters":  params,
+						}
+					}
+					// Also set name at top level for simpler access
+					if name != "" {
+						displayTool["name"] = name
 					}
 					displayTools = append(displayTools, displayTool)
 				}
@@ -10384,6 +10425,211 @@ func validateRoutingTableSecurity() {
 	log.Println("Security check passed: all sensitive routes use local Ollama")
 }
 
+// handleAIDAProxy proxies requests to Google's AIDA API (used by Jules CLI)
+// This allows centralizing API tokens on the server and logging all requests
+func handleAIDAProxy(w http.ResponseWriter, r *http.Request) {
+	if aidaToken == "" {
+		http.Error(w, "AIDA_TOKEN not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	startTime := time.Now()
+	clientIP := getClientIP(r)
+
+	// Read the request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	r.Body.Close()
+
+	// Forward to Google AIDA API
+	targetURL := "https://aida.googleapis.com" + r.URL.Path
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
+	}
+
+	log.Printf("[AIDA] Proxying %s %s from %s", r.Method, r.URL.Path, clientIP)
+
+	proxyReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, "Failed to create proxy request", http.StatusInternalServerError)
+		return
+	}
+
+	// Copy headers but replace authorization
+	for key, values := range r.Header {
+		if key == "Authorization" {
+			continue // We'll set our own
+		}
+		if key == "Host" {
+			continue // Let Go set the correct host
+		}
+		for _, value := range values {
+			proxyReq.Header.Add(key, value)
+		}
+	}
+
+	// Set our stored AIDA token
+	proxyReq.Header.Set("Authorization", "Bearer "+aidaToken)
+
+	client := &http.Client{Timeout: 300 * time.Second}
+	resp, err := client.Do(proxyReq)
+	if err != nil {
+		log.Printf("[AIDA] Proxy error: %v", err)
+		http.Error(w, "AIDA API request failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Copy response headers
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+
+	// Copy status code and body
+	w.WriteHeader(resp.StatusCode)
+	respBody, _ := io.ReadAll(resp.Body)
+	w.Write(respBody)
+
+	latencyMs := time.Since(startTime).Milliseconds()
+	log.Printf("[AIDA] %s %s -> %d (%dms)", r.Method, r.URL.Path, resp.StatusCode, latencyMs)
+
+	// Log request (simplified logging for AIDA)
+	status := "success"
+	if resp.StatusCode >= 400 {
+		status = "error"
+	}
+	dbMutex.Lock()
+	db.Exec(`INSERT INTO requests (timestamp, request_type, provider, model, latency_ms, success, client_ip, request_body, response_body)
+		VALUES (?, 'aida', 'google', 'jules-aida', ?, ?, ?, ?, ?)`,
+		startTime.Format(time.RFC3339), latencyMs, status == "success", clientIP, string(body), string(respBody))
+	dbMutex.Unlock()
+}
+
+// handleGeminiProxy provides a direct proxy to Google's Gemini API
+// This allows using Gemini with the stored API key
+func handleGeminiProxy(w http.ResponseWriter, r *http.Request) {
+	if geminiKey == "" {
+		http.Error(w, "GEMINI_API_KEY not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	startTime := time.Now()
+	clientIP := getClientIP(r)
+
+	// Read the request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	r.Body.Close()
+
+	// Strip the /gemini prefix and forward to Google
+	path := strings.TrimPrefix(r.URL.Path, "/gemini")
+	targetURL := "https://generativelanguage.googleapis.com" + path
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
+	}
+
+	log.Printf("[Gemini] Proxying %s %s from %s", r.Method, path, clientIP)
+
+	proxyReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, "Failed to create proxy request", http.StatusInternalServerError)
+		return
+	}
+
+	// Copy headers
+	for key, values := range r.Header {
+		if key == "Authorization" {
+			continue
+		}
+		if key == "Host" {
+			continue
+		}
+		for _, value := range values {
+			proxyReq.Header.Add(key, value)
+		}
+	}
+
+	// Set our stored Gemini API key
+	proxyReq.Header.Set("Authorization", "Bearer "+geminiKey)
+
+	client := &http.Client{Timeout: 300 * time.Second}
+	resp, err := client.Do(proxyReq)
+	if err != nil {
+		log.Printf("[Gemini] Proxy error: %v", err)
+		http.Error(w, "Gemini API request failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Copy response headers
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+
+	// Copy status code and body
+	w.WriteHeader(resp.StatusCode)
+	respBody, _ := io.ReadAll(resp.Body)
+	w.Write(respBody)
+
+	latencyMs := time.Since(startTime).Milliseconds()
+	log.Printf("[Gemini] %s %s -> %d (%dms)", r.Method, path, resp.StatusCode, latencyMs)
+}
+
+// handleAIDALog receives AIDA request logs from mitmproxy addon
+// This allows logging Jules requests that are intercepted via HTTPS proxy
+func handleAIDALog(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read body", http.StatusBadRequest)
+		return
+	}
+	r.Body.Close()
+
+	var logEntry struct {
+		Timestamp       float64           `json:"timestamp"`
+		Method          string            `json:"method"`
+		URL             string            `json:"url"`
+		RequestHeaders  map[string]string `json:"request_headers"`
+		RequestBody     string            `json:"request_body"`
+		ResponseStatus  int               `json:"response_status"`
+		ResponseBody    string            `json:"response_body"`
+	}
+
+	if err := json.Unmarshal(body, &logEntry); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	clientIP := getClientIP(r)
+	log.Printf("[AIDA-Log] %s %s -> %d from %s", logEntry.Method, logEntry.URL, logEntry.ResponseStatus, clientIP)
+
+	// Store in database
+	success := logEntry.ResponseStatus >= 200 && logEntry.ResponseStatus < 400
+	dbMutex.Lock()
+	db.Exec(`INSERT INTO requests (timestamp, request_type, provider, model, success, client_ip, request_body, response_body)
+		VALUES (datetime('now'), 'aida', 'google', 'jules-aida', ?, ?, ?, ?)`,
+		success, clientIP, logEntry.RequestBody, logEntry.ResponseBody)
+	dbMutex.Unlock()
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"logged"}`))
+}
+
 func main() {
 	// Create data directory
 	os.MkdirAll(dataDir, 0755)
@@ -10397,6 +10643,16 @@ func main() {
 	if anthropicKey == "" {
 		if data, err := os.ReadFile("anthropic_key.txt"); err == nil {
 			anthropicKey = strings.TrimSpace(string(data))
+		}
+	}
+	if geminiKey == "" {
+		if data, err := os.ReadFile("gemini_key.txt"); err == nil {
+			geminiKey = strings.TrimSpace(string(data))
+		}
+	}
+	if aidaToken == "" {
+		if data, err := os.ReadFile("aida_token.txt"); err == nil {
+			aidaToken = strings.TrimSpace(string(data))
 		}
 	}
 
@@ -10500,11 +10756,18 @@ func main() {
 	http.HandleFunc("/v1/websearch", handleWebSearch)
 	http.Handle("/v1/responses", responsesHandler) // Smart Responses API with auto/openai/translate modes
 
+	// AIDA proxy for Jules CLI (Google's AI Development Assistant API)
+	http.HandleFunc("/v1/aida/", handleAIDAProxy)
+	// Gemini proxy for direct Gemini API access
+	http.HandleFunc("/gemini/", handleGeminiProxy)
+
 	log.Printf("LLM Proxy starting on port %s", port)
 	log.Printf("Whisper server: %s", whisperServerURL)
 	log.Printf("TTS server: %s", ttsServerURL)
 	log.Printf("OpenAI key: %v", openaiKey != "")
 	log.Printf("Anthropic key: %v", anthropicKey != "")
+	log.Printf("Gemini key: %v", geminiKey != "")
+	log.Printf("AIDA token: %v", aidaToken != "")
 	log.Printf("Ollama host: %s", ollamaHost)
 
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
