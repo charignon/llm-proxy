@@ -835,9 +835,10 @@ func statusString(success bool) string {
 
 // responseRecorder captures HTTP response for internal routing.
 type responseRecorder struct {
-	code   int
-	header http.Header
-	body   *bytes.Buffer
+	code       int
+	header     http.Header
+	body       *bytes.Buffer
+	wroteHeader bool
 }
 
 func (r *responseRecorder) Header() http.Header {
@@ -845,9 +846,17 @@ func (r *responseRecorder) Header() http.Header {
 }
 
 func (r *responseRecorder) Write(b []byte) (int, error) {
+	// If WriteHeader was never called, default to 200 OK
+	if !r.wroteHeader {
+		r.code = http.StatusOK
+		r.wroteHeader = true
+	}
 	return r.body.Write(b)
 }
 
 func (r *responseRecorder) WriteHeader(code int) {
-	r.code = code
+	if !r.wroteHeader {
+		r.code = code
+		r.wroteHeader = true
+	}
 }
