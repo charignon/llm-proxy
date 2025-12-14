@@ -567,8 +567,14 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Check if request requires OpenAI
 	requiresOpenAI, reason := req.RequiresOpenAI()
 
-	log.Printf("[Responses API] mode=%s, requiresOpenAI=%v (%s), model=%s, usecase=%s",
-		mode, requiresOpenAI, reason, req.Model, req.Usecase)
+	// Streaming requires OpenAI (translation of streaming is complex)
+	if req.Stream && !requiresOpenAI {
+		requiresOpenAI = true
+		reason = "streaming requires OpenAI Responses API (translation not supported)"
+	}
+
+	log.Printf("[Responses API] mode=%s, requiresOpenAI=%v (%s), model=%s, usecase=%s, stream=%v",
+		mode, requiresOpenAI, reason, req.Model, req.Usecase, req.Stream)
 
 	// Route based on mode and requirements
 	switch mode {
@@ -835,9 +841,9 @@ func statusString(success bool) string {
 
 // responseRecorder captures HTTP response for internal routing.
 type responseRecorder struct {
-	code       int
-	header     http.Header
-	body       *bytes.Buffer
+	code        int
+	header      http.Header
+	body        *bytes.Buffer
 	wroteHeader bool
 }
 
@@ -859,4 +865,9 @@ func (r *responseRecorder) WriteHeader(code int) {
 		r.code = code
 		r.wroteHeader = true
 	}
+}
+
+// Flush implements http.Flusher (no-op for buffered recorder)
+func (r *responseRecorder) Flush() {
+	// No-op - we buffer everything
 }
