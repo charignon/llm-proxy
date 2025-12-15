@@ -1,0 +1,1245 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Proxy - Analytics</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0f0f1a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1600px; margin: 0 auto; }
+        h1 { color: #6366f1; margin-bottom: 8px; font-size: 28px; }
+        .subtitle { color: #888; margin-bottom: 16px; }
+        a { color: #6366f1; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        .nav-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 24px;
+            background: #1a1a2e;
+            padding: 4px;
+            border-radius: 12px;
+        }
+        .nav-tab {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            color: #888;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .nav-tab:hover { color: #e0e0e0; background: #252540; }
+        .nav-tab.active { background: #6366f1; color: #fff; }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+        @media (max-width: 1200px) {
+            .charts-grid { grid-template-columns: 1fr; }
+        }
+
+        .chart-card {
+            background: #1a1a2e;
+            border-radius: 16px;
+            padding: 24px;
+            position: relative;
+        }
+        .chart-card.full-width {
+            grid-column: 1 / -1;
+        }
+        .chart-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #a5b4fc;
+            margin-bottom: 16px;
+        }
+        .chart-container {
+            position: relative;
+            height: 320px;
+        }
+        .chart-container.tall {
+            height: 400px;
+        }
+
+        .matrix-container {
+            overflow-x: auto;
+        }
+        .matrix-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .matrix-table th, .matrix-table td {
+            padding: 12px 14px;
+            text-align: center;
+            border: 1px solid #2d2d44;
+        }
+        .matrix-table th {
+            background: #252540;
+            color: #a5b4fc;
+            font-weight: 600;
+        }
+        .matrix-table .sensitive-header {
+            background: rgba(239, 68, 68, 0.15);
+            color: #fca5a5;
+            border-bottom: 2px solid #ef4444;
+        }
+        .matrix-table .not-sensitive-header {
+            background: rgba(34, 197, 94, 0.15);
+            color: #86efac;
+            border-bottom: 2px solid #22c55e;
+        }
+        .matrix-table .precision-header {
+            font-size: 11px;
+            text-transform: capitalize;
+            font-weight: 500;
+        }
+        .matrix-table td {
+            background: #1e1e30;
+        }
+        .matrix-table .model-cell {
+            text-align: left;
+            font-weight: 500;
+            color: #6366f1;
+            cursor: pointer;
+            background: #1a1a2e;
+        }
+        .matrix-table .model-cell:hover {
+            color: #818cf8;
+            text-decoration: underline;
+        }
+        .matrix-cell {
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .matrix-cell.cell-sensitive {
+            background: rgba(239, 68, 68, 0.08);
+        }
+        .matrix-cell.cell-sensitive:hover {
+            background: rgba(239, 68, 68, 0.2);
+        }
+        .matrix-cell.cell-not-sensitive {
+            background: rgba(34, 197, 94, 0.08);
+        }
+        .matrix-cell.cell-not-sensitive:hover {
+            background: rgba(34, 197, 94, 0.2);
+        }
+        .matrix-cell.clickable-cell {
+            cursor: pointer;
+        }
+        .matrix-cell.clickable-cell:hover {
+            transform: scale(1.05);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        .matrix-count {
+            font-size: 16px;
+            font-weight: 600;
+            color: #e0e0e0;
+        }
+        .matrix-cost {
+            font-size: 11px;
+            color: #22c55e;
+            margin-top: 2px;
+        }
+
+        .filter-row {
+            display: flex;
+            gap: 32px;
+            align-items: center;
+            margin-bottom: 16px;
+            padding: 12px 16px;
+            background: #252540;
+            border-radius: 10px;
+            flex-wrap: wrap;
+        }
+        .filter-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .filter-group label {
+            color: #a5b4fc;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        .filter-group input[type="range"] {
+            width: 120px;
+            accent-color: #6366f1;
+            cursor: pointer;
+        }
+        .filter-group span {
+            min-width: 50px;
+            color: #e0e0e0;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .filter-info {
+            color: #888;
+            font-size: 12px;
+            margin-left: auto;
+        }
+
+        .time-range-selector {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 12px;
+            background: #252540;
+            padding: 4px;
+            border-radius: 8px;
+            width: fit-content;
+        }
+        .time-btn {
+            padding: 6px 14px;
+            border-radius: 6px;
+            border: none;
+            background: transparent;
+            color: #888;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .time-btn:hover {
+            color: #e0e0e0;
+        }
+        .time-btn.active {
+            background: #6366f1;
+            color: #fff;
+        }
+
+        .model-selector {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+        .model-btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: 1px solid #374151;
+            background: #1a1a2e;
+            color: #888;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        .model-btn:hover {
+            border-color: #6366f1;
+            color: #fff;
+        }
+        .model-btn.active {
+            background: #6366f1;
+            color: #fff;
+            border-color: #6366f1;
+        }
+
+        .model-detail {
+            display: none;
+            animation: fadeIn 0.3s ease;
+        }
+        .model-detail.active {
+            display: block;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .stat-box {
+            background: #252540;
+            border-radius: 12px;
+            padding: 16px;
+            text-align: center;
+        }
+        .stat-box-label {
+            color: #888;
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+        .stat-box-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #6366f1;
+        }
+        .stat-box-value.cost { color: #22c55e; }
+        .stat-box-value.latency { color: #f59e0b; }
+
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: #6366f1;
+            font-size: 14px;
+            margin-bottom: 20px;
+            cursor: pointer;
+        }
+        .back-link:hover {
+            color: #818cf8;
+        }
+
+        .legend-inline {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+            font-size: 12px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #888;
+        }
+        .legend-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>LLM Proxy Analytics</h1>
+        <p class="subtitle">Cost breakdown, usage patterns, and model performance</p>
+
+        <div class="nav-tabs">
+            <button class="nav-tab" onclick="window.location.href='/'">Requests</button>
+            <button class="nav-tab" onclick="window.location.href='/test'">Playground</button>
+            <button class="nav-tab" onclick="window.location.href='/#routing'">Routing</button>
+            <button class="nav-tab active">Analytics</button>
+            <button class="nav-tab" onclick="window.location.href='/stats'">Stats</button>
+            <button class="nav-tab" onclick="window.location.href='/#system'">System</button>
+        </div>
+
+        <div id="overview-view">
+            <div class="charts-grid">
+                <!-- Cost by Model Bar Chart -->
+                <div class="chart-card">
+                    <div class="chart-title">Cost Breakdown by Model</div>
+                    <div class="chart-container">
+                        <canvas id="costByModelChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Cost by Provider Pie Chart -->
+                <div class="chart-card">
+                    <div class="chart-title">Cost Breakdown by Provider</div>
+                    <div class="chart-container">
+                        <canvas id="costByProviderChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Cost by Usecase Pie Chart -->
+                <div class="chart-card">
+                    <div class="chart-title">Cost Breakdown by Use Case</div>
+                    <div class="chart-container">
+                        <canvas id="costPieChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Hourly Distribution -->
+                <div class="chart-card">
+                    <div class="chart-title">Request Volume by Hour (Last 7 Days)</div>
+                    <div class="chart-container">
+                        <canvas id="hourlyChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Request Volume Last 24h Stacked Bar -->
+                <div class="chart-card full-width">
+                    <div class="chart-title">Request Volume Last 24h by Model</div>
+                    <div class="chart-container tall">
+                        <canvas id="volume24hChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Query Matrix by Model/Sensitivity/Precision -->
+                <div class="chart-card full-width">
+                    <div class="chart-title">Query Count Matrix (Model × Sensitivity × Precision)</div>
+                    <p style="color: #888; font-size: 13px; margin-bottom: 12px;">Click on a model name to see detailed stats</p>
+                    <div class="filter-row">
+                        <div class="filter-group">
+                            <label>Min Requests:</label>
+                            <input type="range" id="minCountSlider" min="0" max="100" value="1" oninput="updateMatrixFilters()">
+                            <span id="minCountValue">1</span>
+                        </div>
+                        <div class="filter-group">
+                            <label>Min Cost ($):</label>
+                            <input type="range" id="minCostSlider" min="0" max="100" value="0" step="1" oninput="updateMatrixFilters()">
+                            <span id="minCostValue">$0.00</span>
+                        </div>
+                        <div class="filter-info" id="filterInfo">Showing all models</div>
+                    </div>
+                    <div class="matrix-container" id="matrixContainer">
+                        <!-- Matrix will be generated here -->
+                    </div>
+                </div>
+
+                <!-- Volume Over Time -->
+                <div class="chart-card full-width">
+                    <div class="chart-title">Request Volume Over Time</div>
+                    <div class="time-range-selector">
+                        <button class="time-btn" data-range="1h" onclick="selectTimeRange('1h')">1 Hour</button>
+                        <button class="time-btn" data-range="1d" onclick="selectTimeRange('1d')">1 Day</button>
+                        <button class="time-btn active" data-range="7d" onclick="selectTimeRange('7d')">7 Days</button>
+                        <button class="time-btn" data-range="30d" onclick="selectTimeRange('30d')">30 Days</button>
+                    </div>
+                    <div class="model-selector" id="modelSelector">
+                        <button class="model-btn active" data-model="all">All Models</button>
+                    </div>
+                    <div class="chart-container tall">
+                        <canvas id="volumeChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Model Detail View -->
+        <div id="model-detail-view" class="model-detail">
+            <div class="back-link" onclick="showOverview()">
+                ← Back to Overview
+            </div>
+            <div class="chart-card">
+                <div class="chart-title" id="modelDetailTitle">Model Details</div>
+                <div class="stats-row" id="modelStatsRow">
+                    <!-- Stats will be populated here -->
+                </div>
+                <div class="chart-container tall">
+                    <canvas id="modelDetailChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let analyticsData = null;
+        let statsData = null;
+        let volume24hData = null;
+        let costPieChart = null;
+        let costByModelChart = null;
+        let costByProviderChart = null;
+        let hourlyChart = null;
+        let volume24hChart = null;
+        let volumeChart = null;
+        let modelDetailChart = null;
+        let selectedVolumeModel = 'all';
+        let selectedTimeRange = '7d';
+
+        const colors = [
+            '#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#22c55e',
+            '#14b8a6', '#06b6d4', '#3b82f6', '#ef4444', '#84cc16',
+            '#f97316', '#a855f7', '#eab308', '#10b981', '#0ea5e9'
+        ];
+
+        async function loadAnalytics() {
+            const [analyticsResponse, statsResponse, volume24hResponse] = await Promise.all([
+                fetch('/api/analytics?range=' + selectedTimeRange),
+                fetch('/api/stats'),
+                fetch('/api/analytics?range=1d')
+            ]);
+            analyticsData = await analyticsResponse.json();
+            statsData = await statsResponse.json();
+            volume24hData = await volume24hResponse.json();
+            renderCharts();
+        }
+
+        async function selectTimeRange(range) {
+            selectedTimeRange = range;
+            document.querySelectorAll('.time-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.range === range);
+            });
+            // Reload data with new range
+            const response = await fetch('/api/analytics?range=' + range);
+            const newData = await response.json();
+            analyticsData.volume_over_time = newData.volume_over_time;
+            analyticsData.time_range = newData.time_range;
+            renderVolumeChart();
+            renderModelSelector();
+        }
+
+        function renderCharts() {
+            renderCostByModelChart();
+            renderCostByProviderChart();
+            renderCostPieChart();
+            renderHourlyChart();
+            renderVolume24hChart();
+            initMatrixSliders();
+            renderMatrix();
+            renderVolumeChart();
+            renderModelSelector();
+        }
+
+        function renderCostByModelChart() {
+            const ctx = document.getElementById('costByModelChart').getContext('2d');
+            // Filter models with cost > 0 and sort by cost descending
+            const data = (statsData.by_model || [])
+                .filter(d => d.cost_usd > 0)
+                .sort((a, b) => b.cost_usd - a.cost_usd)
+                .slice(0, 10); // Top 10 models
+
+            if (costByModelChart) costByModelChart.destroy();
+
+            costByModelChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: data.map(d => d.model),
+                    datasets: [{
+                        label: 'Cost ($)',
+                        data: data.map(d => d.cost_usd),
+                        backgroundColor: '#22c55e',
+                        borderColor: '#16a34a',
+                        borderWidth: 1,
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1,
+                            padding: 12,
+                            callbacks: {
+                                label: function(context) {
+                                    const item = data[context.dataIndex];
+                                    return [
+                                        'Cost: $' + item.cost_usd.toFixed(4),
+                                        'Requests: ' + item.count.toLocaleString()
+                                    ];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: '#2d2d44' },
+                            ticks: {
+                                color: '#888',
+                                callback: function(value) { return '$' + value.toFixed(2); }
+                            }
+                        },
+                        y: {
+                            grid: { display: false },
+                            ticks: { color: '#888', font: { size: 11 } }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderCostByProviderChart() {
+            const ctx = document.getElementById('costByProviderChart').getContext('2d');
+            const providerData = statsData.by_provider || {};
+            // Convert object to array and filter providers with cost > 0
+            const data = Object.entries(providerData)
+                .map(([name, stats]) => ({ name, ...stats }))
+                .filter(d => d.cost_usd > 0)
+                .sort((a, b) => b.cost_usd - a.cost_usd);
+
+            if (costByProviderChart) costByProviderChart.destroy();
+
+            const providerColors = {
+                'anthropic': '#d97706',
+                'openai': '#10b981',
+                'ollama': '#6366f1',
+                'local': '#8b5cf6',
+                'kokoro': '#ec4899'
+            };
+
+            costByProviderChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: data.map(d => d.name.charAt(0).toUpperCase() + d.name.slice(1)),
+                    datasets: [{
+                        data: data.map(d => d.cost_usd),
+                        backgroundColor: data.map(d => providerColors[d.name] || colors[0]),
+                        borderColor: '#0f0f1a',
+                        borderWidth: 2,
+                        hoverOffset: 8
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: {
+                                color: '#888',
+                                padding: 12,
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1,
+                            padding: 12,
+                            callbacks: {
+                                label: function(context) {
+                                    const item = data[context.dataIndex];
+                                    const total = data.reduce((sum, d) => sum + d.cost_usd, 0);
+                                    const percentage = ((item.cost_usd / total) * 100).toFixed(1);
+                                    return [
+                                        'Cost: $' + item.cost_usd.toFixed(4),
+                                        'Requests: ' + item.count.toLocaleString(),
+                                        'Share: ' + percentage + '%'
+                                    ];
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderCostPieChart() {
+            const ctx = document.getElementById('costPieChart').getContext('2d');
+            const data = analyticsData.cost_by_usecase || [];
+
+            if (costPieChart) costPieChart.destroy();
+
+            costPieChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: data.map(d => d.usecase),
+                    datasets: [{
+                        data: data.map(d => d.cost),
+                        backgroundColor: colors.slice(0, data.length),
+                        borderColor: '#0f0f1a',
+                        borderWidth: 2,
+                        hoverOffset: 8
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: {
+                                color: '#888',
+                                padding: 12,
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1,
+                            padding: 12,
+                            callbacks: {
+                                label: function(context) {
+                                    const item = data[context.dataIndex];
+                                    const total = data.reduce((sum, d) => sum + d.cost, 0);
+                                    const percentage = ((item.cost / total) * 100).toFixed(1);
+                                    return [
+                                        'Cost: $' + item.cost.toFixed(4),
+                                        'Requests: ' + item.count.toLocaleString(),
+                                        'Share: ' + percentage + '%'
+                                    ];
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderHourlyChart() {
+            const ctx = document.getElementById('hourlyChart').getContext('2d');
+            const data = analyticsData.hourly_distribution || [];
+
+            // Fill in missing hours
+            const hourlyData = new Array(24).fill(0);
+            data.forEach(d => {
+                const hour = parseInt(d.hour);
+                hourlyData[hour] = d.count;
+            });
+
+            if (hourlyChart) hourlyChart.destroy();
+
+            hourlyChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: Array.from({length: 24}, (_, i) => i.toString().padStart(2, '0') + ':00'),
+                    datasets: [{
+                        label: 'Requests',
+                        data: hourlyData,
+                        backgroundColor: '#6366f1',
+                        borderRadius: 4,
+                        borderSkipped: false
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#888' }
+                        },
+                        y: {
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#888' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderVolume24hChart() {
+            const ctx = document.getElementById('volume24hChart').getContext('2d');
+            const data = volume24hData.volume_over_time || [];
+
+            if (volume24hChart) volume24hChart.destroy();
+
+            // Get unique time blocks (hours)
+            const timeBlocks = [...new Set(data.map(d => d.day))].sort();
+
+            // Get all models and calculate totals for sorting
+            const modelTotals = {};
+            data.forEach(d => {
+                modelTotals[d.model] = (modelTotals[d.model] || 0) + d.count;
+            });
+
+            // Get models sorted by total count (descending)
+            const models = Object.entries(modelTotals)
+                .sort((a, b) => b[1] - a[1])
+                .map(([model]) => model);
+
+            // Create stacked datasets for each model
+            const datasets = models.map((model, i) => {
+                const modelData = timeBlocks.map(time => {
+                    const item = data.find(d => d.day === time && d.model === model);
+                    return item ? item.count : 0;
+                });
+                return {
+                    label: model,
+                    data: modelData,
+                    backgroundColor: colors[i % colors.length],
+                    borderColor: colors[i % colors.length],
+                    borderWidth: 0,
+                    borderRadius: 2
+                };
+            });
+
+            volume24hChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: timeBlocks.map(t => {
+                        // Format: "2024-12-10 14:00" -> "14:00"
+                        const parts = t.split(' ');
+                        return parts[1] || parts[0];
+                    }),
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                            labels: {
+                                color: '#888',
+                                usePointStyle: true,
+                                pointStyle: 'rect',
+                                padding: 15,
+                                font: { size: 11 }
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1,
+                            padding: 12,
+                            mode: 'index',
+                            intersect: false,
+                            filter: function(tooltipItem) {
+                                return tooltipItem.raw > 0;
+                            },
+                            callbacks: {
+                                title: function(context) {
+                                    const idx = context[0].dataIndex;
+                                    return timeBlocks[idx];
+                                },
+                                label: function(context) {
+                                    if (context.raw === 0) return null;
+                                    return context.dataset.label + ': ' + context.raw + ' requests';
+                                },
+                                footer: function(tooltipItems) {
+                                    const total = tooltipItems.reduce((sum, item) => sum + item.raw, 0);
+                                    return 'Total: ' + total + ' requests';
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            stacked: true,
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#888', maxRotation: 45, minRotation: 0 }
+                        },
+                        y: {
+                            stacked: true,
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#888' },
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+
+        let matrixMinCount = 1;
+        let matrixMinCost = 0;
+        let maxModelCount = 100;
+        let maxModelCost = 1;
+
+        function initMatrixSliders() {
+            const data = analyticsData.query_matrix || [];
+
+            // Calculate per-model totals
+            const modelStats = {};
+            data.forEach(d => {
+                if (!modelStats[d.model]) {
+                    modelStats[d.model] = { count: 0, cost: 0 };
+                }
+                modelStats[d.model].count += d.count;
+                modelStats[d.model].cost += d.cost;
+            });
+
+            // Find max values for slider ranges
+            maxModelCount = Math.max(...Object.values(modelStats).map(s => s.count), 1);
+            maxModelCost = Math.max(...Object.values(modelStats).map(s => s.cost), 0.01);
+
+            // Set slider max values
+            document.getElementById('minCountSlider').max = maxModelCount;
+            document.getElementById('minCostSlider').max = Math.ceil(maxModelCost * 100); // cents
+        }
+
+        function updateMatrixFilters() {
+            matrixMinCount = parseInt(document.getElementById('minCountSlider').value);
+            const costCents = parseInt(document.getElementById('minCostSlider').value);
+            matrixMinCost = costCents / 100;
+
+            document.getElementById('minCountValue').textContent = matrixMinCount;
+            document.getElementById('minCostValue').textContent = '$' + matrixMinCost.toFixed(2);
+
+            renderMatrix();
+        }
+
+        function renderMatrix() {
+            const container = document.getElementById('matrixContainer');
+            const data = analyticsData.query_matrix || [];
+
+            // Calculate per-model totals for filtering
+            const modelStats = {};
+            data.forEach(d => {
+                if (!modelStats[d.model]) {
+                    modelStats[d.model] = { count: 0, cost: 0 };
+                }
+                modelStats[d.model].count += d.count;
+                modelStats[d.model].cost += d.cost;
+            });
+
+            // Filter models based on sliders
+            const allModels = [...new Set(data.map(d => d.model))].sort();
+            const models = allModels.filter(m => {
+                const stats = modelStats[m] || { count: 0, cost: 0 };
+                return stats.count >= matrixMinCount && stats.cost >= matrixMinCost;
+            });
+
+            // Update filter info
+            document.getElementById('filterInfo').textContent =
+                'Showing ' + models.length + ' of ' + allModels.length + ' models';
+
+            if (models.length === 0) {
+                container.innerHTML = '<p style="color:#888;text-align:center;padding:40px;">No models match the current filters</p>';
+                return;
+            }
+
+            const precisions = ['very_high', 'high', 'medium', 'low', 'unspecified'];
+            const hasUnspecified = data.some(d => d.precision === 'unspecified');
+            const activePrecisions = precisions.filter(p => p !== 'unspecified' || hasUnspecified);
+
+            let html = '<table class="matrix-table"><thead>';
+
+            // First header row: Sensitivity groups
+            html += '<tr><th rowspan="2" style="vertical-align:middle;">Model</th>';
+            html += '<th colspan="' + activePrecisions.length + '" class="sensitive-header">Sensitive</th>';
+            html += '<th colspan="' + activePrecisions.length + '" class="not-sensitive-header">Not Sensitive</th>';
+            html += '<th rowspan="2" style="vertical-align:middle;">Total</th>';
+            html += '</tr>';
+
+            // Second header row: Precision levels
+            html += '<tr>';
+            [true, false].forEach(sensitive => {
+                activePrecisions.forEach(prec => {
+                    const cls = sensitive ? 'sensitive-header' : 'not-sensitive-header';
+                    html += '<th class="' + cls + ' precision-header">' + prec.replace('_', ' ') + '</th>';
+                });
+            });
+            html += '</tr></thead><tbody>';
+
+            models.forEach(model => {
+                const stats = modelStats[model];
+                html += '<tr><td class="model-cell" onclick="showModelDetail(\'' + model + '\')">' + model + '</td>';
+
+                [true, false].forEach(sensitive => {
+                    activePrecisions.forEach(prec => {
+                        const item = data.find(d => d.model === model && d.sensitive === sensitive && d.precision === prec);
+                        const bgClass = sensitive ? 'cell-sensitive' : 'cell-not-sensitive';
+                        if (item && item.count > 0) {
+                            const clickHandler = 'showMatrixRequests(\'' + encodeURIComponent(model) + '\',' + sensitive + ',\'' + prec + '\')';
+                            html += '<td class="matrix-cell ' + bgClass + ' clickable-cell" onclick="' + clickHandler + '" title="Click to view ' + item.count + ' requests">';
+                            html += '<div class="matrix-count">' + item.count.toLocaleString() + '</div>';
+                            if (item.cost > 0) {
+                                html += '<div class="matrix-cost">$' + item.cost.toFixed(4) + '</div>';
+                            }
+                            html += '</td>';
+                        } else {
+                            html += '<td class="matrix-cell ' + bgClass + '" style="color:#555;">-</td>';
+                        }
+                    });
+                });
+
+                // Total column
+                html += '<td style="background:#252540;font-weight:600;">';
+                html += '<div class="matrix-count">' + stats.count.toLocaleString() + '</div>';
+                if (stats.cost > 0) {
+                    html += '<div class="matrix-cost">$' + stats.cost.toFixed(4) + '</div>';
+                }
+                html += '</td>';
+
+                html += '</tr>';
+            });
+
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        function renderModelSelector() {
+            const container = document.getElementById('modelSelector');
+            const volumeData = analyticsData.volume_over_time || [];
+
+            // Only show models with more than 1 request total
+            const modelCounts = {};
+            volumeData.forEach(d => {
+                modelCounts[d.model] = (modelCounts[d.model] || 0) + d.count;
+            });
+            const activeModels = Object.keys(modelCounts).filter(m => modelCounts[m] > 1).sort();
+
+            let html = '<button class="model-btn active" data-model="all" onclick="selectVolumeModel(\'all\')">All Models</button>';
+            activeModels.forEach(model => {
+                html += '<button class="model-btn" data-model="' + model + '" onclick="selectVolumeModel(\'' + model + '\')">' + model + ' <span style="color:#888;font-size:11px;">(' + modelCounts[model] + ')</span></button>';
+            });
+            container.innerHTML = html;
+        }
+
+        function selectVolumeModel(model) {
+            selectedVolumeModel = model;
+            document.querySelectorAll('#modelSelector .model-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.model === model);
+            });
+            renderVolumeChart();
+        }
+
+        function renderVolumeChart() {
+            const ctx = document.getElementById('volumeChart').getContext('2d');
+            const data = analyticsData.volume_over_time || [];
+
+            if (volumeChart) volumeChart.destroy();
+
+            // Get unique dates
+            const dates = [...new Set(data.map(d => d.day))].sort();
+
+            // Calculate model totals for filtering
+            const modelCounts = {};
+            data.forEach(d => {
+                modelCounts[d.model] = (modelCounts[d.model] || 0) + d.count;
+            });
+
+            let datasets = [];
+
+            if (selectedVolumeModel === 'all') {
+                // Group by model, only include models with > 1 request
+                const models = [...new Set(data.map(d => d.model))].filter(m => modelCounts[m] > 1);
+                models.forEach((model, i) => {
+                    const modelData = dates.map(date => {
+                        const item = data.find(d => d.day === date && d.model === model);
+                        return item ? item.count : 0;
+                    });
+                    datasets.push({
+                        label: model,
+                        data: modelData,
+                        borderColor: colors[i % colors.length],
+                        backgroundColor: colors[i % colors.length] + '20',
+                        fill: false,
+                        tension: 0.3,
+                        pointRadius: 3,
+                        pointHoverRadius: 6,
+                        borderWidth: 2
+                    });
+                });
+            } else {
+                // Single model
+                const modelData = dates.map(date => {
+                    const item = data.find(d => d.day === date && d.model === selectedVolumeModel);
+                    return item ? item.count : 0;
+                });
+                datasets.push({
+                    label: selectedVolumeModel,
+                    data: modelData,
+                    borderColor: '#6366f1',
+                    backgroundColor: 'rgba(99, 102, 241, 0.2)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 4,
+                    pointHoverRadius: 7,
+                    borderWidth: 2
+                });
+            }
+
+            volumeChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: dates.map(d => {
+                        // Format: "2024-12-09 08:00" -> "Dec 9 08:00"
+                        const parts = d.split(' ');
+                        const datePart = new Date(parts[0]);
+                        const timePart = parts[1] || '00:00';
+                        return datePart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + timePart;
+                    }),
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            display: selectedVolumeModel === 'all',
+                            position: 'top',
+                            labels: {
+                                color: '#888',
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1,
+                            filter: function(tooltipItem) {
+                                // Only show models with > 0 requests at this point
+                                return tooltipItem.raw > 0;
+                            },
+                            callbacks: {
+                                label: function(context) {
+                                    if (context.raw === 0) return null;
+                                    return context.dataset.label + ': ' + context.raw + ' requests';
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: '#2d2d44' },
+                            ticks: {
+                                color: '#888',
+                                maxRotation: 45,
+                                minRotation: 45,
+                                autoSkip: true,
+                                maxTicksLimit: 20
+                            }
+                        },
+                        y: {
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#888' },
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+
+        function showMatrixRequests(model, sensitive, precision) {
+            // Redirect to the main dashboard with filters applied
+            const params = new URLSearchParams();
+            params.set('model', decodeURIComponent(model));
+            params.set('sensitive', sensitive ? '1' : '0');
+            if (precision && precision !== 'unspecified') {
+                params.set('precision', precision);
+            }
+            window.location.href = '/?matrix=' + encodeURIComponent(params.toString());
+        }
+
+        async function showModelDetail(model) {
+            document.getElementById('overview-view').style.display = 'none';
+            document.getElementById('model-detail-view').classList.add('active');
+            document.getElementById('modelDetailTitle').textContent = model + ' - Detailed Analytics';
+
+            // Fetch model-specific data
+            const response = await fetch('/api/analytics?model=' + encodeURIComponent(model));
+            const data = await response.json();
+
+            // Render stats
+            const summary = data.model_summary || {};
+            document.getElementById('modelStatsRow').innerHTML =
+                '<div class="stat-box"><div class="stat-box-label">Total Requests</div><div class="stat-box-value">' + (summary.total_count || 0).toLocaleString() + '</div></div>' +
+                '<div class="stat-box"><div class="stat-box-label">Total Cost</div><div class="stat-box-value cost">$' + (summary.total_cost || 0).toFixed(4) + '</div></div>' +
+                '<div class="stat-box"><div class="stat-box-label">Avg Latency</div><div class="stat-box-value latency">' + Math.round(summary.avg_latency || 0).toLocaleString() + 'ms</div></div>' +
+                '<div class="stat-box"><div class="stat-box-label">Min Latency</div><div class="stat-box-value latency">' + (summary.min_latency || 0).toLocaleString() + 'ms</div></div>' +
+                '<div class="stat-box"><div class="stat-box-label">Max Latency</div><div class="stat-box-value latency">' + (summary.max_latency || 0).toLocaleString() + 'ms</div></div>';
+
+            // Render chart
+            const ctx = document.getElementById('modelDetailChart').getContext('2d');
+            const dailyData = data.model_daily_volume || [];
+
+            if (modelDetailChart) modelDetailChart.destroy();
+
+            modelDetailChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: dailyData.map(d => {
+                        const date = new Date(d.day);
+                        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                    }),
+                    datasets: [{
+                        label: 'Requests',
+                        data: dailyData.map(d => d.count),
+                        borderColor: '#6366f1',
+                        backgroundColor: 'rgba(99, 102, 241, 0.2)',
+                        fill: true,
+                        tension: 0.4,
+                        yAxisID: 'y'
+                    }, {
+                        label: 'Avg Latency (ms)',
+                        data: dailyData.map(d => d.avg_latency),
+                        borderColor: '#f59e0b',
+                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                        fill: false,
+                        tension: 0.4,
+                        yAxisID: 'y1'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                            labels: {
+                                color: '#888',
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#888' }
+                        },
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#6366f1' },
+                            title: {
+                                display: true,
+                                text: 'Requests',
+                                color: '#6366f1'
+                            }
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            grid: { drawOnChartArea: false },
+                            ticks: { color: '#f59e0b' },
+                            title: {
+                                display: true,
+                                text: 'Latency (ms)',
+                                color: '#f59e0b'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function showOverview() {
+            document.getElementById('model-detail-view').classList.remove('active');
+            document.getElementById('overview-view').style.display = 'block';
+        }
+
+        // Load on page load
+        loadAnalytics();
+    </script>
+</body>
+</html>

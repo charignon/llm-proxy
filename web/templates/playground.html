@@ -1,0 +1,1096 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Proxy - Test Playground</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0f0f1a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { color: #6366f1; margin-bottom: 8px; font-size: 28px; }
+        .subtitle { color: #888; margin-bottom: 16px; }
+        a { color: #6366f1; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        /* Top Navigation Tabs */
+        .nav-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 24px;
+            background: #1a1a2e;
+            padding: 4px;
+            border-radius: 12px;
+        }
+        .nav-tab {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            color: #888;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .nav-tab:hover { color: #e0e0e0; background: #252540; }
+        .nav-tab.active { background: #6366f1; color: #fff; }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 24px;
+        }
+        .tab {
+            padding: 12px 24px;
+            background: #1a1a2e;
+            border: none;
+            border-radius: 8px;
+            color: #888;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .tab.active { background: #6366f1; color: #fff; }
+        .tab:hover:not(.active) { background: #252540; }
+
+        .panel { display: none; }
+        .panel.active { display: block; }
+
+        .form-group { margin-bottom: 16px; }
+        label { display: block; color: #a5b4fc; margin-bottom: 8px; font-weight: 500; }
+
+        textarea, input[type="text"], select {
+            width: 100%;
+            padding: 12px;
+            background: #1a1a2e;
+            border: 1px solid #2d2d44;
+            border-radius: 8px;
+            color: #e0e0e0;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        textarea { min-height: 120px; resize: vertical; }
+        textarea:focus, input:focus, select:focus {
+            outline: none;
+            border-color: #6366f1;
+        }
+
+        .row { display: flex; gap: 16px; }
+        .row > * { flex: 1; }
+
+        .image-upload {
+            border: 2px dashed #2d2d44;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .image-upload:hover { border-color: #6366f1; }
+        .image-upload.has-image { border-style: solid; border-color: #22c55e; }
+        .image-preview { max-width: 100%; max-height: 300px; margin-top: 16px; border-radius: 8px; }
+
+        .submit-btn {
+            background: #6366f1;
+            color: #fff;
+            border: none;
+            padding: 14px 32px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 16px;
+        }
+        .submit-btn:hover { background: #4f46e5; }
+        .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .result-box {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 24px;
+        }
+        .result-header {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #2d2d44;
+        }
+        .result-meta { font-size: 14px; }
+        .result-meta span { color: #888; }
+        .result-meta strong { color: #a5b4fc; }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .badge.openai { background: #10b981; color: #000; }
+        .badge.anthropic { background: #f59e0b; color: #000; }
+        .badge.ollama { background: #6366f1; color: #fff; }
+        .badge.routed { background: #22c55e; color: #000; }
+        .badge.override { background: #f59e0b; color: #000; }
+
+        .result-content {
+            background: #252540;
+            border-radius: 8px;
+            padding: 16px;
+            white-space: pre-wrap;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 14px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .thinking-box {
+            background: #1e1b4b;
+            border-left: 3px solid #8b5cf6;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .thinking-box h4 {
+            color: #a78bfa;
+            margin: 0 0 12px 0;
+            font-size: 14px;
+        }
+        .thinking-content {
+            white-space: pre-wrap;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 13px;
+            color: #c4b5fd;
+        }
+
+        .loading { opacity: 0.6; pointer-events: none; }
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #fff;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+        }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+
+        .error { color: #ef4444; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>LLM Proxy</h1>
+        <p class="subtitle">Unified AI gateway with routing, caching, and cost tracking</p>
+
+        <!-- Navigation Tabs -->
+        <div class="nav-tabs">
+            <button class="nav-tab" onclick="window.location.href='/'">Requests</button>
+            <button class="nav-tab active">Playground</button>
+            <button class="nav-tab" onclick="window.location.href='/#routing'">Routing</button>
+            <button class="nav-tab" onclick="window.location.href='/analytics'">Analytics</button>
+            <button class="nav-tab" onclick="window.location.href='/stats'">Stats</button>
+            <button class="nav-tab" onclick="window.location.href='/#system'">System</button>
+        </div>
+
+        <h2 style="color:#a5b4fc;margin-bottom:16px;font-size:20px;">Test Playground</h2>
+
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('chat')">Chat Completion</button>
+            <button class="tab" onclick="switchTab('vision')">Vision Analysis</button>
+            <button class="tab" onclick="switchTab('websearch')">Web Search</button>
+            <button class="tab" onclick="switchTab('whisper')">Speech to Text</button>
+            <button class="tab" onclick="switchTab('tts')">Text to Speech</button>
+        </div>
+
+        <!-- Chat Panel -->
+        <div id="chat-panel" class="panel active">
+            <div class="form-group">
+                <label>Prompt</label>
+                <textarea id="chat-prompt" placeholder="Enter your prompt here...">Tell me a short joke about programming.</textarea>
+            </div>
+
+            <div class="row">
+                <div class="form-group">
+                    <label>Sensitive</label>
+                    <select id="chat-sensitive">
+                        <option value="false">false (can use cloud)</option>
+                        <option value="true">true (local only)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Precision</label>
+                    <select id="chat-precision">
+                        <option value="low">low</option>
+                        <option value="medium" selected>medium</option>
+                        <option value="high">high</option>
+                        <option value="very_high">very_high</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Model Override (optional - leave empty to use routing)</label>
+                <select id="chat-model">
+                    <option value="">-- Use automatic routing --</option>
+                </select>
+            </div>
+
+            <button class="submit-btn" id="chat-submit" onclick="submitChat()">Send Request</button>
+
+            <div id="chat-result" class="result-box" style="display:none;">
+                <div class="result-header" id="chat-result-header"></div>
+                <div class="result-content" id="chat-result-content"></div>
+            </div>
+        </div>
+
+        <!-- Vision Panel -->
+        <div id="vision-panel" class="panel">
+            <div class="form-group">
+                <label>Image</label>
+                <div class="image-upload" id="image-drop" onclick="document.getElementById('image-input').click()">
+                    <input type="file" id="image-input" accept="image/*" style="display:none" onchange="handleImageSelect(event)">
+                    <p>Click or drag an image here</p>
+                    <img id="image-preview" class="image-preview" style="display:none">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Prompt</label>
+                <textarea id="vision-prompt" placeholder="What should I analyze in this image?">Describe what you see in this image in detail.</textarea>
+            </div>
+
+            <div class="row">
+                <div class="form-group">
+                    <label>Sensitive</label>
+                    <select id="vision-sensitive">
+                        <option value="false">false (can use cloud)</option>
+                        <option value="true">true (local only)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Precision</label>
+                    <select id="vision-precision">
+                        <option value="low">low</option>
+                        <option value="medium" selected>medium</option>
+                        <option value="high">high</option>
+                        <option value="very_high">very_high</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Model Override (optional - leave empty to use routing)</label>
+                <select id="vision-model">
+                    <option value="">-- Use automatic routing --</option>
+                </select>
+            </div>
+
+            <button class="submit-btn" id="vision-submit" onclick="submitVision()">Analyze Image</button>
+
+            <div id="vision-result" class="result-box" style="display:none;">
+                <div class="result-header" id="vision-result-header"></div>
+                <div class="result-content" id="vision-result-content"></div>
+            </div>
+        </div>
+
+        <!-- Web Search Panel -->
+        <div id="websearch-panel" class="panel">
+            <div class="form-group">
+                <label>Search Query</label>
+                <textarea id="websearch-query" placeholder="What would you like to search for?">What are the latest developments in AI in December 2025?</textarea>
+            </div>
+
+            <div class="row">
+                <div class="form-group">
+                    <label>Provider</label>
+                    <select id="websearch-provider">
+                        <option value="anthropic">Anthropic (Claude)</option>
+                        <option value="openai">OpenAI (GPT)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Max Searches</label>
+                    <select id="websearch-max-uses">
+                        <option value="1">1</option>
+                        <option value="3">3</option>
+                        <option value="5" selected>5</option>
+                        <option value="10">10</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Allowed Domains (optional, comma-separated)</label>
+                <input type="text" id="websearch-domains" placeholder="e.g. wikipedia.org, github.com, docs.python.org">
+            </div>
+
+            <div class="form-group">
+                <label>Model</label>
+                <select id="websearch-model">
+                    <optgroup label="Anthropic">
+                        <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5</option>
+                        <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
+                        <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>
+                    </optgroup>
+                    <optgroup label="OpenAI GPT-5">
+                        <option value="gpt-5.2">GPT-5.2</option>
+                        <option value="gpt-5.1">GPT-5.1</option>
+                    </optgroup>
+                    <optgroup label="OpenAI GPT-4">
+                        <option value="gpt-4.1">GPT-4.1</option>
+                        <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
+                        <option value="gpt-4o">GPT-4o</option>
+                        <option value="gpt-4o-mini">GPT-4o Mini</option>
+                    </optgroup>
+                </select>
+            </div>
+
+            <button class="submit-btn" id="websearch-submit" onclick="submitWebSearch()">🔍 Search</button>
+
+            <div id="websearch-result" class="result-box" style="display:none;">
+                <div class="result-header" id="websearch-result-header"></div>
+                <div id="websearch-sources" style="margin-bottom:16px;"></div>
+                <div class="result-content" id="websearch-result-content"></div>
+            </div>
+        </div>
+
+        <!-- Whisper Panel -->
+        <div id="whisper-panel" class="panel">
+            <div class="form-group">
+                <label>Audio File</label>
+                <div class="image-upload" id="audio-drop" onclick="document.getElementById('audio-input').click()">
+                    <input type="file" id="audio-input" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm" style="display:none" onchange="handleAudioSelect(event)">
+                    <p id="audio-placeholder">Click or drag an audio file here (wav, mp3, m4a, ogg, flac, webm)</p>
+                    <p id="audio-filename" style="display:none; color:#22c55e; font-weight:600;"></p>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Or Record Audio</label>
+                <div style="display: flex; gap: 12px; align-items: center;">
+                    <button class="submit-btn" id="record-btn" onclick="toggleRecording()" style="margin-top:0; background:#ef4444;">
+                        🎤 Start Recording
+                    </button>
+                    <span id="recording-status" style="color:#888;"></span>
+                </div>
+                <p id="https-warning" style="display:none; color:#f59e0b; font-size:12px; margin-top:8px;">
+                    ⚠️ Microphone requires HTTPS. Use file upload instead.
+                </p>
+            </div>
+
+            <div class="row">
+                <div class="form-group">
+                    <label>Mode</label>
+                    <select id="whisper-mode">
+                        <option value="single">Single-shot (full transcription)</option>
+                        <option value="stream">Streaming (progressive results)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Routing</label>
+                    <select id="whisper-sensitive">
+                        <option value="true">Local (sensitive=true)</option>
+                        <option value="false">Cloud/OpenAI (sensitive=false)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="form-group">
+                    <label>Model (optional)</label>
+                    <input type="text" id="whisper-model" placeholder="e.g. large-v3-turbo, whisper-1">
+                </div>
+                <div class="form-group">
+                    <label>Language (optional)</label>
+                    <input type="text" id="whisper-language" placeholder="e.g. en, fr, de, es">
+                </div>
+            </div>
+
+            <button class="submit-btn" id="whisper-submit" onclick="submitWhisper()">Transcribe</button>
+
+            <div id="whisper-result" class="result-box" style="display:none;">
+                <div class="result-header" id="whisper-result-header"></div>
+                <div class="result-content" id="whisper-result-content"></div>
+            </div>
+        </div>
+
+        <!-- TTS Panel -->
+        <div id="tts-panel" class="panel">
+            <div class="form-group">
+                <label>Text to speak</label>
+                <textarea id="tts-text" placeholder="Enter text to synthesize...">Hello! This is a test of the text to speech system. How does it sound?</textarea>
+            </div>
+
+            <div class="row">
+                <div class="form-group">
+                    <label>Voice</label>
+                    <select id="tts-voice">
+                        <option value="alloy">alloy (American Female)</option>
+                        <option value="echo">echo (American Male)</option>
+                        <option value="fable">fable (British Female)</option>
+                        <option value="onyx" selected>onyx (British Male)</option>
+                        <option value="nova">nova (American Female)</option>
+                        <option value="shimmer">shimmer (American Female)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Speed</label>
+                    <input type="range" id="tts-speed" min="0.5" max="2.0" step="0.1" value="1.0" oninput="document.getElementById('tts-speed-val').textContent=this.value">
+                    <span id="tts-speed-val" style="color:#22c55e; font-weight:600;">1.0</span>x
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Format</label>
+                <select id="tts-format">
+                    <option value="mp3">MP3</option>
+                    <option value="wav">WAV</option>
+                </select>
+            </div>
+
+            <button class="submit-btn" id="tts-submit" onclick="submitTTS()">Speak</button>
+
+            <div id="tts-result" class="result-box" style="display:none;">
+                <div class="result-header" id="tts-result-header"></div>
+                <div id="tts-audio-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const PLAYGROUND_USECASE = 'test_playground';
+        let selectedImageBase64 = null;
+
+        // Load available models for dropdowns
+        async function loadModelSelectors() {
+            try {
+                const resp = await fetch('/v1/models');
+                const data = await resp.json();
+                const models = (data.data || []).map(m => m.id).filter(id => id !== 'auto').sort();
+
+                const chatSelect = document.getElementById('chat-model');
+                const visionSelect = document.getElementById('vision-model');
+
+                models.forEach(model => {
+                    const opt1 = document.createElement('option');
+                    opt1.value = model;
+                    opt1.textContent = model;
+                    chatSelect.appendChild(opt1);
+
+                    const opt2 = document.createElement('option');
+                    opt2.value = model;
+                    opt2.textContent = model;
+                    visionSelect.appendChild(opt2);
+                });
+            } catch (e) {
+                console.error('Failed to load models:', e);
+            }
+        }
+        loadModelSelectors();
+
+        // Helper to escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Parse <think> tags from response and render properly
+        function renderResponseWithThinking(content, resultContent) {
+            const thinkMatch = content.match(/^<think>([\s\S]*?)<\/think>([\s\S]*)$/);
+            if (thinkMatch) {
+                const thinkingContent = thinkMatch[1].trim();
+                const actualResponse = thinkMatch[2].trim();
+
+                // Clear existing content
+                resultContent.innerHTML = '';
+
+                // Add thinking box
+                const thinkingBox = document.createElement('div');
+                thinkingBox.className = 'thinking-box';
+                thinkingBox.innerHTML = '<h4>💭 Thinking</h4><div class="thinking-content">' + escapeHtml(thinkingContent) + '</div>';
+                resultContent.appendChild(thinkingBox);
+
+                // Add actual response
+                const responseDiv = document.createElement('div');
+                responseDiv.textContent = actualResponse;
+                resultContent.appendChild(responseDiv);
+            } else {
+                // No thinking tags, just display normally
+                resultContent.textContent = content;
+            }
+        }
+
+        // Safely parse JSON but preserve raw text for error display
+        async function parseJsonSafe(resp) {
+            const raw = await resp.text();
+            try {
+                return { data: JSON.parse(raw), raw };
+            } catch (e) {
+                return { data: null, raw };
+            }
+        }
+
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+            document.querySelector('.tab[onclick*="' + tab + '"]').classList.add('active');
+            document.getElementById(tab + '-panel').classList.add('active');
+        }
+
+        function handleImageSelect(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                selectedImageBase64 = e.target.result;
+                const preview = document.getElementById('image-preview');
+                preview.src = selectedImageBase64;
+                preview.style.display = 'block';
+                document.getElementById('image-drop').classList.add('has-image');
+            };
+            reader.readAsDataURL(file);
+        }
+
+        // Drag and drop
+        const dropZone = document.getElementById('image-drop');
+        dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.style.borderColor = '#6366f1'; });
+        dropZone.addEventListener('dragleave', e => { dropZone.style.borderColor = ''; });
+        dropZone.addEventListener('drop', e => {
+            e.preventDefault();
+            dropZone.style.borderColor = '';
+            const file = e.dataTransfer.files[0];
+            if (file && file.type.startsWith('image/')) {
+                document.getElementById('image-input').files = e.dataTransfer.files;
+                handleImageSelect({target: {files: e.dataTransfer.files}});
+            }
+        });
+
+        async function submitChat() {
+            const btn = document.getElementById('chat-submit');
+            const resultBox = document.getElementById('chat-result');
+            const resultHeader = document.getElementById('chat-result-header');
+            const resultContent = document.getElementById('chat-result-content');
+
+            const prompt = document.getElementById('chat-prompt').value;
+            const sensitive = document.getElementById('chat-sensitive').value === 'true';
+            const precision = document.getElementById('chat-precision').value;
+            const modelOverride = document.getElementById('chat-model').value.trim();
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Processing...';
+            resultBox.style.display = 'none';
+
+            const body = {
+                model: modelOverride || 'auto',
+                messages: [{role: 'user', content: prompt}],
+                sensitive: sensitive,
+                precision: precision,
+                usecase: PLAYGROUND_USECASE,
+                no_cache: true
+            };
+
+            const startTime = Date.now();
+            try {
+                const resp = await fetch('/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body)
+                });
+
+                const latency = Date.now() - startTime;
+                const {data, raw} = await parseJsonSafe(resp);
+
+                if (resp.ok && data) {
+                    const provider = resp.headers.get('X-LLM-Proxy-Provider') || data.provider || 'unknown';
+                    const model = resp.headers.get('X-LLM-Proxy-Model') || data.model || 'unknown';
+                    const cost = resp.headers.get('X-LLM-Proxy-Cost-USD') || '0';
+                    const isOverride = modelOverride !== '';
+
+                    resultHeader.innerHTML =
+                        '<div class="result-meta"><span>Provider:</span> <span class="badge ' + provider + '">' + provider + '</span></div>' +
+                        '<div class="result-meta"><span>Model:</span> <strong>' + model + '</strong></div>' +
+                        '<div class="result-meta"><span>Routing:</span> <span class="badge ' + (isOverride ? 'override' : 'routed') + '">' + (isOverride ? 'override' : 'auto-routed') + '</span></div>' +
+                        '<div class="result-meta"><span>Latency:</span> <strong>' + latency + 'ms</strong></div>' +
+                        '<div class="result-meta"><span>Cost:</span> <strong>$' + parseFloat(cost).toFixed(6) + '</strong></div>' +
+                        (data.usage ? '<div class="result-meta"><span>Tokens:</span> <strong>' + data.usage.total_tokens + '</strong></div>' : '');
+
+                    renderResponseWithThinking(data.choices[0].message.content, resultContent);
+                } else if (resp.ok) {
+                    resultHeader.innerHTML = '<div class="result-meta error">Invalid response</div>';
+                    resultContent.textContent = raw || 'Empty response from server';
+                } else {
+                    resultHeader.innerHTML = '<div class="result-meta error">Error: ' + resp.status + '</div>';
+                    resultContent.textContent = data ? JSON.stringify(data, null, 2) : (raw || 'Unknown error');
+                }
+            } catch (err) {
+                resultHeader.innerHTML = '<div class="result-meta error">Request failed</div>';
+                resultContent.textContent = err.message;
+            }
+
+            resultBox.style.display = 'block';
+            btn.disabled = false;
+            btn.innerHTML = 'Send Request';
+        }
+
+        async function submitVision() {
+            if (!selectedImageBase64) {
+                alert('Please select an image first');
+                return;
+            }
+
+            const btn = document.getElementById('vision-submit');
+            const resultBox = document.getElementById('vision-result');
+            const resultHeader = document.getElementById('vision-result-header');
+            const resultContent = document.getElementById('vision-result-content');
+
+            const prompt = document.getElementById('vision-prompt').value;
+            const sensitive = document.getElementById('vision-sensitive').value === 'true';
+            const precision = document.getElementById('vision-precision').value;
+            const modelOverride = document.getElementById('vision-model').value.trim();
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Analyzing...';
+            resultBox.style.display = 'none';
+
+            const body = {
+                model: modelOverride || 'auto',
+                messages: [{
+                    role: 'user',
+                    content: [
+                        {type: 'text', text: prompt},
+                        {type: 'image_url', image_url: {url: selectedImageBase64}}
+                    ]
+                }],
+                sensitive: sensitive,
+                precision: precision,
+                usecase: PLAYGROUND_USECASE,
+                no_cache: true
+            };
+
+            const startTime = Date.now();
+            try {
+                const resp = await fetch('/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body)
+                });
+
+                const latency = Date.now() - startTime;
+                const {data, raw} = await parseJsonSafe(resp);
+
+                if (resp.ok && data) {
+                    const provider = resp.headers.get('X-LLM-Proxy-Provider') || data.provider || 'unknown';
+                    const model = resp.headers.get('X-LLM-Proxy-Model') || data.model || 'unknown';
+                    const cost = resp.headers.get('X-LLM-Proxy-Cost-USD') || '0';
+                    const isOverride = modelOverride !== '';
+
+                    resultHeader.innerHTML =
+                        '<div class="result-meta"><span>Provider:</span> <span class="badge ' + provider + '">' + provider + '</span></div>' +
+                        '<div class="result-meta"><span>Model:</span> <strong>' + model + '</strong></div>' +
+                        '<div class="result-meta"><span>Routing:</span> <span class="badge ' + (isOverride ? 'override' : 'routed') + '">' + (isOverride ? 'override' : 'auto-routed') + '</span></div>' +
+                        '<div class="result-meta"><span>Latency:</span> <strong>' + latency + 'ms</strong></div>' +
+                        '<div class="result-meta"><span>Cost:</span> <strong>$' + parseFloat(cost).toFixed(6) + '</strong></div>' +
+                        (data.usage ? '<div class="result-meta"><span>Tokens:</span> <strong>' + data.usage.total_tokens + '</strong></div>' : '');
+
+                    renderResponseWithThinking(data.choices[0].message.content, resultContent);
+                } else if (resp.ok) {
+                    resultHeader.innerHTML = '<div class="result-meta error">Invalid response</div>';
+                    resultContent.textContent = raw || 'Empty response from server';
+                } else {
+                    resultHeader.innerHTML = '<div class="result-meta error">Error: ' + resp.status + '</div>';
+                    resultContent.textContent = data ? JSON.stringify(data, null, 2) : (raw || 'Unknown error');
+                }
+            } catch (err) {
+                resultHeader.innerHTML = '<div class="result-meta error">Request failed</div>';
+                resultContent.textContent = err.message;
+            }
+
+            resultBox.style.display = 'block';
+            btn.disabled = false;
+            btn.innerHTML = 'Analyze Image';
+        }
+
+        // Whisper/Audio handling
+        let selectedAudioFile = null;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+
+        function handleAudioSelect(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            selectedAudioFile = file;
+            document.getElementById('audio-placeholder').style.display = 'none';
+            document.getElementById('audio-filename').textContent = '🎵 ' + file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
+            document.getElementById('audio-filename').style.display = 'block';
+            document.getElementById('audio-drop').classList.add('has-image');
+        }
+
+        // Audio drag and drop
+        const audioDropZone = document.getElementById('audio-drop');
+        audioDropZone.addEventListener('dragover', e => { e.preventDefault(); audioDropZone.style.borderColor = '#6366f1'; });
+        audioDropZone.addEventListener('dragleave', e => { audioDropZone.style.borderColor = ''; });
+        audioDropZone.addEventListener('drop', e => {
+            e.preventDefault();
+            audioDropZone.style.borderColor = '';
+            const file = e.dataTransfer.files[0];
+            if (file && (file.type.startsWith('audio/') || file.name.match(/\.(wav|mp3|m4a|ogg|flac|webm)$/i))) {
+                document.getElementById('audio-input').files = e.dataTransfer.files;
+                handleAudioSelect({target: {files: e.dataTransfer.files}});
+            }
+        });
+
+        async function toggleRecording() {
+            const btn = document.getElementById('record-btn');
+            const status = document.getElementById('recording-status');
+
+            if (!isRecording) {
+                // Check if mediaDevices is available (requires HTTPS or localhost)
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    alert('Microphone recording requires HTTPS. Please use file upload instead.');
+                    return;
+                }
+
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    mediaRecorder = new MediaRecorder(stream);
+                    audioChunks = [];
+
+                    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+                    mediaRecorder.onstop = () => {
+                        const blob = new Blob(audioChunks, { type: 'audio/webm' });
+                        selectedAudioFile = new File([blob], 'recording.webm', { type: 'audio/webm' });
+                        document.getElementById('audio-placeholder').style.display = 'none';
+                        document.getElementById('audio-filename').textContent = '🎤 Recording (' + (blob.size / 1024).toFixed(1) + ' KB)';
+                        document.getElementById('audio-filename').style.display = 'block';
+                        document.getElementById('audio-drop').classList.add('has-image');
+                        stream.getTracks().forEach(track => track.stop());
+                    };
+
+                    mediaRecorder.start();
+                    isRecording = true;
+                    btn.innerHTML = '⏹ Stop Recording';
+                    btn.style.background = '#22c55e';
+                    status.textContent = 'Recording...';
+
+                    // Visual recording indicator
+                    let seconds = 0;
+                    const timer = setInterval(() => {
+                        if (!isRecording) { clearInterval(timer); return; }
+                        seconds++;
+                        status.textContent = 'Recording... ' + seconds + 's';
+                    }, 1000);
+                } catch (err) {
+                    alert('Could not access microphone: ' + err.message);
+                }
+            } else {
+                mediaRecorder.stop();
+                isRecording = false;
+                btn.innerHTML = '🎤 Start Recording';
+                btn.style.background = '#ef4444';
+                status.textContent = 'Recording saved';
+            }
+        }
+
+        async function submitWhisper() {
+            if (!selectedAudioFile) {
+                alert('Please select or record an audio file first');
+                return;
+            }
+
+            const btn = document.getElementById('whisper-submit');
+            const resultBox = document.getElementById('whisper-result');
+            const resultHeader = document.getElementById('whisper-result-header');
+            const resultContent = document.getElementById('whisper-result-content');
+
+            const mode = document.getElementById('whisper-mode').value;
+            const sensitive = document.getElementById('whisper-sensitive').value;
+            const model = document.getElementById('whisper-model').value.trim();
+            const language = document.getElementById('whisper-language').value.trim();
+
+            // Check streaming + cloud combo
+            if (mode === 'stream' && sensitive === 'false') {
+                alert('Streaming mode is only available with local processing (OpenAI API does not support streaming)');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>' + (mode === 'stream' ? 'Streaming...' : 'Transcribing...');
+            resultBox.style.display = 'block';
+            resultHeader.innerHTML = '<div class="result-meta"><span>Status:</span> <strong>Processing...</strong></div>';
+            resultContent.textContent = '';
+
+            const formData = new FormData();
+            formData.append('file', selectedAudioFile);
+            if (model) formData.append('model', model);
+            if (language) formData.append('language', language);
+            formData.append('sensitive', sensitive);
+
+            const endpoint = mode === 'stream' ? '/v1/audio/transcriptions/stream' : '/v1/audio/transcriptions';
+            const startTime = Date.now();
+
+            try {
+                if (mode === 'stream') {
+                    // Streaming mode - use fetch with reader
+                    const resp = await fetch(endpoint, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (!resp.ok) {
+                        const errorText = await resp.text();
+                        throw new Error(errorText);
+                    }
+
+                    const reader = resp.body.getReader();
+                    const decoder = new TextDecoder();
+                    let fullText = '';
+
+                    resultHeader.innerHTML =
+                        '<div class="result-meta"><span>Mode:</span> <span class="badge ollama">streaming</span></div>' +
+                        '<div class="result-meta"><span>Provider:</span> <span class="badge ollama">local</span></div>';
+
+                    while (true) {
+                        const {done, value} = await reader.read();
+                        if (done) break;
+
+                        const chunk = decoder.decode(value, {stream: true});
+                        // Parse SSE data
+                        const lines = chunk.split('\n');
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.slice(6));
+                                    if (data.text) {
+                                        fullText = data.text;
+                                        resultContent.textContent = fullText;
+                                    }
+                                    if (data.error) {
+                                        resultContent.textContent = 'Error: ' + data.error;
+                                    }
+                                } catch (e) {
+                                    // Not valid JSON, might be partial
+                                    fullText += line.slice(6);
+                                    resultContent.textContent = fullText;
+                                }
+                            }
+                        }
+                    }
+
+                    const latency = Date.now() - startTime;
+                    resultHeader.innerHTML =
+                        '<div class="result-meta"><span>Mode:</span> <span class="badge ollama">streaming</span></div>' +
+                        '<div class="result-meta"><span>Provider:</span> <span class="badge ollama">local</span></div>' +
+                        '<div class="result-meta"><span>Latency:</span> <strong>' + latency + 'ms</strong></div>';
+
+                } else {
+                    // Single-shot mode
+                    const resp = await fetch(endpoint, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const latency = Date.now() - startTime;
+                    const provider = resp.headers.get('X-LLM-Proxy-Provider') || 'unknown';
+                    const serverLatency = resp.headers.get('X-LLM-Proxy-Latency-Ms') || latency;
+
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        resultHeader.innerHTML =
+                            '<div class="result-meta"><span>Mode:</span> <span class="badge routed">single-shot</span></div>' +
+                            '<div class="result-meta"><span>Provider:</span> <span class="badge ' + (provider === 'openai' ? 'openai' : 'ollama') + '">' + provider + '</span></div>' +
+                            '<div class="result-meta"><span>Latency:</span> <strong>' + serverLatency + 'ms</strong></div>';
+                        resultContent.textContent = data.text || '(empty transcription)';
+                    } else {
+                        const errorText = await resp.text();
+                        resultHeader.innerHTML = '<div class="result-meta error">Error: ' + resp.status + '</div>';
+                        resultContent.textContent = errorText;
+                    }
+                }
+            } catch (err) {
+                resultHeader.innerHTML = '<div class="result-meta error">Request failed</div>';
+                resultContent.textContent = err.message;
+            }
+
+            btn.disabled = false;
+            btn.innerHTML = 'Transcribe';
+        }
+
+        // Check HTTPS on page load and disable recording if not available
+        (function() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                const btn = document.getElementById('record-btn');
+                const warning = document.getElementById('https-warning');
+                if (btn) {
+                    btn.disabled = true;
+                    btn.style.opacity = '0.5';
+                    btn.style.cursor = 'not-allowed';
+                }
+                if (warning) warning.style.display = 'block';
+            }
+        })();
+
+        // TTS handling
+        async function submitTTS() {
+            const text = document.getElementById('tts-text').value.trim();
+            if (!text) {
+                alert('Please enter some text to speak');
+                return;
+            }
+
+            const btn = document.getElementById('tts-submit');
+            const resultBox = document.getElementById('tts-result');
+            const resultHeader = document.getElementById('tts-result-header');
+            const audioContainer = document.getElementById('tts-audio-container');
+
+            const voice = document.getElementById('tts-voice').value;
+            const speed = parseFloat(document.getElementById('tts-speed').value);
+            const format = document.getElementById('tts-format').value;
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Generating...';
+            resultBox.style.display = 'block';
+            resultHeader.innerHTML = '<div class="result-meta"><span>Status:</span> <strong>Processing...</strong></div>';
+            audioContainer.innerHTML = '';
+
+            const startTime = Date.now();
+
+            try {
+                const resp = await fetch('/v1/audio/speech', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: 'tts-1',
+                        input: text,
+                        voice: voice,
+                        response_format: format,
+                        speed: speed
+                    })
+                });
+
+                const latency = Date.now() - startTime;
+
+                if (resp.ok) {
+                    const blob = await resp.blob();
+                    const url = URL.createObjectURL(blob);
+
+                    resultHeader.innerHTML =
+                        '<div class="result-meta"><span>Voice:</span> <span class="badge ollama">' + voice + '</span></div>' +
+                        '<div class="result-meta"><span>Speed:</span> <strong>' + speed + 'x</strong></div>' +
+                        '<div class="result-meta"><span>Latency:</span> <strong>' + latency + 'ms</strong></div>';
+
+                    audioContainer.innerHTML = '<audio controls autoplay src="' + url + '" style="width:100%; margin-top:12px;"></audio>';
+                } else {
+                    const errorText = await resp.text();
+                    resultHeader.innerHTML = '<div class="result-meta error">Error: ' + resp.status + '</div>';
+                    audioContainer.innerHTML = '<pre style="color:#ef4444;">' + errorText + '</pre>';
+                }
+            } catch (err) {
+                resultHeader.innerHTML = '<div class="result-meta error">Request failed</div>';
+                audioContainer.innerHTML = '<pre style="color:#ef4444;">' + err.message + '</pre>';
+            }
+
+            btn.disabled = false;
+            btn.innerHTML = 'Speak';
+        }
+
+        // Web Search handling
+        async function submitWebSearch() {
+            const query = document.getElementById('websearch-query').value.trim();
+            if (!query) {
+                alert('Please enter a search query');
+                return;
+            }
+
+            const btn = document.getElementById('websearch-submit');
+            const resultBox = document.getElementById('websearch-result');
+            const resultHeader = document.getElementById('websearch-result-header');
+            const sourcesDiv = document.getElementById('websearch-sources');
+            const resultContent = document.getElementById('websearch-result-content');
+
+            const provider = document.getElementById('websearch-provider').value;
+            const maxUses = parseInt(document.getElementById('websearch-max-uses').value);
+            const model = document.getElementById('websearch-model').value;
+            const domainsRaw = document.getElementById('websearch-domains').value.trim();
+            const allowedDomains = domainsRaw ? domainsRaw.split(',').map(d => d.trim()).filter(d => d) : [];
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Searching...';
+            resultBox.style.display = 'block';
+            resultHeader.innerHTML = '<div class="result-meta"><span>Status:</span> <strong>Searching...</strong></div>';
+            sourcesDiv.innerHTML = '';
+            resultContent.textContent = '';
+
+            const startTime = Date.now();
+
+            try {
+                const resp = await fetch('/v1/websearch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        query: query,
+                        provider: provider,
+                        model: model,
+                        max_uses: maxUses,
+                        allowed_domains: allowedDomains.length > 0 ? allowedDomains : undefined,
+                        usecase: PLAYGROUND_USECASE
+                    })
+                });
+
+                const latency = Date.now() - startTime;
+                const data = await resp.json();
+
+                if (resp.ok) {
+                    const providerBadge = provider === 'anthropic' ? 'anthropic' : 'openai';
+                    resultHeader.innerHTML =
+                        '<div class="result-meta"><span>Provider:</span> <span class="badge ' + providerBadge + '">' + provider + '</span></div>' +
+                        '<div class="result-meta"><span>Model:</span> <strong>' + (data.model || model) + '</strong></div>' +
+                        '<div class="result-meta"><span>Searches:</span> <strong>' + (data.search_count || 0) + '</strong></div>' +
+                        '<div class="result-meta"><span>Latency:</span> <strong>' + latency + 'ms</strong></div>' +
+                        (data.cost_usd ? '<div class="result-meta"><span>Cost:</span> <strong>$' + data.cost_usd.toFixed(6) + '</strong></div>' : '');
+
+                    // Display sources/citations
+                    if (data.sources && data.sources.length > 0) {
+                        let sourcesHtml = '<div style="margin-bottom:16px"><div style="color:#888;font-size:12px;margin-bottom:8px">Sources (' + data.sources.length + ')</div>';
+                        for (const src of data.sources) {
+                            sourcesHtml += '<div style="margin-bottom:6px;padding:8px;background:#0f172a;border-radius:6px;border-left:2px solid #3b82f6">';
+                            sourcesHtml += '<a href="' + escapeHtml(src.url || '') + '" target="_blank" style="color:#60a5fa;text-decoration:none;font-size:13px">' + escapeHtml(src.title || src.url) + '</a>';
+                            if (src.snippet) {
+                                sourcesHtml += '<div style="color:#94a3b8;font-size:11px;margin-top:4px">' + escapeHtml(src.snippet) + '</div>';
+                            }
+                            sourcesHtml += '</div>';
+                        }
+                        sourcesHtml += '</div>';
+                        sourcesDiv.innerHTML = sourcesHtml;
+                    }
+
+                    resultContent.textContent = data.response || data.content || JSON.stringify(data, null, 2);
+                } else {
+                    resultHeader.innerHTML = '<div class="result-meta error">Error: ' + resp.status + '</div>';
+                    resultContent.textContent = data.error || JSON.stringify(data, null, 2);
+                }
+            } catch (err) {
+                resultHeader.innerHTML = '<div class="result-meta error">Request failed</div>';
+                resultContent.textContent = err.message;
+            }
+
+            btn.disabled = false;
+            btn.innerHTML = '🔍 Search';
+        }
+    </script>
+</body>
+</html>

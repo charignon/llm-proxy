@@ -1,0 +1,2332 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Proxy</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0f0f1a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { color: #6366f1; margin-bottom: 8px; font-size: 28px; }
+        .subtitle { color: #888; margin-bottom: 16px; }
+        a { color: #6366f1; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        /* Top Navigation Tabs */
+        .nav-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 24px;
+            background: #1a1a2e;
+            padding: 4px;
+            border-radius: 12px;
+        }
+        .nav-tab {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            color: #888;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .nav-tab:hover { color: #e0e0e0; background: #252540; }
+        .nav-tab.active { background: #6366f1; color: #fff; }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .stat-card {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .stat-label { color: #888; font-size: 14px; margin-bottom: 4px; }
+        .stat-value { font-size: 32px; font-weight: bold; color: #6366f1; }
+        .stat-value.cost { color: #22c55e; }
+        .stat-value.latency { color: #f59e0b; }
+
+        .section { margin-bottom: 24px; }
+        .section-title { font-size: 18px; margin-bottom: 12px; color: #a5b4fc; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #1a1a2e;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        th, td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid #2d2d44;
+        }
+        th { background: #252540; color: #a5b4fc; font-weight: 600; }
+        tr.clickable { cursor: pointer; }
+        tr.clickable:hover { background: #252540; }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .badge.openai { background: #10b981; color: #000; }
+        .badge.anthropic { background: #f59e0b; color: #000; }
+        .badge.ollama { background: #6366f1; color: #fff; }
+        .badge.local { background: #8b5cf6; color: #fff; }
+        .badge.kokoro { background: #ec4899; color: #fff; }
+        .badge.cached { background: #22c55e; color: #000; }
+        .badge.error { background: #ef4444; color: #fff; }
+        .badge.success { background: #22c55e; color: #000; }
+        .badge.sensitive { background: #ef4444; color: #fff; }
+        .badge.not-sensitive { background: #374151; color: #9ca3af; }
+        .badge.precision { background: #8b5cf6; color: #fff; }
+        .badge.usecase { background: #f59e0b; color: #000; }
+        .badge.images { background: #06b6d4; color: #000; }
+        .badge.websearch { background: #3b82f6; color: #fff; font-size: 10px; }
+        .exclude-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: 12px; background: #374151; color: #9ca3af; font-size: 12px; cursor: pointer; border: 1px solid transparent; transition: all 0.15s; }
+        .exclude-chip:hover { background: #4b5563; }
+        .exclude-chip.excluded { background: #7f1d1d; color: #fca5a5; border-color: #ef4444; }
+        .exclude-chip .x { font-size: 14px; font-weight: bold; margin-left: 2px; }
+        .badge.replay { background: #ec4899; color: #fff; }
+        .badge.type-llm { background: #6366f1; color: #fff; }
+        .badge.type-tts { background: #ec4899; color: #fff; }
+        .badge.type-stt { background: #14b8a6; color: #000; }
+
+        .type-filter {
+            padding: 6px 12px;
+            border-radius: 6px;
+            border: 1px solid #374151;
+            background: #1a1a2e;
+            color: #888;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .type-filter:hover { border-color: #6366f1; color: #fff; }
+        .type-filter.active { background: #6366f1; color: #fff; border-color: #6366f1; }
+
+        .routes-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 12px;
+        }
+        .route-card {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 16px;
+            border-left: 4px solid #6366f1;
+        }
+        .route-card.unavailable { border-left-color: #ef4444; opacity: 0.6; }
+        .route-card.text { border-left-color: #6366f1; }
+        .route-card.vision { border-left-color: #06b6d4; }
+        .route-card.tts { border-left-color: #ec4899; }
+        .route-card.stt { border-left-color: #22c55e; }
+        .route-card.overridden { border-left-color: #ef4444 !important; background: rgba(239, 68, 68, 0.1); }
+        .route-card.overridden .route-target { color: #ef4444; }
+        .route-card.editable { cursor: pointer; transition: transform 0.1s, box-shadow 0.1s; }
+        .route-card.editable:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+        .route-flags { font-size: 13px; color: #888; margin-bottom: 8px; }
+        .route-target { font-size: 15px; font-weight: 600; }
+        .route-type { font-size: 11px; text-transform: uppercase; margin-bottom: 4px; }
+
+        /* STT History Cards */
+        .stt-card {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        .stt-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #2d2d44;
+        }
+        .stt-card-meta {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            font-size: 13px;
+        }
+        .stt-card-meta span { color: #888; }
+        .stt-card-meta strong { color: #a5b4fc; }
+        .stt-transcription {
+            background: #252540;
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-size: 14px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        .stt-transcription:empty::before {
+            content: '(No transcription available)';
+            color: #666;
+            font-style: italic;
+        }
+
+        .refresh-btn {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            background: #6366f1;
+            color: #fff;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);
+            z-index: 100;
+        }
+        .refresh-btn:hover { background: #4f46e5; }
+
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+        .spinning { animation: spin 1s linear infinite; }
+
+        /* Modal styles */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.8);
+            z-index: 1000;
+            overflow-y: auto;
+            padding: 40px 20px;
+        }
+        .modal-overlay.active { display: block; }
+        .modal {
+            background: #1a1a2e;
+            border-radius: 16px;
+            max-width: 900px;
+            margin: 0 auto;
+            position: relative;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 24px;
+            border-bottom: 1px solid #2d2d44;
+        }
+        .modal-header h2 { color: #a5b4fc; font-size: 20px; }
+        .modal-close {
+            background: none;
+            border: none;
+            color: #888;
+            font-size: 28px;
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+        }
+        .modal-close:hover { color: #fff; }
+        .modal-body { padding: 24px; }
+        .modal-section { margin-bottom: 24px; }
+        .modal-section:last-child { margin-bottom: 0; }
+        .modal-section h3 {
+            color: #6366f1;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+        }
+
+        .detail-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+        }
+        .detail-item { }
+        .detail-label { color: #888; font-size: 12px; margin-bottom: 4px; }
+        .detail-value { color: #e0e0e0; font-size: 14px; font-weight: 500; }
+
+        .code-block {
+            background: #252540;
+            border-radius: 8px;
+            padding: 16px;
+            font-family: 'SF Mono', Monaco, 'Consolas', monospace;
+            font-size: 13px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 300px;
+            overflow-y: auto;
+            scrollbar-width: none; /* Firefox */
+            -ms-overflow-style: none; /* IE/Edge */
+        }
+        .code-block::-webkit-scrollbar {
+            display: none; /* Chrome/Safari/Opera */
+        }
+        .message-block {
+            background: #252540;
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 8px;
+        }
+        .message-block:last-child { margin-bottom: 0; }
+        .message-role {
+            color: #6366f1;
+            font-weight: 600;
+            font-size: 12px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+        .message-content {
+            color: #e0e0e0;
+            font-size: 14px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .tokens-small { font-size: 11px; color: #888; }
+        .client-ip { font-size: 11px; color: #a5b4fc; font-family: monospace; }
+
+        /* Image preview styles */
+        .message-text { margin-bottom: 8px; }
+        .message-text:last-child { margin-bottom: 0; }
+        .message-image-container {
+            margin: 12px 0;
+            text-align: center;
+        }
+        .message-image {
+            max-width: 100%;
+            max-height: 300px;
+            border-radius: 8px;
+            border: 1px solid #3d3d5c;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .message-image:hover {
+            transform: scale(1.02);
+            box-shadow: 0 4px 20px rgba(99, 102, 241, 0.3);
+        }
+        .image-label {
+            color: #888;
+            font-size: 11px;
+            margin-top: 4px;
+        }
+        .image-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.95);
+            z-index: 2000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .full-image {
+            max-width: 95vw;
+            max-height: 90vh;
+            border-radius: 8px;
+        }
+        .image-hint {
+            color: #888;
+            font-size: 12px;
+            margin-top: 16px;
+        }
+
+        /* Pending requests styles */
+        #pending-section {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border: 1px solid #f59e0b;
+            border-radius: 12px;
+            padding: 16px;
+        }
+        #pending-section .section-title {
+            color: #f59e0b;
+        }
+        .pending-count {
+            background: #f59e0b;
+            color: #000;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 12px;
+            margin-left: 8px;
+        }
+        #pending-table tbody tr {
+            background: rgba(245, 158, 11, 0.1);
+            animation: pulse 2s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { background: rgba(245, 158, 11, 0.1); }
+            50% { background: rgba(245, 158, 11, 0.2); }
+        }
+        .elapsed-time {
+            font-family: 'SF Mono', Monaco, 'Consolas', monospace;
+            color: #f59e0b;
+        }
+        .preview-text {
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 12px;
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>LLM Proxy</h1>
+        <p class="subtitle">Unified AI gateway with routing, caching, and cost tracking</p>
+
+        <!-- Navigation Tabs -->
+        <div class="nav-tabs">
+            <button class="nav-tab active" onclick="switchTab('llm')">Requests</button>
+            <button class="nav-tab" onclick="window.location.href='/test'">Playground</button>
+            <button class="nav-tab" onclick="switchTab('routing')">Routing</button>
+            <button class="nav-tab" onclick="switchTab('models')">Models</button>
+            <button class="nav-tab" onclick="window.location.href='/analytics'">Analytics</button>
+            <button class="nav-tab" onclick="window.location.href='/stats'">Stats</button>
+            <button class="nav-tab" onclick="switchTab('system')">System</button>
+        </div>
+
+        <!-- LLM Tab -->
+        <div id="tab-llm" class="tab-content active">
+            <div class="stats-grid" id="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Total Requests</div>
+                    <div class="stat-value" id="total-requests">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Cache Hit Rate</div>
+                    <div class="stat-value" id="cache-rate">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total Cost</div>
+                    <div class="stat-value cost" id="total-cost">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Today's Cost</div>
+                    <div class="stat-value cost" id="today-cost">-</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">By Provider</h2>
+                <table id="provider-table">
+                    <thead><tr><th>Provider</th><th>Requests</th><th>Avg Latency</th><th>Cost</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <div class="section" id="pending-section" style="display:none">
+                <h2 class="section-title">Pending Requests <span class="pending-count" id="pending-count"></span></h2>
+                <table id="pending-table">
+                    <thead><tr><th>Started</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Usecase</th><th>Elapsed</th><th>Preview</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">Recent Requests <span style="font-size:12px;color:#888;font-weight:normal">(click row for details)</span></h2>
+                <div id="filter-bar" style="display: none; background: #2d2d44; padding: 12px 16px; border-radius: 8px; margin-bottom: 12px; color: #a5b4fc; font-size: 14px;"></div>
+                <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center;">
+                    <button class="type-filter active" data-type="" onclick="filterByType('')">All</button>
+                    <button class="type-filter" data-type="llm" onclick="filterByType('llm')">LLM</button>
+                    <button class="type-filter" data-type="tts" onclick="filterByType('tts')">TTS</button>
+                    <button class="type-filter" data-type="stt" onclick="filterByType('stt')">STT</button>
+                    <span style="margin-left: 16px; color: #888;">Usecase:</span>
+                    <select id="usecase-filter" onchange="filterByUsecase(this.value)" style="padding: 6px 12px; border-radius: 6px; border: 1px solid #374151; background: #1a1a2e; color: #888; cursor: pointer; font-size: 13px;">
+                        <option value="">All</option>
+                    </select>
+                    <span style="margin-left: 16px; color: #888;">Exclude:</span>
+                    <div id="usecase-exclude-chips" style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;"></div>
+                    <button id="compare-btn" onclick="compareSelected()" style="margin-left: auto; padding: 8px 16px; border-radius: 6px; border: 1px solid #6366f1; background: #1e1e2e; color: #6366f1; cursor: pointer; font-size: 13px; display: none;">Compare Selected (0)</button>
+                </div>
+                <table id="recent-table">
+                    <thead><tr><th style="width:30px"><input type="checkbox" id="select-all-checkbox" onclick="toggleSelectAll(this)" title="Select all for comparison"></th><th>Time</th><th>Hash</th><th>Type</th><th>Provider</th><th>Model</th><th>Usecase</th><th>Info</th><th>Latency</th><th>Cost</th><th>Status</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+                <div id="pagination-controls" style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px; padding: 12px 16px; background: #1e1e2e; border-radius: 8px;">
+                    <button id="prev-page" onclick="goToPrevPage()" style="padding: 8px 16px; border-radius: 6px; border: 1px solid #374151; background: #2d2d44; color: #a5b4fc; cursor: pointer; font-size: 13px;" disabled>&larr; Previous</button>
+                    <span id="page-info" style="color: #888; font-size: 13px;">Page 1 of 1 (0 total)</span>
+                    <button id="next-page" onclick="goToNextPage()" style="padding: 8px 16px; border-radius: 6px; border: 1px solid #374151; background: #2d2d44; color: #a5b4fc; cursor: pointer; font-size: 13px;" disabled>Next &rarr;</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Routing Tab -->
+        <div id="tab-routing" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">Usecase Routing Configuration</h2>
+                <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 20px;">
+                    <label style="color: #a5b4fc;">Usecase:</label>
+                    <select id="usecase-select" onchange="loadRoutes()" style="padding: 8px 12px; border-radius: 8px; background: #1e1e2e; border: 1px solid #374151; color: #fff; min-width: 200px;">
+                        <option value="">(base config - no overrides)</option>
+                    </select>
+                    <input type="text" id="new-usecase-input" placeholder="New usecase name..." style="padding: 8px 12px; border-radius: 8px; background: #1e1e2e; border: 1px solid #374151; color: #fff;">
+                    <button onclick="addNewUsecase()" style="padding: 8px 16px; border-radius: 8px; background: #6366f1; border: none; color: #fff; cursor: pointer;">Add</button>
+                </div>
+                <p style="color: #888; font-size: 13px; margin-bottom: 20px;">Click on a route card to change its model. Overridden routes are shown in <span style="color: #ef4444;">red</span>.</p>
+            </div>
+            <div class="section">
+                <h2 class="section-title">Text Routing</h2>
+                <div class="routes-grid" id="text-routes-grid"></div>
+            </div>
+            <div class="section">
+                <h2 class="section-title">Vision Routing</h2>
+                <div class="routes-grid" id="vision-routes-grid"></div>
+            </div>
+            <div class="section">
+                <h2 class="section-title">TTS Routing</h2>
+                <div class="routes-grid" id="tts-routes-grid"></div>
+            </div>
+            <div class="section">
+                <h2 class="section-title">STT Routing</h2>
+                <div class="routes-grid" id="stt-routes-grid"></div>
+            </div>
+            <div class="section" id="usecase-distribution-section" style="display: none;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                    <h2 class="section-title" style="margin: 0;">Traffic Distribution</h2>
+                    <div style="display: flex; gap: 8px;">
+                        <button id="range-24h" onclick="setTimeRange('24h')" style="padding: 6px 12px; border-radius: 6px; border: 1px solid #374151; background: #1e1e2e; color: #888; cursor: pointer; font-size: 12px;">24h</button>
+                        <button id="range-7d" onclick="setTimeRange('7d')" style="padding: 6px 12px; border-radius: 6px; border: 1px solid #374151; background: #1e1e2e; color: #888; cursor: pointer; font-size: 12px;">7d</button>
+                        <button id="range-30d" onclick="setTimeRange('30d')" style="padding: 6px 12px; border-radius: 6px; border: 1px solid #6366f1; background: #6366f1; color: #fff; cursor: pointer; font-size: 12px;">30d</button>
+                    </div>
+                </div>
+                <p style="color: #888; font-size: 13px; margin-bottom: 12px;">Shows which sensitivity/precision combinations are used - helps identify what routes matter most</p>
+                <div id="usecase-distribution-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px;"></div>
+                <div id="usecase-distribution-empty" style="display: none; color: #888; font-style: italic; padding: 20px; text-align: center;">No requests in the selected time range</div>
+            </div>
+            <div class="section">
+                <h2 class="section-title">Model Traffic Volume</h2>
+                <p style="color: #888; font-size: 13px; margin-bottom: 12px;">Request counts by model - helps identify high-traffic routes to optimize</p>
+                <div id="model-volume-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px;"></div>
+            </div>
+        </div>
+
+        <!-- System Metrics Tab -->
+        <div id="tab-system" class="tab-content">
+            <div class="section">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <h2 class="section-title" style="margin: 0;">System Metrics</h2>
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <span id="system-hostname" style="color: #a5b4fc; font-size: 14px;"></span>
+                        <span id="system-last-update" style="color: #888; font-size: 12px;"></span>
+                        <a href="http://grafana.lan/d/b2d10d3f-3168-4346-9006-af925bdf53a2/node-exporter-mac-osx?orgId=1&amp;from=now-24h&amp;to=now&amp;timezone=browser&amp;var-datasource=d12817a3-8969-4c8f-9f1b-baf56584a1f1&amp;var-instance=192.168.1.238:9100" target="_blank" style="padding: 6px 12px; background: #6366f1; color: white; border-radius: 6px; text-decoration: none; font-size: 13px; display: flex; align-items: center; gap: 6px;">
+                            <span>📊</span> Grafana
+                        </a>
+                    </div>
+                </div>
+                <div class="stats-grid" id="system-stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">CPU Usage</div>
+                        <div class="stat-value" id="cpu-usage">-</div>
+                        <div id="cpu-bar" style="margin-top: 8px; background: #374151; border-radius: 4px; height: 8px; overflow: hidden;">
+                            <div id="cpu-bar-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444); border-radius: 4px; transition: width 0.5s;"></div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Memory Usage</div>
+                        <div class="stat-value" id="mem-usage">-</div>
+                        <div id="mem-bar" style="margin-top: 8px; background: #374151; border-radius: 4px; height: 8px; overflow: hidden;">
+                            <div id="mem-bar-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444); border-radius: 4px; transition: width 0.5s;"></div>
+                        </div>
+                        <div id="mem-detail" style="margin-top: 4px; font-size: 11px; color: #888;"></div>
+                    </div>
+                    <div class="stat-card" id="gpu-card" style="display: none;">
+                        <div class="stat-label">GPU Usage</div>
+                        <div class="stat-value" id="gpu-usage">-</div>
+                        <div id="gpu-bar" style="margin-top: 8px; background: #374151; border-radius: 4px; height: 8px; overflow: hidden;">
+                            <div id="gpu-bar-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444); border-radius: 4px; transition: width 0.5s;"></div>
+                        </div>
+                        <div id="gpu-name" style="margin-top: 4px; font-size: 11px; color: #888;"></div>
+                    </div>
+                    <div class="stat-card" id="gpu-mem-card" style="display: none;">
+                        <div class="stat-label">GPU Memory</div>
+                        <div class="stat-value" id="gpu-mem-usage">-</div>
+                        <div id="gpu-mem-bar" style="margin-top: 8px; background: #374151; border-radius: 4px; height: 8px; overflow: hidden;">
+                            <div id="gpu-mem-bar-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444); border-radius: 4px; transition: width 0.5s;"></div>
+                        </div>
+                        <div id="gpu-temp" style="margin-top: 4px; font-size: 11px; color: #888;"></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Uptime</div>
+                        <div class="stat-value" id="system-uptime">-</div>
+                        <div id="system-platform" style="margin-top: 4px; font-size: 11px; color: #888;"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="section">
+                <h2 class="section-title">CPU Cores</h2>
+                <div id="cpu-cores-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px;"></div>
+            </div>
+        </div>
+
+        <!-- Models Tab -->
+        <div id="tab-models" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">Model Availability</h2>
+                <p style="color: #888; font-size: 13px; margin-bottom: 20px;">Toggle models on/off to control which models the proxy can forward requests to. Disabled models will return a 503 error.</p>
+                <div id="models-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;"></div>
+            </div>
+        </div>
+
+        <!-- Route Edit Modal -->
+        <div class="modal-overlay" id="route-modal-overlay" onclick="closeRouteModal(event)" style="display:none">
+            <div class="modal" onclick="event.stopPropagation()" style="max-width: 500px;">
+                <div class="modal-header">
+                    <h2>Edit Route</h2>
+                    <button class="modal-close" onclick="closeRouteModal()">&times;</button>
+                </div>
+                <div class="modal-body" id="route-modal-body">
+                    <div style="margin-bottom: 16px;">
+                        <div style="color: #888; font-size: 13px;">Route</div>
+                        <div id="route-edit-info" style="color: #fff; font-size: 15px;"></div>
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <div style="color: #888; font-size: 13px; margin-bottom: 4px;">Base Model</div>
+                        <div id="route-base-model" style="color: #6366f1; font-size: 14px;"></div>
+                    </div>
+                    <div id="route-traffic-info" style="margin-bottom: 16px; padding: 10px; background: #1e1e2e; border-radius: 8px; display: none;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 18px;">⚠️</span>
+                            <div>
+                                <div style="color: #f59e0b; font-size: 13px; font-weight: 600;">Route Traffic (24h)</div>
+                                <div id="route-traffic-count" style="color: #fff; font-size: 14px;"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="color: #888; font-size: 13px; display: block; margin-bottom: 4px;">Provider</label>
+                        <select id="route-edit-provider" onchange="updateModelOptions()" style="width: 100%; padding: 10px; border-radius: 8px; background: #1e1e2e; border: 1px solid #374151; color: #fff;">
+                            <option value="anthropic">anthropic</option>
+                            <option value="openai">openai</option>
+                            <option value="ollama">ollama</option>
+                        </select>
+                    </div>
+                    <div style="margin-bottom: 16px;">
+                        <label style="color: #888; font-size: 13px; display: block; margin-bottom: 4px;">Model</label>
+                        <select id="route-edit-model" style="width: 100%; padding: 10px; border-radius: 8px; background: #1e1e2e; border: 1px solid #374151; color: #fff;">
+                        </select>
+                    </div>
+                    <div style="display: flex; gap: 12px; margin-top: 20px;">
+                        <button onclick="saveRouteOverride()" style="flex: 1; padding: 12px; border-radius: 8px; background: #22c55e; border: none; color: #000; font-weight: 600; cursor: pointer;">Save Override</button>
+                        <button onclick="resetRouteToBase()" id="reset-route-btn" style="flex: 1; padding: 12px; border-radius: 8px; background: #ef4444; border: none; color: #fff; font-weight: 600; cursor: pointer; display: none;">Reset to Base</button>
+                        <button onclick="closeRouteModal()" style="flex: 1; padding: 12px; border-radius: 8px; background: #374151; border: none; color: #fff; font-weight: 600; cursor: pointer;">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button class="refresh-btn" id="refresh-btn" onclick="refresh()">&#8635;</button>
+
+    <!-- Global tooltip (for reliable hover tooltips) -->
+    <div id="global-tooltip" style="position:fixed;display:none;z-index:99999;max-width:520px;white-space:pre-wrap;pointer-events:none;background:#0b1220;border:1px solid #334155;color:#e2e8f0;padding:10px 12px;border-radius:10px;font-size:12px;line-height:1.35;box-shadow:0 12px 30px rgba(0,0,0,0.55)"></div>
+
+    <!-- Request Detail Modal -->
+    <div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2>Request Details</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body">
+                <div style="text-align:center;color:#888;padding:40px;">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentTypeFilter = '';
+        let currentFilters = {}; // For matrix filtering
+
+        // Request comparison tracking
+        let selectedForCompare = new Set();
+        let compareRequestsData = new Map(); // Cache loaded request data
+
+        // Simple hash function for request fingerprinting
+        function computeRequestHash(req) {
+            // Hash based on system message + first user message
+            let content = '';
+            if (req.request && req.request.messages) {
+                for (const msg of req.request.messages) {
+                    if (msg.role === 'system') {
+                        content += 'SYS:' + (typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content));
+                    }
+                }
+                // Add first user message
+                for (const msg of req.request.messages) {
+                    if (msg.role === 'user') {
+                        content += 'USR:' + (typeof msg.content === 'string' ? msg.content.substring(0, 100) : JSON.stringify(msg.content).substring(0, 100));
+                        break;
+                    }
+                }
+            }
+            // Simple hash
+            let hash = 0;
+            for (let i = 0; i < content.length; i++) {
+                const char = content.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash = hash & hash;
+            }
+            return Math.abs(hash).toString(16).padStart(8, '0');
+        }
+
+        function toggleCompareSelection(id, selected) {
+            if (selected) {
+                selectedForCompare.add(id);
+            } else {
+                selectedForCompare.delete(id);
+            }
+            updateCompareButton();
+        }
+
+        function toggleSelectAll(checkbox) {
+            const checkboxes = document.querySelectorAll('#recent-table tbody input[type="checkbox"]');
+            checkboxes.forEach(cb => {
+                cb.checked = checkbox.checked;
+                const id = parseInt(cb.closest('tr').querySelector('input[type="checkbox"]').onchange.toString().match(/\d+/)[0]);
+                if (checkbox.checked) {
+                    selectedForCompare.add(id);
+                } else {
+                    selectedForCompare.delete(id);
+                }
+            });
+            updateCompareButton();
+        }
+
+        function updateCompareButton() {
+            const btn = document.getElementById('compare-btn');
+            const count = selectedForCompare.size;
+            if (count >= 2) {
+                btn.style.display = 'block';
+                btn.textContent = 'Compare Selected (' + count + ')';
+                btn.style.background = '#6366f1';
+                btn.style.color = 'white';
+            } else if (count === 1) {
+                btn.style.display = 'block';
+                btn.textContent = 'Select 1 more to compare';
+                btn.style.background = '#1e1e2e';
+                btn.style.color = '#888';
+            } else {
+                btn.style.display = 'none';
+            }
+        }
+
+        async function compareSelected() {
+            if (selectedForCompare.size < 2) return;
+            const ids = Array.from(selectedForCompare).slice(0, 2); // Compare first 2 selected
+
+            // Load both requests
+            const [data1, data2] = await Promise.all([
+                fetch('/api/request?id=' + ids[0]).then(r => r.json()),
+                fetch('/api/request?id=' + ids[1]).then(r => r.json())
+            ]);
+
+            showCompareModal(data1, data2);
+        }
+
+        function showCompareModal(req1, req2) {
+            const overlay = document.getElementById('modal-overlay');
+            const body = document.getElementById('modal-body');
+            overlay.classList.add('active');
+
+            // Extract system messages
+            const sys1 = getSystemMessage(req1);
+            const sys2 = getSystemMessage(req2);
+            const sysMatch = sys1 === sys2;
+
+            // Extract user messages
+            const user1 = getUserMessages(req1);
+            const user2 = getUserMessages(req2);
+
+            // Extract responses
+            const resp1 = getResponseContent(req1);
+            const resp2 = getResponseContent(req2);
+
+            let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">';
+            html += '<h2 style="color:#a5b4fc;margin:0">Compare Requests</h2>';
+            html += '<button onclick="selectedForCompare.clear();updateCompareButton();closeModal()" style="padding:8px 16px;background:#374151;border:none;border-radius:6px;color:#e2e8f0;cursor:pointer">Clear Selection</button>';
+            html += '</div>';
+
+            // Metadata comparison
+            html += '<div class="modal-section"><h3>Metadata</h3>';
+            html += '<table style="width:100%;border-collapse:collapse">';
+            html += '<tr><th style="text-align:left;padding:8px;border-bottom:1px solid #374151;width:150px"></th>';
+            html += '<th style="text-align:left;padding:8px;border-bottom:1px solid #374151">Request #' + req1.id + '</th>';
+            html += '<th style="text-align:left;padding:8px;border-bottom:1px solid #374151">Request #' + req2.id + '</th></tr>';
+            html += compareRow('Time', new Date(req1.timestamp).toLocaleString(), new Date(req2.timestamp).toLocaleString());
+            html += compareRow('Model', req1.model, req2.model);
+            html += compareRow('Provider', req1.provider, req2.provider);
+            html += compareRow('Usecase', req1.usecase, req2.usecase);
+            html += compareRow('Latency', req1.latency_ms + 'ms', req2.latency_ms + 'ms');
+            html += compareRow('Input Tokens', req1.input_tokens, req2.input_tokens);
+            html += compareRow('Output Tokens', req1.output_tokens, req2.output_tokens);
+            html += compareRow('Cost', '$' + req1.cost_usd.toFixed(6), '$' + req2.cost_usd.toFixed(6));
+            html += '</table></div>';
+
+            // System message comparison
+            html += '<div class="modal-section"><h3>System Message ' + (sysMatch ? '<span style="color:#22c55e">(identical)</span>' : '<span style="color:#f59e0b">(different)</span>') + '</h3>';
+            if (sysMatch) {
+                html += '<div class="code-block" style="max-height:200px;overflow-y:auto">' + escapeHtml(sys1 || '(none)') + '</div>';
+            } else {
+                html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+                html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req1.id + '</div><div class="code-block" style="max-height:200px;overflow-y:auto;border-left:3px solid #6366f1">' + escapeHtml(sys1 || '(none)') + '</div></div>';
+                html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req2.id + '</div><div class="code-block" style="max-height:200px;overflow-y:auto;border-left:3px solid #ec4899">' + escapeHtml(sys2 || '(none)') + '</div></div>';
+                html += '</div>';
+            }
+            html += '</div>';
+
+            // User messages comparison
+            const userMsgsMatch = JSON.stringify(user1) === JSON.stringify(user2);
+            html += '<div class="modal-section"><h3>User Messages ';
+            if (userMsgsMatch) {
+                html += '<span style="color:#22c55e">(' + user1.length + ' messages, identical)</span>';
+            } else {
+                html += '<span style="color:#f59e0b">(different: ' + user1.length + ' vs ' + user2.length + ')</span>';
+            }
+            html += '</h3>';
+
+            if (userMsgsMatch && user1.length > 0) {
+                // Show single version when identical
+                html += '<div style="color:#888;font-size:12px;margin-bottom:8px">Last ' + Math.min(3, user1.length) + ' user message(s):</div>';
+                for (const msg of user1.slice(-3)) {
+                    html += '<div class="code-block" style="margin-bottom:8px;max-height:150px;overflow-y:auto">' + escapeHtml(msg) + '</div>';
+                }
+            } else if (!userMsgsMatch) {
+                // Show side by side when different
+                html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+                html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req1.id + ' (' + user1.length + ' messages)</div>';
+                for (const msg of user1.slice(-3)) {
+                    html += '<div class="code-block" style="margin-bottom:8px;max-height:150px;overflow-y:auto;border-left:3px solid #6366f1;font-size:12px">' + escapeHtml(msg) + '</div>';
+                }
+                if (user1.length === 0) html += '<div style="color:#888;font-style:italic">No user messages</div>';
+                html += '</div>';
+                html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req2.id + ' (' + user2.length + ' messages)</div>';
+                for (const msg of user2.slice(-3)) {
+                    html += '<div class="code-block" style="margin-bottom:8px;max-height:150px;overflow-y:auto;border-left:3px solid #ec4899;font-size:12px">' + escapeHtml(msg) + '</div>';
+                }
+                if (user2.length === 0) html += '<div style="color:#888;font-style:italic">No user messages</div>';
+                html += '</div></div>';
+            } else {
+                html += '<div style="color:#888;font-style:italic">No user messages</div>';
+            }
+            html += '</div>';
+
+            // Tools comparison
+            const tools1 = getToolNames(req1);
+            const tools2 = getToolNames(req2);
+            const toolsMatch = JSON.stringify(tools1) === JSON.stringify(tools2);
+            html += '<div class="modal-section"><h3>Tools ' + (toolsMatch ? '<span style="color:#22c55e">(' + tools1.length + ' tools, identical)</span>' : '<span style="color:#f59e0b">(different)</span>') + '</h3>';
+            if (toolsMatch && tools1.length > 0) {
+                html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+                for (const name of tools1) {
+                    html += '<span class="badge" style="background:#374151;color:#e2e8f0;padding:4px 8px;font-size:11px">' + escapeHtml(name) + '</span>';
+                }
+                html += '</div>';
+            } else if (!toolsMatch) {
+                html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+                html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req1.id + ' (' + tools1.length + ' tools)</div><div style="display:flex;flex-wrap:wrap;gap:4px">';
+                for (const name of tools1) { html += '<span class="badge" style="background:#374151;color:#e2e8f0;padding:3px 6px;font-size:10px">' + escapeHtml(name) + '</span>'; }
+                html += '</div></div>';
+                html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req2.id + ' (' + tools2.length + ' tools)</div><div style="display:flex;flex-wrap:wrap;gap:4px">';
+                for (const name of tools2) { html += '<span class="badge" style="background:#374151;color:#e2e8f0;padding:3px 6px;font-size:10px">' + escapeHtml(name) + '</span>'; }
+                html += '</div></div></div>';
+            } else {
+                html += '<div style="color:#888;font-style:italic">No tools</div>';
+            }
+            html += '</div>';
+
+            // Response comparison
+            html += '<div class="modal-section"><h3>Responses</h3>';
+            html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+            html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req1.id + '</div><div class="code-block" style="max-height:300px;overflow-y:auto;border-left:3px solid #6366f1">' + escapeHtml(resp1) + '</div></div>';
+            html += '<div><div style="color:#888;font-size:12px;margin-bottom:4px">Request #' + req2.id + '</div><div class="code-block" style="max-height:300px;overflow-y:auto;border-left:3px solid #ec4899">' + escapeHtml(resp2) + '</div></div>';
+            html += '</div></div>';
+
+            body.innerHTML = html;
+        }
+
+        function compareRow(label, val1, val2) {
+            const match = val1 === val2;
+            const style1 = match ? '' : 'color:#6366f1';
+            const style2 = match ? '' : 'color:#ec4899';
+            return '<tr><td style="padding:8px;border-bottom:1px solid #2d2d44;color:#888">' + label + '</td>' +
+                '<td style="padding:8px;border-bottom:1px solid #2d2d44;' + style1 + '">' + val1 + '</td>' +
+                '<td style="padding:8px;border-bottom:1px solid #2d2d44;' + style2 + '">' + val2 + '</td></tr>';
+        }
+
+        function getSystemMessage(req) {
+            if (!req.request || !req.request.messages) return '';
+            for (const msg of req.request.messages) {
+                if (msg.role === 'system') {
+                    return typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+                }
+            }
+            return '';
+        }
+
+        function getUserMessages(req) {
+            if (!req.request || !req.request.messages) return [];
+            return req.request.messages
+                .filter(m => m.role === 'user')
+                .map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content));
+        }
+
+        function getResponseContent(req) {
+            if (!req.response) return '(no response)';
+            if (req.response.choices && req.response.choices.length > 0) {
+                const choice = req.response.choices[0];
+                if (choice.message && choice.message.content) {
+                    return choice.message.content;
+                }
+            }
+            return JSON.stringify(req.response, null, 2);
+        }
+
+        function getToolNames(req) {
+            if (!req.request || !req.request.tools) return [];
+            return req.request.tools.map(t => t.function?.name || t.name || 'unknown');
+        }
+
+        // IP to hostname mapping
+        const ipToHostname = {
+            '192.168.1.99': 'robot.lan',
+            '192.168.1.154': 'laptop'
+        };
+        function formatClientIP(ip) {
+            if (!ip || ip === 'unknown') return 'unknown';
+            return ipToHostname[ip] || ip;
+        }
+
+        // Parse matrix filters from URL
+        function parseMatrixFilters() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const matrixParam = urlParams.get('matrix');
+            console.log('Matrix param:', matrixParam);
+            if (matrixParam) {
+                const filterParams = new URLSearchParams(matrixParam);
+                currentFilters = {
+                    model: filterParams.get('model') || '',
+                    sensitive: filterParams.get('sensitive') || '',
+                    precision: filterParams.get('precision') || ''
+                };
+                console.log('Parsed filters:', currentFilters);
+            }
+        }
+        parseMatrixFilters();
+
+        function clearFilters() {
+            currentFilters = {};
+            currentPage = 1; // Reset to first page on filter clear
+            window.history.replaceState({}, '', '/');
+            updateFilterDisplay();
+            loadStats();
+        }
+
+        function updateFilterDisplay() {
+            const filterBar = document.getElementById('filter-bar');
+            if (!filterBar) return;
+
+            if (currentFilters.model || currentFilters.sensitive || currentFilters.precision) {
+                let filterText = 'Filtering: ';
+                if (currentFilters.model) filterText += 'model=' + currentFilters.model + ' ';
+                if (currentFilters.sensitive) filterText += 'sensitive=' + (currentFilters.sensitive === '1' ? 'true' : 'false') + ' ';
+                if (currentFilters.precision) filterText += 'precision=' + currentFilters.precision;
+                filterBar.innerHTML = filterText + ' <a href="#" onclick="clearFilters(); return false;" style="margin-left: 12px;">Clear filters</a>';
+                filterBar.style.display = 'block';
+            } else {
+                filterBar.style.display = 'none';
+            }
+        }
+
+        async function loadStats() {
+            let url = '/api/stats';
+            const params = new URLSearchParams();
+            if (currentFilters.model) params.set('model', currentFilters.model);
+            if (currentFilters.sensitive) params.set('sensitive', currentFilters.sensitive);
+            if (currentFilters.precision) params.set('precision', currentFilters.precision);
+            if (params.toString()) url += '?' + params.toString();
+            console.log('loadStats URL:', url, 'currentFilters:', currentFilters);
+
+            const resp = await fetch(url);
+            const stats = await resp.json();
+            console.log('Stats response filters:', stats.filters, 'recent count:', stats.recent_requests?.length);
+
+            updateFilterDisplay();
+
+            document.getElementById('total-requests').textContent = stats.total_requests.toLocaleString();
+            document.getElementById('cache-rate').textContent = (stats.cache_hit_rate * 100).toFixed(1) + '%';
+            document.getElementById('total-cost').textContent = '$' + stats.total_cost_usd.toFixed(4);
+            document.getElementById('today-cost').textContent = '$' + (stats.today?.cost_usd || 0).toFixed(4);
+
+            // Provider table
+            const providerBody = document.querySelector('#provider-table tbody');
+            providerBody.innerHTML = '';
+            for (const [provider, data] of Object.entries(stats.by_provider || {})) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td><span class="badge ' + provider + '">' + provider + '</span></td>' +
+                    '<td>' + data.count + '</td>' +
+                    '<td>' + Math.round(data.avg_latency_ms) + 'ms</td>' +
+                    '<td>$' + data.cost_usd.toFixed(4) + '</td>';
+                providerBody.appendChild(tr);
+            }
+
+            // Load recent requests via history API
+            await loadRecentRequests();
+        }
+
+        async function loadRecentRequests() {
+            let url = '/api/history?limit=50&page=' + currentPage;
+            if (currentTypeFilter) {
+                url += '&type=' + encodeURIComponent(currentTypeFilter);
+            }
+            if (currentUsecaseFilter) {
+                url += '&usecase=' + encodeURIComponent(currentUsecaseFilter);
+            }
+            if (excludedUsecases.size > 0) {
+                url += '&exclude_usecases=' + encodeURIComponent(Array.from(excludedUsecases).join(','));
+            }
+            // Add matrix filters
+            if (currentFilters.model) {
+                url += '&model=' + encodeURIComponent(currentFilters.model);
+            }
+            if (currentFilters.sensitive) {
+                url += '&sensitive=' + encodeURIComponent(currentFilters.sensitive);
+            }
+            if (currentFilters.precision) {
+                url += '&precision=' + encodeURIComponent(currentFilters.precision);
+            }
+            const resp = await fetch(url);
+            const data = await resp.json();
+
+            // Update pagination state
+            totalRequests = data.total;
+            totalPages = Math.max(1, Math.ceil(data.total / data.page_size));
+            currentPage = data.page;
+            updatePaginationControls();
+
+            const recentBody = document.querySelector('#recent-table tbody');
+            recentBody.innerHTML = '';
+            for (const req of data.requests || []) {
+                const tr = document.createElement('tr');
+                tr.className = 'clickable';
+                tr.onclick = (e) => { if (e.target.type !== 'checkbox') showRequestDetail(req.id); };
+                const time = new Date(req.timestamp).toLocaleTimeString();
+                const status = req.cached ? '<span class="badge cached">cached</span>' :
+                    (req.success ? '<span class="badge success">ok</span>' : '<span class="badge error">error</span>');
+                const usecase = req.usecase ? '<span class="badge usecase">' + req.usecase + '</span>' : '-';
+                const hasImages = req.has_images ? '<span class="badge images">img</span>' : '';
+                const replayBadge = req.is_replay ? '<span class="badge replay">replay</span>' : '';
+                const webSearchBadge = req.has_web_search ? '<span class="badge websearch" title="Web Search">🔍</span>' : '';
+                const reqType = req.request_type || 'llm';
+                const typeBadge = '<span class="badge type-' + reqType + '">' + reqType.toUpperCase() + '</span>';
+
+                // Use cache_key as hash (already computed server-side)
+                const hash = req.cache_key ? req.cache_key.substring(0, 12) : '...';
+
+                // Info column: tokens for LLM, voice for TTS, duration for STT
+                let info = '';
+                if (reqType === 'llm') {
+                    const tokens = (req.input_tokens || 0) + (req.output_tokens || 0);
+                    info = '<span class="tokens-small">' + tokens + ' tok</span>';
+                } else if (reqType === 'tts') {
+                    info = req.voice || '-';
+                } else if (reqType === 'stt') {
+                    info = req.audio_duration_ms ? (req.audio_duration_ms / 1000).toFixed(1) + 's' : '-';
+                }
+
+                const isSelected = selectedForCompare.has(req.id);
+                tr.innerHTML = '<td onclick="event.stopPropagation()"><input type="checkbox" ' + (isSelected ? 'checked' : '') + ' onchange="toggleCompareSelection(' + req.id + ', this.checked)"></td>' +
+                    '<td>' + time + '</td>' +
+                    '<td><span style="font-family:monospace;font-size:11px;color:#888" title="' + hash + '">' + hash.substring(0, 8) + '</span></td>' +
+                    '<td>' + typeBadge + ' ' + replayBadge + '</td>' +
+                    '<td><span class="badge ' + req.provider + '">' + req.provider + '</span></td>' +
+                    '<td>' + req.model + ' ' + hasImages + ' ' + webSearchBadge + '</td>' +
+                    '<td>' + usecase + '</td>' +
+                    '<td>' + info + '</td>' +
+                    '<td>' + req.latency_ms + 'ms</td>' +
+                    '<td>$' + req.cost_usd.toFixed(6) + '</td>' +
+                    '<td>' + status + '</td>';
+                recentBody.appendChild(tr);
+            }
+            updateCompareButton();
+        }
+
+        function filterByType(type) {
+            currentTypeFilter = type;
+            currentPage = 1; // Reset to first page on filter change
+            // Update button states
+            document.querySelectorAll('.type-filter').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.type === type);
+            });
+            loadRecentRequests();
+        }
+
+        let currentUsecaseFilter = '';
+        let excludedUsecases = new Set();
+        let currentPage = 1;
+        let totalPages = 1;
+        let totalRequests = 0;
+
+        function filterByUsecase(usecase) {
+            currentUsecaseFilter = usecase;
+            currentPage = 1; // Reset to first page on filter change
+            loadRecentRequests();
+        }
+
+        function toggleExcludeUsecase(usecase) {
+            if (excludedUsecases.has(usecase)) {
+                excludedUsecases.delete(usecase);
+            } else {
+                excludedUsecases.add(usecase);
+            }
+            currentPage = 1;
+            updateExcludeChips();
+            loadRecentRequests();
+        }
+
+        function updateExcludeChips() {
+            const container = document.getElementById('usecase-exclude-chips');
+            const chips = container.querySelectorAll('.exclude-chip');
+            chips.forEach(chip => {
+                const usecase = chip.dataset.usecase;
+                if (excludedUsecases.has(usecase)) {
+                    chip.classList.add('excluded');
+                } else {
+                    chip.classList.remove('excluded');
+                }
+            });
+        }
+
+        function goToPrevPage() {
+            if (currentPage > 1) {
+                currentPage--;
+                loadRecentRequests();
+            }
+        }
+
+        function goToNextPage() {
+            if (currentPage < totalPages) {
+                currentPage++;
+                loadRecentRequests();
+            }
+        }
+
+        function updatePaginationControls() {
+            const prevBtn = document.getElementById('prev-page');
+            const nextBtn = document.getElementById('next-page');
+            const pageInfo = document.getElementById('page-info');
+
+            prevBtn.disabled = currentPage <= 1;
+            nextBtn.disabled = currentPage >= totalPages;
+
+            prevBtn.style.opacity = prevBtn.disabled ? '0.5' : '1';
+            nextBtn.style.opacity = nextBtn.disabled ? '0.5' : '1';
+
+            pageInfo.textContent = 'Page ' + currentPage + ' of ' + totalPages + ' (' + totalRequests + ' total)';
+        }
+
+        async function loadUsecaseFilter() {
+            const resp = await fetch('/api/usecases/history');
+            const usecases = await resp.json();
+            const select = document.getElementById('usecase-filter');
+            const currentValue = select.value;
+
+            // Keep the first option (All)
+            select.innerHTML = '<option value="">All</option>';
+            for (const usecase of usecases || []) {
+                const opt = document.createElement('option');
+                opt.value = usecase;
+                opt.textContent = usecase;
+                select.appendChild(opt);
+            }
+
+            // Restore selection if it still exists
+            if (currentValue && usecases && usecases.includes(currentValue)) {
+                select.value = currentValue;
+            }
+
+            // Populate exclusion chips
+            const chipsContainer = document.getElementById('usecase-exclude-chips');
+            chipsContainer.innerHTML = '';
+            for (const usecase of usecases || []) {
+                const chip = document.createElement('span');
+                chip.className = 'exclude-chip' + (excludedUsecases.has(usecase) ? ' excluded' : '');
+                chip.dataset.usecase = usecase;
+                chip.onclick = () => toggleExcludeUsecase(usecase);
+                chip.innerHTML = usecase + '<span class="x">\u00d7</span>';
+                chipsContainer.appendChild(chip);
+            }
+        }
+
+        let availableModels = {};
+        let currentEditRoute = null;
+
+        async function loadUsecases() {
+            // Fetch all usecases from history (API calls made)
+            const resp = await fetch('/api/usecases/history');
+            const usecases = await resp.json();
+            const select = document.getElementById('usecase-select');
+            const currentValue = select.value;
+
+            // Keep the first option (base config)
+            select.innerHTML = '<option value="">(base config - no overrides)</option>';
+            for (const usecase of usecases || []) {
+                const opt = document.createElement('option');
+                opt.value = usecase;
+                opt.textContent = usecase;
+                select.appendChild(opt);
+            }
+
+            // Restore selection if it still exists
+            if (currentValue && usecases && usecases.includes(currentValue)) {
+                select.value = currentValue;
+            }
+        }
+
+        async function loadAvailableModels() {
+            const resp = await fetch('/api/models');
+            availableModels = await resp.json();
+        }
+
+        function addNewUsecase() {
+            const input = document.getElementById('new-usecase-input');
+            const name = input.value.trim();
+            if (!name) return;
+
+            const select = document.getElementById('usecase-select');
+            // Check if already exists
+            for (const opt of select.options) {
+                if (opt.value === name) {
+                    select.value = name;
+                    input.value = '';
+                    loadRoutes();
+                    return;
+                }
+            }
+
+            // Add new option
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            select.appendChild(opt);
+            select.value = name;
+            input.value = '';
+            loadRoutes();
+        }
+
+        async function loadRoutes() {
+            const usecase = document.getElementById('usecase-select').value;
+            const url = usecase ? '/api/routes?usecase=' + encodeURIComponent(usecase) : '/api/routes';
+            const resp = await fetch(url);
+            const routes = await resp.json();
+
+            const textGrid = document.getElementById('text-routes-grid');
+            const visionGrid = document.getElementById('vision-routes-grid');
+            const ttsGrid = document.getElementById('tts-routes-grid');
+            const sttGrid = document.getElementById('stt-routes-grid');
+            textGrid.innerHTML = '';
+            visionGrid.innerHTML = '';
+            ttsGrid.innerHTML = '';
+            sttGrid.innerHTML = '';
+
+            const typeColors = {
+                'text': '#6366f1',
+                'vision': '#06b6d4',
+                'tts': '#ec4899',
+                'stt': '#22c55e'
+            };
+
+            for (const route of routes) {
+                const card = document.createElement('div');
+                const isEditable = (route.type === 'text' || route.type === 'vision') && route.available && usecase;
+                const isOverridden = route.overridden;
+
+                let classes = 'route-card ' + route.type;
+                if (!route.available) classes += ' unavailable';
+                if (isOverridden) classes += ' overridden';
+                if (isEditable) classes += ' editable';
+                card.className = classes;
+
+                const flags = route.precision
+                    ? 'sensitive: ' + route.sensitive + ', precision: ' + route.precision
+                    : 'sensitive: ' + route.sensitive;
+
+                let targetText = route.available ? route.provider + ' / ' + route.model : 'Not Available';
+                if (isOverridden) {
+                    targetText += ' <span style="font-size:11px;opacity:0.7">(override)</span>';
+                }
+
+                card.innerHTML = '<div class="route-type" style="color:' + (typeColors[route.type] || '#6366f1') + '">' + route.type + '</div>' +
+                    '<div class="route-flags">' + flags + '</div>' +
+                    '<div class="route-target">' + targetText + '</div>';
+
+                if (isEditable) {
+                    card.onclick = () => openRouteEditModal(route, usecase);
+                }
+
+                if (route.type === 'vision') {
+                    visionGrid.appendChild(card);
+                } else if (route.type === 'tts') {
+                    ttsGrid.appendChild(card);
+                } else if (route.type === 'stt') {
+                    sttGrid.appendChild(card);
+                } else {
+                    textGrid.appendChild(card);
+                }
+            }
+
+            // Load distribution and model volumes for selected usecase
+            loadUsecaseDistribution(usecase);
+            loadModelVolumes(usecase);
+        }
+
+        let currentTimeRange = '30d';
+        let lastDistributionData = null;
+
+        function setTimeRange(range) {
+            currentTimeRange = range;
+            // Update button styles
+            ['24h', '7d', '30d'].forEach(r => {
+                const btn = document.getElementById('range-' + r);
+                if (r === range) {
+                    btn.style.background = '#6366f1';
+                    btn.style.borderColor = '#6366f1';
+                    btn.style.color = '#fff';
+                } else {
+                    btn.style.background = '#1e1e2e';
+                    btn.style.borderColor = '#374151';
+                    btn.style.color = '#888';
+                }
+            });
+            // Reload data with new range
+            const usecase = document.getElementById('usecase-select').value;
+            loadUsecaseDistribution(usecase);
+            loadModelVolumes(usecase);
+        }
+
+        async function loadUsecaseDistribution(usecase) {
+            const section = document.getElementById('usecase-distribution-section');
+            const grid = document.getElementById('usecase-distribution-grid');
+            const emptyMsg = document.getElementById('usecase-distribution-empty');
+
+            section.style.display = 'block';
+            grid.innerHTML = '';
+            emptyMsg.style.display = 'none';
+
+            let url = '/api/usecases/distribution?range=' + currentTimeRange;
+            if (usecase) {
+                url += '&usecase=' + encodeURIComponent(usecase);
+            }
+            const resp = await fetch(url);
+            const data = await resp.json();
+            lastDistributionData = data;
+
+            // Highlight route cards that have traffic
+            highlightActiveRoutes(data.distribution || []);
+
+            if (!data.distribution || data.distribution.length === 0) {
+                emptyMsg.style.display = 'block';
+                return;
+            }
+
+            const typeColors = {
+                'text': '#6366f1',
+                'vision': '#06b6d4'
+            };
+
+            const maxCount = Math.max(...data.distribution.map(d => d.count));
+
+            for (const d of data.distribution) {
+                const card = document.createElement('div');
+                card.style.cssText = 'background: #1e1e2e; border: 1px solid #374151; border-radius: 8px; padding: 12px;';
+
+                const barWidth = (d.count / maxCount) * 100;
+                const color = typeColors[d.route_type] || '#6366f1';
+                const pct = ((d.count / data.total) * 100).toFixed(1);
+
+                card.innerHTML =
+                    '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">' +
+                        '<span style="font-size: 12px; color: ' + color + '; font-weight: 600;">' + d.route_type.toUpperCase() + '</span>' +
+                        '<span style="font-size: 14px; font-weight: 600; color: #fff;">' + d.count + ' <span style="font-size: 11px; color: #888;">(' + pct + '%)</span></span>' +
+                    '</div>' +
+                    '<div style="font-size: 11px; color: #888; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="' + d.model + '">' + d.model + '</div>' +
+                    '<div style="font-size: 12px; color: #a5b4fc; margin-bottom: 8px;">' +
+                        'sensitive: ' + d.sensitive + ', precision: ' + d.precision +
+                    '</div>' +
+                    '<div style="background: #374151; border-radius: 4px; height: 6px; overflow: hidden;">' +
+                        '<div style="width: ' + barWidth + '%; height: 100%; background: ' + color + '; border-radius: 4px;"></div>' +
+                    '</div>';
+
+                grid.appendChild(card);
+            }
+
+            // Add total summary
+            const summary = document.createElement('div');
+            summary.style.cssText = 'background: #1e1e2e; border: 1px solid #22c55e; border-radius: 8px; padding: 12px; display: flex; align-items: center; justify-content: center;';
+            summary.innerHTML = '<span style="font-size: 14px; color: #22c55e; font-weight: 600;">Total: ' + data.total + ' requests (' + currentTimeRange + ')</span>';
+            grid.appendChild(summary);
+        }
+
+        function highlightActiveRoutes(distribution) {
+            // Build a set of active route keys
+            const activeRoutes = new Set();
+            for (const d of distribution) {
+                activeRoutes.add(d.route_type + '|' + d.sensitive + '|' + d.precision);
+            }
+
+            // Find all route cards and highlight those with traffic
+            document.querySelectorAll('.route-card').forEach(card => {
+                const flagsText = card.querySelector('.route-flags')?.textContent || '';
+                const typeText = card.querySelector('.route-type')?.textContent || '';
+
+                // Parse sensitive and precision from flags
+                const sensitiveMatch = flagsText.match(/sensitive:\s*(true|false)/);
+                const precisionMatch = flagsText.match(/precision:\s*(\w+)/);
+
+                if (sensitiveMatch && precisionMatch) {
+                    const key = typeText + '|' + sensitiveMatch[1] + '|' + precisionMatch[1];
+                    if (activeRoutes.has(key)) {
+                        card.style.boxShadow = '0 0 12px rgba(245, 158, 11, 0.6), inset 0 0 20px rgba(245, 158, 11, 0.1)';
+                        card.style.borderColor = '#f59e0b';
+                    } else {
+                        card.style.boxShadow = '';
+                        card.style.borderColor = '';
+                    }
+                }
+            });
+        }
+
+        async function openRouteEditModal(route, usecase) {
+            currentEditRoute = { ...route, usecase };
+
+            document.getElementById('route-edit-info').textContent =
+                route.type.toUpperCase() + ' | sensitive=' + route.sensitive + ' | precision=' + route.precision;
+            document.getElementById('route-base-model').textContent =
+                (route.base_provider || route.provider) + ' / ' + (route.base_model || route.model);
+
+            // Set current values
+            document.getElementById('route-edit-provider').value = route.provider;
+            updateModelOptions();
+            document.getElementById('route-edit-model').value = route.model;
+
+            // Show reset button if overridden
+            document.getElementById('reset-route-btn').style.display = route.overridden ? 'block' : 'none';
+
+            // Load traffic count for this specific route
+            const trafficInfo = document.getElementById('route-traffic-info');
+            const trafficCount = document.getElementById('route-traffic-count');
+            trafficInfo.style.display = 'none';
+
+            if (usecase) {
+                const resp = await fetch('/api/usecases/distribution?usecase=' + encodeURIComponent(usecase));
+                const data = await resp.json();
+
+                // Find the count for this specific route
+                const match = (data.distribution || []).find(d =>
+                    d.sensitive === route.sensitive &&
+                    d.precision === route.precision &&
+                    d.route_type === route.type
+                );
+
+                if (match && match.count > 0) {
+                    trafficInfo.style.display = 'block';
+                    const riskLevel = match.count > 100 ? 'high-traffic route!' : match.count > 10 ? 'moderate traffic' : 'low traffic';
+                    trafficCount.innerHTML = '<strong>' + match.count + '</strong> requests - ' + riskLevel;
+                }
+            }
+
+            document.getElementById('route-modal-overlay').style.display = 'flex';
+        }
+
+        function closeRouteModal(event) {
+            if (event && event.target !== event.currentTarget) return;
+            document.getElementById('route-modal-overlay').style.display = 'none';
+            currentEditRoute = null;
+        }
+
+        function updateModelOptions() {
+            const provider = document.getElementById('route-edit-provider').value;
+            const modelSelect = document.getElementById('route-edit-model');
+            const currentModel = modelSelect.value;
+
+            modelSelect.innerHTML = '';
+            const models = availableModels[provider] || [];
+            for (const model of models) {
+                const opt = document.createElement('option');
+                opt.value = model;
+                opt.textContent = model;
+                modelSelect.appendChild(opt);
+            }
+
+            // Try to keep current selection
+            if (models.includes(currentModel)) {
+                modelSelect.value = currentModel;
+            }
+        }
+
+        async function saveRouteOverride() {
+            if (!currentEditRoute) return;
+
+            const provider = document.getElementById('route-edit-provider').value;
+            const model = document.getElementById('route-edit-model').value;
+
+            const resp = await fetch('/api/routes/override', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    usecase: currentEditRoute.usecase,
+                    type: currentEditRoute.type,
+                    sensitive: currentEditRoute.sensitive,
+                    precision: currentEditRoute.precision,
+                    provider: provider,
+                    model: model
+                })
+            });
+
+            if (resp.ok) {
+                closeRouteModal();
+                loadRoutes();
+                loadUsecases();
+            } else {
+                const err = await resp.text();
+                alert('Failed to save: ' + err);
+            }
+        }
+
+        async function resetRouteToBase() {
+            if (!currentEditRoute) return;
+
+            const resp = await fetch('/api/routes/override?usecase=' + encodeURIComponent(currentEditRoute.usecase) +
+                '&type=' + currentEditRoute.type +
+                '&sensitive=' + currentEditRoute.sensitive +
+                '&precision=' + currentEditRoute.precision, {
+                method: 'DELETE'
+            });
+
+            if (resp.ok) {
+                closeRouteModal();
+                loadRoutes();
+            } else {
+                const err = await resp.text();
+                alert('Failed to reset: ' + err);
+            }
+        }
+
+        // Tab switching
+        let currentTab = 'llm';
+        let systemMetricsInterval = null;
+        function switchTab(tabName) {
+            currentTab = tabName;
+            // Update tab buttons
+            document.querySelectorAll('.nav-tab').forEach(btn => btn.classList.remove('active'));
+            document.querySelector('.nav-tab[onclick*="' + tabName + '"]')?.classList.add('active');
+            // Update tab content
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.getElementById('tab-' + tabName)?.classList.add('active');
+            // Load data for tab
+            if (tabName === 'routing') {
+                loadUsecases();
+                loadAvailableModels();
+                loadRoutes();
+                loadModelVolumes();
+            }
+            // Models tab
+            if (tabName === 'models') {
+                loadModelsConfig();
+            }
+            // System metrics tab
+            if (tabName === 'system') {
+                loadSystemMetrics();
+                // Auto-refresh every 2 seconds
+                if (systemMetricsInterval) clearInterval(systemMetricsInterval);
+                systemMetricsInterval = setInterval(loadSystemMetrics, 2000);
+            } else {
+                // Stop auto-refresh when leaving tab
+                if (systemMetricsInterval) {
+                    clearInterval(systemMetricsInterval);
+                    systemMetricsInterval = null;
+                }
+            }
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
+        function formatUptime(seconds) {
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            if (days > 0) return days + 'd ' + hours + 'h';
+            if (hours > 0) return hours + 'h ' + mins + 'm';
+            return mins + 'm';
+        }
+
+        async function loadSystemMetrics() {
+            try {
+                const resp = await fetch('/api/system-metrics');
+                const data = await resp.json();
+
+                // Update hostname and timestamp
+                document.getElementById('system-hostname').textContent = data.hostname || '';
+                document.getElementById('system-last-update').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+
+                // CPU
+                const cpuPct = data.cpu_percent || 0;
+                document.getElementById('cpu-usage').textContent = cpuPct.toFixed(1) + '%';
+                document.getElementById('cpu-bar-fill').style.width = cpuPct + '%';
+
+                // Memory
+                const memPct = data.memory_percent || 0;
+                document.getElementById('mem-usage').textContent = memPct.toFixed(1) + '%';
+                document.getElementById('mem-bar-fill').style.width = memPct + '%';
+                document.getElementById('mem-detail').textContent = formatBytes(data.memory_used_bytes) + ' / ' + formatBytes(data.memory_total_bytes);
+
+                // Uptime
+                document.getElementById('system-uptime').textContent = formatUptime(data.uptime_seconds || 0);
+                document.getElementById('system-platform').textContent = data.platform || '';
+
+                // GPU (if available)
+                if (data.gpu_percent !== undefined && data.gpu_percent >= 0) {
+                    document.getElementById('gpu-card').style.display = 'block';
+                    document.getElementById('gpu-mem-card').style.display = 'block';
+                    document.getElementById('gpu-usage').textContent = data.gpu_percent.toFixed(1) + '%';
+                    document.getElementById('gpu-bar-fill').style.width = data.gpu_percent + '%';
+                    document.getElementById('gpu-name').textContent = data.gpu_name || '';
+                    document.getElementById('gpu-mem-usage').textContent = data.gpu_memory_percent.toFixed(1) + '%';
+                    document.getElementById('gpu-mem-bar-fill').style.width = data.gpu_memory_percent + '%';
+                    document.getElementById('gpu-temp').textContent = data.gpu_temp_celsius ? data.gpu_temp_celsius + '°C' : '';
+                } else {
+                    document.getElementById('gpu-card').style.display = 'none';
+                    document.getElementById('gpu-mem-card').style.display = 'none';
+                }
+
+                // CPU cores
+                const coresGrid = document.getElementById('cpu-cores-grid');
+                coresGrid.innerHTML = '';
+                if (data.cpu_per_core && data.cpu_per_core.length > 0) {
+                    data.cpu_per_core.forEach((pct, i) => {
+                        const card = document.createElement('div');
+                        card.style.cssText = 'background: #1e1e2e; border: 1px solid #374151; border-radius: 6px; padding: 8px;';
+                        const color = pct > 80 ? '#ef4444' : pct > 50 ? '#f59e0b' : '#22c55e';
+                        card.innerHTML = '<div style="font-size: 11px; color: #888; margin-bottom: 4px;">Core ' + i + '</div>' +
+                            '<div style="font-size: 14px; font-weight: 600; color: ' + color + ';">' + pct.toFixed(0) + '%</div>' +
+                            '<div style="margin-top: 4px; background: #374151; border-radius: 3px; height: 4px; overflow: hidden;">' +
+                            '<div style="width: ' + pct + '%; height: 100%; background: ' + color + '; border-radius: 3px;"></div></div>';
+                        coresGrid.appendChild(card);
+                    });
+                }
+            } catch (err) {
+                console.error('Failed to load system metrics:', err);
+            }
+        }
+
+        async function loadModelVolumes(usecase) {
+            let url = '/api/stats/models?range=' + currentTimeRange;
+            if (usecase) {
+                url += '&usecase=' + encodeURIComponent(usecase);
+            }
+            const resp = await fetch(url);
+            const models = await resp.json();
+            const grid = document.getElementById('model-volume-grid');
+            grid.innerHTML = '';
+
+            if (!models || models.length === 0) {
+                grid.innerHTML = '<div style="color: #888; font-style: italic;">No traffic data yet</div>';
+                return;
+            }
+
+            // Find max count for bar scaling
+            const maxCount = Math.max(...models.map(m => m.count));
+
+            for (const m of models) {
+                const card = document.createElement('div');
+                card.style.cssText = 'background: #1e1e2e; border: 1px solid #374151; border-radius: 8px; padding: 12px;';
+
+                const barWidth = (m.count / maxCount) * 100;
+                const costStr = m.cost_usd > 0 ? '$' + m.cost_usd.toFixed(4) : '-';
+
+                card.innerHTML =
+                    '<div style="font-size: 13px; color: #a5b4fc; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="' + m.model + '">' + m.model + '</div>' +
+                    '<div style="display: flex; align-items: center; gap: 8px;">' +
+                        '<div style="flex: 1; background: #374151; border-radius: 4px; height: 8px; overflow: hidden;">' +
+                            '<div style="width: ' + barWidth + '%; height: 100%; background: linear-gradient(90deg, #6366f1, #8b5cf6); border-radius: 4px;"></div>' +
+                        '</div>' +
+                        '<div style="font-size: 14px; font-weight: 600; color: #fff; min-width: 50px; text-align: right;">' + m.count.toLocaleString() + '</div>' +
+                    '</div>' +
+                    '<div style="font-size: 11px; color: #888; margin-top: 4px;">' + Math.round(m.avg_latency_ms) + 'ms avg | ' + costStr + '</div>';
+
+                grid.appendChild(card);
+            }
+        }
+
+        async function loadModelsConfig() {
+            const resp = await fetch('/api/models/config');
+            const data = await resp.json();
+            const grid = document.getElementById('models-grid');
+            grid.innerHTML = '';
+
+            // Group models by provider
+            const byProvider = {};
+            for (const m of data.models || []) {
+                if (!byProvider[m.provider]) byProvider[m.provider] = [];
+                byProvider[m.provider].push(m);
+            }
+
+            const providerColors = {
+                'anthropic': '#d97706',
+                'openai': '#10b981',
+                'ollama': '#6366f1'
+            };
+
+            for (const provider of ['anthropic', 'openai', 'ollama']) {
+                const models = byProvider[provider] || [];
+                if (models.length === 0) continue;
+
+                const card = document.createElement('div');
+                card.style.cssText = 'background: #1e1e2e; border: 1px solid #374151; border-radius: 12px; padding: 16px;';
+
+                const header = document.createElement('div');
+                header.style.cssText = 'font-size: 14px; font-weight: 600; color: ' + providerColors[provider] + '; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;';
+                header.textContent = provider;
+                card.appendChild(header);
+
+                for (const m of models) {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #374151;';
+                    row.innerHTML =
+                        '<div style="font-size: 13px; color: ' + (m.enabled ? '#e0e0e0' : '#666') + '; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px;" title="' + m.model + '">' + m.model + '</div>' +
+                        '<label class="toggle-switch" style="position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0;">' +
+                            '<input type="checkbox" ' + (m.enabled ? 'checked' : '') + ' onchange="toggleModel(\'' + m.model + '\', this.checked)" style="opacity: 0; width: 0; height: 0;">' +
+                            '<span style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: ' + (m.enabled ? '#22c55e' : '#374151') + '; transition: .3s; border-radius: 24px;"></span>' +
+                            '<span style="position: absolute; height: 18px; width: 18px; left: ' + (m.enabled ? '23px' : '3px') + '; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%;"></span>' +
+                        '</label>';
+                    card.appendChild(row);
+                }
+
+                // Remove last border
+                if (card.lastChild) card.lastChild.style.borderBottom = 'none';
+
+                grid.appendChild(card);
+            }
+        }
+
+        async function toggleModel(model, enabled) {
+            const resp = await fetch('/api/models/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: model, enabled: enabled })
+            });
+            if (!resp.ok) {
+                alert('Failed to toggle model');
+                loadModelsConfig(); // Reload to restore state
+            } else {
+                // Refresh the UI to show updated state
+                loadModelsConfig();
+            }
+        }
+
+        async function showRequestDetail(id) {
+            const overlay = document.getElementById('modal-overlay');
+            const body = document.getElementById('modal-body');
+            overlay.classList.add('active');
+            body.innerHTML = '<div style="text-align:center;color:#888;padding:40px;">Loading...</div>';
+            currentRequestId = id;
+
+            try {
+                const resp = await fetch('/api/request?id=' + id);
+                const data = await resp.json();
+                currentRequestData = data;
+                renderRequestDetail(data);
+            } catch (err) {
+                body.innerHTML = '<div style="color:#ef4444;padding:40px;">Error loading request details: ' + err.message + '</div>';
+            }
+        }
+
+        function renderRequestDetail(data) {
+            const body = document.getElementById('modal-body');
+            const time = new Date(data.timestamp).toLocaleString();
+            const sensitiveClass = data.sensitive ? 'sensitive' : 'not-sensitive';
+            const sensitiveText = data.sensitive ? 'YES (local only)' : 'No (cloud OK)';
+
+            let html = '<div style="display:flex;justify-content:flex-end;margin-bottom:12px">';
+            html += '<button onclick="copyRequestJson()" style="padding:8px 16px;background:#374151;border:none;border-radius:6px;color:#e2e8f0;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px"><span style="font-size:16px">📋</span> Copy Full JSON</button>';
+            html += '</div>';
+            html += '<div class="modal-section"><h3>Request Metadata</h3><div class="detail-grid">';
+            html += '<div class="detail-item"><div class="detail-label">ID</div><div class="detail-value">#' + data.id + '</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Timestamp</div><div class="detail-value">' + time + '</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Provider</div><div class="detail-value"><span class="badge ' + data.provider + '">' + data.provider + '</span></div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Model Used</div><div class="detail-value">' + data.model + '</div></div>';
+            if (data.requested_model) {
+                html += '<div class="detail-item"><div class="detail-label">Requested Model</div><div class="detail-value">' + data.requested_model + '</div></div>';
+            }
+            html += '<div class="detail-item"><div class="detail-label">Sensitive</div><div class="detail-value"><span class="badge ' + sensitiveClass + '">' + sensitiveText + '</span></div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Precision</div><div class="detail-value"><span class="badge precision">' + (data.precision || '-') + '</span></div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Usecase</div><div class="detail-value"><span class="badge usecase">' + (data.usecase || '-') + '</span></div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Has Images</div><div class="detail-value">' + (data.has_images ? '<span class="badge images">Yes</span>' : 'No') + '</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Cached</div><div class="detail-value">' + (data.cached ? '<span class="badge cached">Yes</span>' : 'No') + '</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Client IP</div><div class="detail-value"><span class="client-ip">' + formatClientIP(data.client_ip) + '</span></div></div>';
+            html += '</div></div>';
+
+            html += '<div class="modal-section"><h3>Performance</h3><div class="detail-grid">';
+            html += '<div class="detail-item"><div class="detail-label">Latency</div><div class="detail-value">' + data.latency_ms + ' ms</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Input Tokens</div><div class="detail-value">' + data.input_tokens + '</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Output Tokens</div><div class="detail-value">' + data.output_tokens + '</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Cost</div><div class="detail-value" style="color:#22c55e">$' + data.cost_usd.toFixed(6) + '</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Status</div><div class="detail-value">' + (data.success ? '<span class="badge success">Success</span>' : '<span class="badge error">Error</span>') + '</div></div>';
+            if (data.error) {
+                html += '<div class="detail-item" style="grid-column:1/-1"><div class="detail-label">Error</div><div class="detail-value" style="color:#ef4444">' + escapeHtml(data.error) + '</div></div>';
+            }
+            html += '</div></div>';
+
+            // Request messages (collapsible)
+            if (data.request && data.request.messages) {
+                const msgCount = data.request.messages.length;
+                html += '<div class="modal-section">';
+                html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">Request Messages <span style="color:#888;font-weight:normal">(' + msgCount + ')</span></summary>';
+                html += '<div style="margin-top:12px">';
+                for (const msg of data.request.messages) {
+                    html += '<div class="message-block">';
+                    html += '<div class="message-role">' + msg.role + '</div>';
+                    html += '<div class="message-content">' + formatMessageContent(msg.content) + '</div>';
+                    html += '</div>';
+                }
+                html += '</div></details></div>';
+            }
+
+            // Tools (collapsible, with hover tooltips)
+            if (data.request && data.request.tools && data.request.tools.length > 0) {
+                const tools = data.request.tools;
+                html += '<div class="modal-section">';
+                html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">Tools <span style="color:#888;font-weight:normal">(' + tools.length + ')</span></summary>';
+                html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;margin-bottom:12px">';
+                for (const tool of tools) {
+                    const name = tool.function?.name || tool.name || 'unknown';
+                    const desc = tool.function?.description || tool.description || '';
+                    const params = tool.function?.parameters || tool.parameters;
+                    const paramNames = params?.properties ? Object.keys(params.properties).join(', ') : '';
+                    const tooltip =
+                        (desc && desc.trim() ? desc : ('Tool: ' + name)) +
+                        (paramNames ? '\\n\\nParams: ' + paramNames : '');
+                    html += '<span class="badge tool-badge" data-tooltip="' + escapeHtml(tooltip) + '" style="background:#374151;color:#e2e8f0;padding:4px 8px;font-size:12px;cursor:help">' + escapeHtml(name) + '</span>';
+                }
+                html += '</div>';
+                html += '<details style="margin-top:8px"><summary style="cursor:pointer;color:#6366f1;font-size:13px">Show full tool definitions</summary>';
+                html += '<div class="code-block" style="margin-top:8px;max-height:400px;overflow-y:auto;font-size:11px">' + escapeHtml(JSON.stringify(tools, null, 2)) + '</div>';
+                html += '</details></details></div>';
+            }
+
+            // Response (collapsible)
+            if (data.response) {
+                let responseContent = '';
+                let webSearchResults = [];
+                let citations = [];
+
+                // Handle OpenAI-style response (choices array)
+                if (data.response.choices && data.response.choices.length > 0) {
+                    const choice = data.response.choices[0];
+                    if (choice.message && choice.message.content) {
+                        responseContent = choice.message.content;
+                    }
+                }
+
+                // Handle Anthropic-style response (content array with web_search blocks)
+                if (data.response.content && Array.isArray(data.response.content)) {
+                    let textParts = [];
+                    for (const block of data.response.content) {
+                        if (block.type === 'text') {
+                            textParts.push(block.text || '');
+                            // Check for citations in text blocks
+                            if (block.citations && Array.isArray(block.citations)) {
+                                citations = citations.concat(block.citations);
+                            }
+                        } else if (block.type === 'server_tool_use' && block.name === 'web_search') {
+                            // Capture search query
+                            if (block.input && block.input.query) {
+                                webSearchResults.push({ type: 'query', query: block.input.query, id: block.id });
+                            }
+                        } else if (block.type === 'web_search_tool_result') {
+                            // Capture search results
+                            if (block.content && Array.isArray(block.content)) {
+                                const results = block.content.filter(r => r.type === 'web_search_result');
+                                webSearchResults.push({ type: 'results', results: results, tool_use_id: block.tool_use_id });
+                            }
+                        }
+                    }
+                    if (textParts.length > 0) {
+                        responseContent = textParts.join('');
+                    }
+                }
+
+                // Show web search section if present
+                if (webSearchResults.length > 0) {
+                    html += '<div class="modal-section">';
+                    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">🔍 Web Search</summary>';
+                    html += '<div style="margin-top:12px">';
+                    for (const item of webSearchResults) {
+                        if (item.type === 'query') {
+                            html += '<div style="margin-bottom:12px;padding:10px;background:#1e293b;border-radius:8px;border-left:3px solid #3b82f6">';
+                            html += '<div style="color:#93c5fd;font-size:12px;margin-bottom:4px">Search Query</div>';
+                            html += '<div style="color:#e2e8f0;font-weight:500">' + escapeHtml(item.query) + '</div>';
+                            html += '</div>';
+                        } else if (item.type === 'results' && item.results) {
+                            html += '<div style="margin-bottom:12px">';
+                            html += '<div style="color:#888;font-size:12px;margin-bottom:8px">' + item.results.length + ' results</div>';
+                            for (const result of item.results) {
+                                html += '<div style="margin-bottom:8px;padding:8px;background:#0f172a;border-radius:6px">';
+                                html += '<a href="' + escapeHtml(result.url || '') + '" target="_blank" style="color:#60a5fa;text-decoration:none;font-weight:500">' + escapeHtml(result.title || 'Untitled') + '</a>';
+                                if (result.page_age) {
+                                    html += '<span style="color:#64748b;font-size:11px;margin-left:8px">' + escapeHtml(result.page_age) + '</span>';
+                                }
+                                html += '<div style="color:#64748b;font-size:11px;margin-top:2px">' + escapeHtml(result.url || '') + '</div>';
+                                html += '</div>';
+                            }
+                            html += '</div>';
+                        }
+                    }
+                    html += '</div></details></div>';
+                }
+
+                // Show citations if present
+                if (citations.length > 0) {
+                    html += '<div class="modal-section">';
+                    html += '<details><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">📑 Citations <span style="color:#888;font-weight:normal">(' + citations.length + ')</span></summary>';
+                    html += '<div style="margin-top:12px">';
+                    for (const cite of citations) {
+                        html += '<div style="margin-bottom:8px;padding:8px;background:#0f172a;border-radius:6px;border-left:2px solid #22c55e">';
+                        html += '<a href="' + escapeHtml(cite.url || '') + '" target="_blank" style="color:#60a5fa;text-decoration:none;font-size:13px">' + escapeHtml(cite.title || 'Source') + '</a>';
+                        if (cite.cited_text) {
+                            html += '<div style="color:#94a3b8;font-size:12px;margin-top:4px;font-style:italic">"' + escapeHtml(cite.cited_text) + '"</div>';
+                        }
+                        html += '</div>';
+                    }
+                    html += '</div></details></div>';
+                }
+
+                // Check for thinking content wrapped in <think> tags
+                const thinkMatch = responseContent.match(/^<think>([\s\S]*?)<\/think>([\s\S]*)$/);
+                if (thinkMatch) {
+                    const thinkingContent = thinkMatch[1];
+                    const actualResponse = thinkMatch[2];
+
+                    // Show thinking section first (collapsible, closed by default)
+                    html += '<div class="modal-section">';
+                    html += '<details><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">💭 Thinking</summary>';
+                    html += '<div class="code-block" style="margin-top:12px;background:#1e1b4b;border-left:3px solid #8b5cf6;max-height:300px;overflow-y:auto">' + escapeHtml(thinkingContent) + '</div>';
+                    html += '</details></div>';
+
+                    // Show actual response (collapsible, open by default)
+                    html += '<div class="modal-section">';
+                    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">Response</summary>';
+                    html += '<div class="code-block" style="margin-top:12px">' + escapeHtml(actualResponse) + '</div>';
+                    html += '</details></div>';
+                } else if (responseContent) {
+                    html += '<div class="modal-section">';
+                    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">Response</summary>';
+                    html += '<div class="code-block" style="margin-top:12px">' + escapeHtml(responseContent) + '</div>';
+                    html += '</details></div>';
+                } else if (!webSearchResults.length) {
+                    html += '<div class="modal-section">';
+                    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">Response (raw)</summary>';
+                    html += '<div class="code-block" style="margin-top:12px">' + escapeHtml(JSON.stringify(data.response, null, 2)) + '</div>';
+                    html += '</details></div>';
+                }
+            }
+
+            // Replay with different model section
+            if (data.request && data.request.messages) {
+                html += '<div class="modal-section"><h3>Replay with Different Model</h3>';
+                html += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">';
+                html += '<select id="replay-model-select" style="padding:8px 12px;background:#1e1b4b;border:1px solid #4338ca;border-radius:6px;color:#e2e8f0;font-size:14px;min-width:250px">';
+                html += '<option value="">Select a model...</option>';
+                for (const group of replayModelOptions) {
+                    html += '<optgroup label="' + group.group + '">';
+                    for (const model of group.models) {
+                        const selected = model === data.model ? ' selected' : '';
+                        html += '<option value="' + model + '"' + selected + '>' + model + '</option>';
+                    }
+                    html += '</optgroup>';
+                }
+                html += '</select>';
+                html += '<button id="replay-btn" onclick="replayWithModel()" style="padding:8px 16px;background:#4f46e5;border:none;border-radius:6px;color:white;cursor:pointer;font-size:14px">Replay Request</button>';
+                html += '</div>';
+                html += '<div id="replay-result" style="margin-top:12px"></div>';
+                html += '</div>';
+            }
+
+            // Cache key
+            if (data.cache_key) {
+                html += '<div class="modal-section"><h3>Cache</h3>';
+                html += '<div class="detail-item"><div class="detail-label">Cache Key</div><div class="detail-value" style="font-family:monospace;font-size:12px;word-break:break-all">' + data.cache_key + '</div></div>';
+                html += '</div>';
+            }
+
+            body.innerHTML = html;
+        }
+
+        function formatMessageContent(content) {
+            if (typeof content === 'string') {
+                // Check for web search tool call pattern: [Tool: WebSearch (ID: ...)]
+                const toolCallMatch = content.match(/\[Tool:\s*WebSearch\s*\(ID:\s*([^)]+)\)\]\s*Input:\s*(\{[\s\S]*?\})/);
+                if (toolCallMatch) {
+                    const toolId = toolCallMatch[1];
+                    let inputJson = {};
+                    try { inputJson = JSON.parse(toolCallMatch[2]); } catch(e) {}
+                    let html = '<div style="padding:10px;background:#1e293b;border-radius:8px;border-left:3px solid #3b82f6;margin:8px 0">';
+                    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
+                    html += '<span style="font-size:16px">🔍</span>';
+                    html += '<span style="color:#93c5fd;font-weight:600">Web Search</span>';
+                    html += '<span style="color:#64748b;font-size:11px;font-family:monospace">' + escapeHtml(toolId) + '</span>';
+                    html += '</div>';
+                    if (inputJson.query) {
+                        html += '<div style="color:#e2e8f0;font-weight:500;margin-bottom:6px">"' + escapeHtml(inputJson.query) + '"</div>';
+                    }
+                    if (inputJson.allowed_domains && inputJson.allowed_domains.length > 0) {
+                        html += '<div style="color:#64748b;font-size:11px">Domains: ' + inputJson.allowed_domains.map(d => escapeHtml(d)).join(', ') + '</div>';
+                    }
+                    html += '</div>';
+                    return html;
+                }
+
+                // Check for web search tool result pattern: Tool result for call_...
+                const toolResultMatch = content.match(/Tool result for (call_[^:]+):\s*Web search results for query:\s*"([^"]+)"([\s\S]*)/);
+                if (toolResultMatch) {
+                    const toolId = toolResultMatch[1];
+                    const query = toolResultMatch[2];
+                    const resultContent = toolResultMatch[3].trim();
+                    let html = '<div style="padding:10px;background:#0f172a;border-radius:8px;border-left:3px solid #22c55e;margin:8px 0">';
+                    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
+                    html += '<span style="font-size:16px">📋</span>';
+                    html += '<span style="color:#86efac;font-weight:600">Search Results</span>';
+                    html += '<span style="color:#64748b;font-size:11px;font-family:monospace">' + escapeHtml(toolId) + '</span>';
+                    html += '</div>';
+                    html += '<div style="color:#94a3b8;font-size:12px;margin-bottom:6px">Query: "' + escapeHtml(query) + '"</div>';
+                    if (resultContent === '(no content)' || !resultContent) {
+                        html += '<div style="color:#f87171;font-style:italic">No results returned</div>';
+                    } else {
+                        // Try to parse as search results
+                        html += '<div style="color:#e2e8f0;font-size:13px;white-space:pre-wrap">' + escapeHtml(resultContent) + '</div>';
+                    }
+                    html += '</div>';
+                    return html;
+                }
+
+                return escapeHtml(content);
+            }
+            if (Array.isArray(content)) {
+                let result = '';
+                for (const part of content) {
+                    if (part.type === 'text') {
+                        result += '<div class="message-text">' + escapeHtml(part.text || '') + '</div>';
+                    } else if (part.type === 'image_url') {
+                        const url = part.image_url?.url || '';
+                        if (url) {
+                            result += '<div class="message-image-container">';
+                            result += '<img class="message-image" src="' + escapeHtml(url) + '" onclick="showFullImage(this.src)" title="Click to view full size">';
+                            result += '<div class="image-label">Image attachment (click to enlarge)</div>';
+                            result += '</div>';
+                        } else {
+                            result += '<em style="color:#06b6d4">[Image: no data]</em>';
+                        }
+                    } else {
+                        result += escapeHtml(JSON.stringify(part));
+                    }
+                }
+                return result;
+            }
+            return escapeHtml(JSON.stringify(content));
+        }
+
+        function showFullImage(src) {
+            const overlay = document.createElement('div');
+            overlay.className = 'image-overlay';
+            overlay.onclick = () => overlay.remove();
+            overlay.innerHTML = '<img src="' + src + '" class="full-image"><div class="image-hint">Click anywhere to close</div>';
+            document.body.appendChild(overlay);
+        }
+
+        function escapeHtml(str) {
+            if (typeof str !== 'string') return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        function closeModal(event) {
+            if (event && event.target !== event.currentTarget) return;
+            hideGlobalTooltip();
+            document.getElementById('modal-overlay').classList.remove('active');
+        }
+
+        function getGlobalTooltipEl() {
+            return document.getElementById('global-tooltip');
+        }
+
+        function showGlobalTooltip(text, x, y) {
+            const el = getGlobalTooltipEl();
+            if (!el) return;
+            if (!text) {
+                el.style.display = 'none';
+                return;
+            }
+            el.textContent = text;
+            el.style.display = 'block';
+
+            const margin = 14;
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+
+            // Position near cursor; clamp within viewport.
+            let left = x + margin;
+            let top = y + margin;
+
+            // Ensure layout is up-to-date for measurements.
+            const rect = el.getBoundingClientRect();
+            if (left + rect.width + margin > vw) left = Math.max(margin, vw - rect.width - margin);
+            if (top + rect.height + margin > vh) top = Math.max(margin, vh - rect.height - margin);
+
+            el.style.left = left + 'px';
+            el.style.top = top + 'px';
+        }
+
+        function hideGlobalTooltip() {
+            const el = getGlobalTooltipEl();
+            if (!el) return;
+            el.style.display = 'none';
+        }
+
+        // Reliable hover tooltips for tool badges (native title tooltips are flaky)
+        document.addEventListener('mouseover', (e) => {
+            const target = e.target && e.target.closest ? e.target.closest('.tool-badge') : null;
+            if (!target) return;
+            const text = target.getAttribute('data-tooltip') || '';
+            showGlobalTooltip(text, e.clientX, e.clientY);
+        });
+        document.addEventListener('mousemove', (e) => {
+            const target = e.target && e.target.closest ? e.target.closest('.tool-badge') : null;
+            if (!target) return;
+            const el = getGlobalTooltipEl();
+            if (!el || el.style.display === 'none') return;
+            const text = target.getAttribute('data-tooltip') || '';
+            showGlobalTooltip(text, e.clientX, e.clientY);
+        });
+        document.addEventListener('mouseout', (e) => {
+            if (!e.target) return;
+            const from = e.target.closest ? e.target.closest('.tool-badge') : null;
+            if (!from) return;
+            const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.tool-badge') : null;
+            if (to) return; // moving between badges
+            hideGlobalTooltip();
+        });
+        window.addEventListener('scroll', hideGlobalTooltip, true);
+        window.addEventListener('blur', hideGlobalTooltip);
+
+        async function copyRequestJson() {
+            if (!currentRequestData) return;
+            try {
+                await navigator.clipboard.writeText(JSON.stringify(currentRequestData, null, 2));
+                // Visual feedback
+                const btn = event.target.closest('button');
+                const originalHtml = btn.innerHTML;
+                btn.innerHTML = '<span style="font-size:16px">✓</span> Copied!';
+                btn.style.background = '#22c55e';
+                setTimeout(() => {
+                    btn.innerHTML = originalHtml;
+                    btn.style.background = '#374151';
+                }, 1500);
+            } catch (err) {
+                alert('Failed to copy: ' + err.message);
+            }
+        }
+
+        // Store current request ID and data for replay/copy
+        let currentRequestId = null;
+        let currentRequestData = null;
+
+        // Available models for replay - fetched dynamically
+        let replayModelOptions = [
+            { group: 'Anthropic', models: ['claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'] },
+            { group: 'OpenAI', models: ['gpt-5.1', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o1', 'o1-mini'] },
+            { group: 'Ollama (Local)', models: [] } // Will be populated dynamically
+        ];
+
+        // Fetch Ollama models dynamically
+        fetch('/api/models').then(r => r.json()).then(data => {
+            if (data.ollama) {
+                replayModelOptions[2].models = data.ollama;
+                // Refresh the selector if it's already populated
+                const select = document.getElementById('replay-model-select');
+                if (select && select.options.length > 1) {
+                    populateReplayModelSelect();
+                }
+            }
+        }).catch(e => console.error('Failed to load Ollama models:', e));
+
+        async function replayWithModel() {
+            const select = document.getElementById('replay-model-select');
+            const model = select.value;
+            if (!model || !currentRequestId) return;
+
+            const btn = document.getElementById('replay-btn');
+            const resultDiv = document.getElementById('replay-result');
+            btn.disabled = true;
+            btn.textContent = 'Replaying...';
+            resultDiv.innerHTML = '<div style="color:#888;padding:10px;">Sending request to ' + model + '...</div>';
+
+            try {
+                const resp = await fetch('/api/replay', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ request_id: currentRequestId, model: model })
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.text();
+                    throw new Error(err);
+                }
+
+                const data = await resp.json();
+                let content = '';
+                if (data.choices && data.choices[0]?.message?.content) {
+                    content = data.choices[0].message.content;
+                } else {
+                    content = JSON.stringify(data, null, 2);
+                }
+
+                resultDiv.innerHTML = '<div class="code-block" style="max-height:400px;overflow-y:auto">' + escapeHtml(content) + '</div>';
+                resultDiv.innerHTML += '<div style="color:#22c55e;margin-top:8px;font-size:12px">Replayed successfully with ' + model + '</div>';
+
+                // Refresh stats after replay
+                loadStats();
+            } catch (err) {
+                resultDiv.innerHTML = '<div style="color:#ef4444;padding:10px;">Error: ' + escapeHtml(err.message) + '</div>';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Replay Request';
+            }
+        }
+
+        // Close on escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeModal();
+        });
+
+        async function loadPending() {
+            try {
+                const resp = await fetch('/api/pending');
+                const pending = await resp.json();
+
+                const section = document.getElementById('pending-section');
+                const tbody = document.querySelector('#pending-table tbody');
+                const countBadge = document.getElementById('pending-count');
+
+                if (pending.length === 0) {
+                    section.style.display = 'none';
+                    return;
+                }
+
+                section.style.display = 'block';
+                countBadge.textContent = pending.length;
+                tbody.innerHTML = '';
+
+                for (const req of pending) {
+                    const tr = document.createElement('tr');
+                    const startTime = new Date(req.start_time).toLocaleTimeString();
+                    const sensitiveClass = req.sensitive ? 'sensitive' : 'not-sensitive';
+                    const sensitiveText = req.sensitive ? 'YES' : 'no';
+                    const hasImages = req.has_images ? '<span class="badge images">img</span>' : '';
+                    const elapsed = formatElapsed(req.elapsed_ms);
+
+                    tr.innerHTML = '<td>' + startTime + '</td>' +
+                        '<td><span class="badge ' + req.provider + '">' + req.provider + '</span></td>' +
+                        '<td>' + req.model + ' ' + hasImages + '</td>' +
+                        '<td><span class="badge ' + sensitiveClass + '">' + sensitiveText + '</span></td>' +
+                        '<td><span class="badge precision">' + (req.precision || '-') + '</span></td>' +
+                        '<td><span class="badge usecase">' + (req.usecase || '-') + '</span></td>' +
+                        '<td class="elapsed-time">' + elapsed + '</td>' +
+                        '<td class="preview-text" title="' + escapeHtml(req.preview) + '">' + escapeHtml(req.preview) + '</td>';
+                    tbody.appendChild(tr);
+                }
+            } catch (err) {
+                console.error('Failed to load pending requests:', err);
+            }
+        }
+
+        function formatElapsed(ms) {
+            if (ms < 1000) return ms + 'ms';
+            if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+            return Math.floor(ms / 60000) + 'm ' + Math.floor((ms % 60000) / 1000) + 's';
+        }
+
+        async function refresh() {
+            const btn = document.getElementById('refresh-btn');
+            btn.classList.add('spinning');
+            // Load data based on current tab
+            if (currentTab === 'llm') {
+                await Promise.all([loadStats(), loadPending(), loadUsecaseFilter()]);
+            } else if (currentTab === 'tts') {
+                await loadTTSData();
+            } else if (currentTab === 'stt') {
+                await loadSTTData();
+            } else if (currentTab === 'routing') {
+                await loadRoutes();
+            }
+            btn.classList.remove('spinning');
+        }
+
+        // Handle URL hash navigation
+        function handleHash() {
+            const hash = window.location.hash.replace('#', '');
+            if (hash && ['llm', 'tts', 'stt', 'routing', 'system'].includes(hash)) {
+                switchTab(hash);
+            }
+        }
+        window.addEventListener('hashchange', handleHash);
+
+        // Initial load
+        handleHash(); // Check for hash on page load
+
+        // Check for ?request= param to open a specific request detail
+        const urlParams = new URLSearchParams(window.location.search);
+        const requestId = urlParams.get('request');
+        if (requestId) {
+            showRequestDetail(parseInt(requestId));
+        }
+
+        if (currentTab === 'llm') {
+            loadStats();
+            loadPending();
+            loadUsecaseFilter();
+        }
+        setInterval(refresh, 30000);
+        // More frequent updates for pending requests (only on LLM tab)
+        setInterval(() => { if (currentTab === 'llm') loadPending(); }, 2000);
+    </script>
+</body>
+</html>
