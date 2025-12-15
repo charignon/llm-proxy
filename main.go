@@ -4920,7 +4920,44 @@ func handleTruncateLogs(w http.ResponseWriter, r *http.Request) {
 		"kept":         keepCount,
 		"count_before": countBefore,
 		"count_after":  countBefore - int(deleted),
+		"db_size":      getDbSize(),
 	})
+}
+
+// handleDbStats returns database statistics
+func handleDbStats(w http.ResponseWriter, r *http.Request) {
+	var requestCount int
+	db.QueryRow("SELECT COUNT(*) FROM requests").Scan(&requestCount)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"request_count": requestCount,
+		"db_size":       getDbSize(),
+		"db_size_human": formatBytes(getDbSize()),
+	})
+}
+
+// getDbSize returns the database file size in bytes
+func getDbSize() int64 {
+	dbPath := filepath.Join(dataDir, "llm_proxy.db")
+	if info, err := os.Stat(dbPath); err == nil {
+		return info.Size()
+	}
+	return 0
+}
+
+// formatBytes formats bytes into human readable string
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 // runCommand runs a command and returns stdout
@@ -5708,6 +5745,7 @@ func main() {
 	http.HandleFunc("/api/analytics", withCORS(handleAnalytics))
 	http.HandleFunc("/api/system-metrics", withCORS(handleSystemMetrics))
 	http.HandleFunc("/api/system/truncate-logs", withCORS(handleTruncateLogs))
+	http.HandleFunc("/api/system/db-stats", withCORS(handleDbStats))
 	http.HandleFunc("/analytics", handleAnalyticsPage)
 	http.HandleFunc("/stats", handleStatsPage)
 	http.HandleFunc("/test", handleTestPlayground)

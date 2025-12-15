@@ -240,9 +240,15 @@
         <div class="perf-grid">
             <div class="perf-card">
                 <div class="perf-card-title">Database Management</div>
-                <div style="margin-bottom: 12px;">
-                    <span style="color: #888;">Total requests in database:</span>
-                    <span id="totalRequestCount" style="color: #6366f1; font-weight: 600;">Loading...</span>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+                    <div>
+                        <div style="color: #888; font-size: 12px; margin-bottom: 4px;">Total Requests</div>
+                        <div id="totalRequestCount" style="color: #6366f1; font-weight: 600; font-size: 24px;">Loading...</div>
+                    </div>
+                    <div>
+                        <div style="color: #888; font-size: 12px; margin-bottom: 4px;">Database Size</div>
+                        <div id="dbSize" style="color: #f59e0b; font-weight: 600; font-size: 24px;">Loading...</div>
+                    </div>
                 </div>
                 <button id="truncateBtn" onclick="truncateLogs()" style="
                     background: #ef4444;
@@ -286,6 +292,17 @@
         function updateRequestCount() {
             const total = statsData.total_requests || 0;
             document.getElementById('totalRequestCount').textContent = total.toLocaleString();
+            loadDbStats();
+        }
+
+        async function loadDbStats() {
+            try {
+                const response = await fetch('/api/system/db-stats');
+                const data = await response.json();
+                document.getElementById('dbSize').textContent = data.db_size_human;
+            } catch (err) {
+                document.getElementById('dbSize').textContent = 'Error';
+            }
         }
 
         async function truncateLogs() {
