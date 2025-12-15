@@ -310,7 +310,7 @@
             });
             const avgLatency = latencyCount > 0 ? totalLatency / latencyCount : 0;
 
-            document.getElementById('statsOverview').innerHTML = ` + "`" + `
+            document.getElementById('statsOverview').innerHTML = `
                 <div class="stat-card">
                     <div class="stat-card-label">Total Requests</div>
                     <div class="stat-card-value count">${total.toLocaleString()}</div>
@@ -331,7 +331,7 @@
                     <div class="stat-card-value latency">${formatLatency(avgLatency)}</div>
                     <div class="stat-card-sub">Across all models</div>
                 </div>
-            ` + "`" + `;
+            `;
         }
 
         function renderLatencyChart() {
@@ -401,7 +401,7 @@
                 .filter(p => p.count > 0)
                 .sort((a, b) => b.count - a.count);
 
-            const html = providers.map(p => ` + "`" + `
+            const html = providers.map(p => `
                 <div class="perf-row">
                     <span class="perf-label">${p.name.charAt(0).toUpperCase() + p.name.slice(1)}</span>
                     <span class="perf-value ${getLatencyClass(p.avg_latency_ms)}">
@@ -409,7 +409,7 @@
                         <span style="color: #666; font-size: 11px;">(${p.count.toLocaleString()} reqs)</span>
                     </span>
                 </div>
-            ` + "`" + `).join('');
+            `).join('');
 
             document.getElementById('providerPerf').innerHTML = html || '<div class="perf-row"><span class="perf-label">No data</span></div>';
         }
@@ -428,7 +428,7 @@
                 return;
             }
 
-            const html = precisions.map(p => ` + "`" + `
+            const html = precisions.map(p => `
                 <div class="perf-row">
                     <span class="perf-label">${p.name.replace('_', ' ')}</span>
                     <span class="perf-value ${getLatencyClass(p.avg_ms)}">
@@ -436,7 +436,7 @@
                         <span style="color: #666; font-size: 11px;">(p75: ${formatLatency(p.p75_ms)})</span>
                     </span>
                 </div>
-            ` + "`" + `).join('');
+            `).join('');
 
             document.getElementById('visionPerf').innerHTML = html;
         }
@@ -451,7 +451,7 @@
             const html = byModel.map(m => {
                 const latencyPercent = (m.avg_latency_ms / maxLatency) * 100;
                 const latencyColor = getLatencyColor(m.avg_latency_ms, maxLatency);
-                return ` + "`" + `
+                return `
                     <tr>
                         <td class="model-name">${m.model}</td>
                         <td>${m.count.toLocaleString()}</td>
@@ -463,7 +463,7 @@
                         </td>
                         <td>${formatCost(m.cost_usd)}</td>
                     </tr>
-                ` + "`" + `;
+                `;
             }).join('');
 
             document.getElementById('modelTableBody').innerHTML = html || '<tr><td colspan="5">No data</td></tr>';
