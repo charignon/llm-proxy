@@ -834,6 +834,7 @@ func handleWhisperTranscription(w http.ResponseWriter, r *http.Request) {
 	// Get optional parameters
 	model := r.FormValue("model")
 	language := r.FormValue("language")
+	prompt := r.FormValue("prompt") // Context hints for transcription (names, jargon, etc.)
 
 	// Route based on sensitive flag
 	sensitive := isSensitiveRequest(r)
@@ -852,13 +853,13 @@ func handleWhisperTranscription(w http.ResponseWriter, r *http.Request) {
 
 	if sensitive {
 		// Use local whisper server
-		resp, err = callLocalWhisper(fileContent, header.Filename, model, language)
+		resp, err = callLocalWhisper(fileContent, header.Filename, model, language, prompt)
 		provider = "local"
 		logEntry.Provider = "local"
 		logEntry.Model = "whisper-large-v3" // Local server uses whisper-large-v3
 	} else {
 		// Use OpenAI Whisper API
-		resp, err = callOpenAIWhisper(fileContent, header.Filename, model, language)
+		resp, err = callOpenAIWhisper(fileContent, header.Filename, model, language, prompt)
 		provider = "openai"
 		logEntry.Provider = "openai"
 		logEntry.Model = "whisper-1"
@@ -891,7 +892,7 @@ func handleWhisperTranscription(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-func callLocalWhisper(fileContent []byte, filename, model, language string) (*WhisperTranscriptionResponse, error) {
+func callLocalWhisper(fileContent []byte, filename, model, language, prompt string) (*WhisperTranscriptionResponse, error) {
 	// Create multipart form for local whisper server
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -911,6 +912,9 @@ func callLocalWhisper(fileContent []byte, filename, model, language string) (*Wh
 	}
 	if language != "" {
 		writer.WriteField("language", language)
+	}
+	if prompt != "" {
+		writer.WriteField("prompt", prompt)
 	}
 
 	if err := writer.Close(); err != nil {
@@ -946,7 +950,7 @@ func callLocalWhisper(fileContent []byte, filename, model, language string) (*Wh
 	return &result, nil
 }
 
-func callOpenAIWhisper(fileContent []byte, filename, model, language string) (*WhisperTranscriptionResponse, error) {
+func callOpenAIWhisper(fileContent []byte, filename, model, language, prompt string) (*WhisperTranscriptionResponse, error) {
 	if openaiKey == "" {
 		return nil, fmt.Errorf("OPENAI_API_KEY not set")
 	}
@@ -973,6 +977,11 @@ func callOpenAIWhisper(fileContent []byte, filename, model, language string) (*W
 	// Add optional language
 	if language != "" {
 		writer.WriteField("language", language)
+	}
+
+	// Add optional prompt for context hints
+	if prompt != "" {
+		writer.WriteField("prompt", prompt)
 	}
 
 	if err := writer.Close(); err != nil {
