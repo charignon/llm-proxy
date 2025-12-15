@@ -235,6 +235,31 @@
                 </tbody>
             </table>
         </div>
+
+        <h2 class="section-title">System</h2>
+        <div class="perf-grid">
+            <div class="perf-card">
+                <div class="perf-card-title">Database Management</div>
+                <div style="margin-bottom: 12px;">
+                    <span style="color: #888;">Total requests in database:</span>
+                    <span id="totalRequestCount" style="color: #6366f1; font-weight: 600;">Loading...</span>
+                </div>
+                <button id="truncateBtn" onclick="truncateLogs()" style="
+                    background: #ef4444;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 8px;
+                    cursor: pointer;
+                    font-size: 14px;
+                    font-weight: 500;
+                    transition: background 0.2s;
+                " onmouseover="this.style.background='#dc2626'" onmouseout="this.style.background='#ef4444'">
+                    Truncate to Last 5000
+                </button>
+                <div id="truncateResult" style="margin-top: 12px; font-size: 13px; color: #888;"></div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -255,6 +280,44 @@
             statsData = await statsResponse.json();
             timingData = await timingResponse.json();
             renderStats();
+            updateRequestCount();
+        }
+
+        function updateRequestCount() {
+            const total = statsData.total_requests || 0;
+            document.getElementById('totalRequestCount').textContent = total.toLocaleString();
+        }
+
+        async function truncateLogs() {
+            if (!confirm('This will permanently delete all but the last 5000 requests. Continue?')) {
+                return;
+            }
+
+            const btn = document.getElementById('truncateBtn');
+            const resultDiv = document.getElementById('truncateResult');
+            btn.disabled = true;
+            btn.textContent = 'Truncating...';
+            resultDiv.textContent = '';
+
+            try {
+                const response = await fetch('/api/system/truncate-logs?keep=5000', { method: 'POST' });
+                const data = await response.json();
+
+                if (data.success) {
+                    resultDiv.textContent = '✓ Deleted ' + data.deleted.toLocaleString() + ' rows. ' + data.count_after.toLocaleString() + ' remaining.';
+                    resultDiv.style.color = '#22c55e';
+                    loadStats();
+                } else {
+                    resultDiv.textContent = 'Error: ' + (data.error || 'Unknown error');
+                    resultDiv.style.color = '#ef4444';
+                }
+            } catch (err) {
+                resultDiv.textContent = 'Error: ' + err.message;
+                resultDiv.style.color = '#ef4444';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Truncate to Last 5000';
+            }
         }
 
         function formatLatency(ms) {

@@ -4873,6 +4873,55 @@ func handleSystemMetrics(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
+// handleTruncateLogs truncates the requests table to the last N entries
+func handleTruncateLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Default to 5000 if not specified
+	keepCount := 5000
+	if countStr := r.URL.Query().Get("keep"); countStr != "" {
+		if parsed, err := strconv.Atoi(countStr); err == nil && parsed > 0 {
+			keepCount = parsed
+		}
+	}
+
+	// Count before truncation
+	var countBefore int
+	db.QueryRow("SELECT COUNT(*) FROM requests").Scan(&countBefore)
+
+	// Delete all but the last N requests
+	result, err := db.Exec(`
+		DELETE FROM requests WHERE id NOT IN (
+			SELECT id FROM requests ORDER BY id DESC LIMIT ?
+		)
+	`, keepCount)
+
+	if err != nil {
+		log.Printf("Failed to truncate logs: %v", err)
+		http.Error(w, "Failed to truncate: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	deleted, _ := result.RowsAffected()
+
+	// Vacuum to reclaim space
+	db.Exec("VACUUM")
+
+	log.Printf("Truncated logs: deleted %d rows, kept %d", deleted, keepCount)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":      true,
+		"deleted":      deleted,
+		"kept":         keepCount,
+		"count_before": countBefore,
+		"count_after":  countBefore - int(deleted),
+	})
+}
+
 // runCommand runs a command and returns stdout
 func runCommand(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
@@ -5657,6 +5706,7 @@ func main() {
 	http.HandleFunc("/api/stt-history", withCORS(handleSTTHistory))
 	http.HandleFunc("/api/analytics", withCORS(handleAnalytics))
 	http.HandleFunc("/api/system-metrics", withCORS(handleSystemMetrics))
+	http.HandleFunc("/api/system/truncate-logs", withCORS(handleTruncateLogs))
 	http.HandleFunc("/analytics", handleAnalyticsPage)
 	http.HandleFunc("/stats", handleStatsPage)
 	http.HandleFunc("/test", handleTestPlayground)
