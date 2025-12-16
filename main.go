@@ -1301,6 +1301,109 @@ func handleTTS(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
+// TTSCompatRequest is the voice_cloning format (different from OpenAI's TTSRequest)
+type TTSCompatRequest struct {
+	Text  string  `json:"text"`
+	Voice string  `json:"voice"`
+	Speed float64 `json:"speed"`
+}
+
+// handleTTSCompat handles the voice_cloning API format (/tts endpoint)
+// This allows tts.lan to route through llm-proxy for logging while maintaining
+// compatibility with existing clients that use the voice_cloning format.
+func handleTTSCompat(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	startTime := time.Now()
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request", http.StatusBadRequest)
+		return
+	}
+
+	var req TTSCompatRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate required fields
+	if req.Text == "" {
+		http.Error(w, "Missing required field: text", http.StatusBadRequest)
+		return
+	}
+
+	// Set defaults
+	if req.Voice == "" {
+		req.Voice = "af_nicole"
+	}
+	if req.Speed == 0 {
+		req.Speed = 1.0
+	}
+
+	// Build Kokoro TTS server URL with query params (mp3 is default format)
+	ttsURL := fmt.Sprintf("%s/tts?text=%s&voice=%s&format=mp3&speed=%.2f",
+		ttsServerURL,
+		urlEncode(req.Text),
+		req.Voice,
+		req.Speed,
+	)
+
+	// Prepare log entry
+	logEntry := &RequestLog{
+		Timestamp:   startTime,
+		RequestType: "tts",
+		Provider:    "kokoro",
+		Model:       "kokoro-tts",
+		Voice:       req.Voice,
+		InputChars:  len(req.Text),
+		RequestBody: body,
+		ClientIP:    getClientIP(r),
+	}
+
+	// Forward request to Kokoro TTS server
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(ttsURL)
+	if err != nil {
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		logEntry.Success = false
+		logEntry.Error = err.Error()
+		logRequest(logEntry)
+
+		log.Printf("TTS compat request failed: %v", err)
+		http.Error(w, "TTS server unavailable: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		logEntry.Success = false
+		logEntry.Error = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		logRequest(logEntry)
+
+		log.Printf("TTS compat error %d: %s", resp.StatusCode, string(respBody))
+		http.Error(w, fmt.Sprintf("TTS error: %s", string(respBody)), resp.StatusCode)
+		return
+	}
+
+	latencyMs := time.Since(startTime).Milliseconds()
+	logEntry.LatencyMs = latencyMs
+	logEntry.Success = true
+	logRequest(logEntry)
+
+	log.Printf("TTS compat complete (%dms): voice=%s, len=%d chars", latencyMs, req.Voice, len(req.Text))
+
+	// Stream audio response back to client
+	w.Header().Set("Content-Type", "audio/mpeg")
+	io.Copy(w, resp.Body)
+}
+
 // urlEncode encodes a string for use in a URL query parameter
 func urlEncode(s string) string {
 	return url.QueryEscape(s)
@@ -5752,6 +5855,7 @@ func main() {
 	http.HandleFunc("/v1/audio/transcriptions", handleWhisperTranscription)
 	http.HandleFunc("/v1/audio/transcriptions/stream", handleWhisperStream)
 	http.HandleFunc("/v1/audio/speech", handleTTS)
+	http.HandleFunc("/tts", handleTTSCompat) // Compat endpoint for voice_cloning format (tts.lan)
 	http.HandleFunc("/v1/websearch", handleWebSearch)
 	http.Handle("/v1/responses", responsesHandler) // Smart Responses API with auto/openai/translate modes
 
