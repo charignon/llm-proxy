@@ -1034,7 +1034,9 @@
                 const tr = document.createElement('tr');
                 tr.className = 'clickable';
                 tr.onclick = (e) => { if (e.target.type !== 'checkbox') showRequestDetail(req.id); };
-                const time = new Date(req.timestamp).toLocaleTimeString();
+                const reqDate = new Date(req.timestamp);
+                const time = reqDate.toLocaleTimeString();
+                const dateStr = reqDate.toLocaleDateString();
                 const status = req.cached ? '<span class="badge cached">cached</span>' :
                     (req.success ? '<span class="badge success">ok</span>' : '<span class="badge error">error</span>');
                 const usecase = req.usecase ? '<span class="badge usecase">' + req.usecase + '</span>' : '-';
@@ -1060,7 +1062,7 @@
 
                 const isSelected = selectedForCompare.has(req.id);
                 tr.innerHTML = '<td onclick="event.stopPropagation()"><input type="checkbox" ' + (isSelected ? 'checked' : '') + ' onchange="toggleCompareSelection(' + req.id + ', this.checked)"></td>' +
-                    '<td>' + time + '</td>' +
+                    '<td title="' + dateStr + '">' + time + '</td>' +
                     '<td><span style="font-family:monospace;font-size:11px;color:#888" title="' + hash + '">' + hash.substring(0, 8) + '</span></td>' +
                     '<td>' + typeBadge + ' ' + replayBadge + '</td>' +
                     '<td><span class="badge ' + req.provider + '">' + req.provider + '</span></td>' +
@@ -1754,12 +1756,19 @@
             }
         }
 
-        async function showRequestDetail(id) {
+        async function showRequestDetail(id, skipPushState) {
             const overlay = document.getElementById('modal-overlay');
             const body = document.getElementById('modal-body');
             overlay.classList.add('active');
             body.innerHTML = '<div style="text-align:center;color:#888;padding:40px;">Loading...</div>';
             currentRequestId = id;
+
+            // Update URL to include request ID (unless called from popstate/initial load)
+            if (!skipPushState) {
+                const url = new URL(window.location);
+                url.searchParams.set('request', id);
+                window.history.pushState({ requestId: id }, '', url);
+            }
 
             try {
                 const resp = await fetch('/api/request?id=' + id);
@@ -1859,6 +1868,7 @@
                 }
 
                 // Handle Anthropic-style response (content array with web_search blocks)
+                let toolUseBlocks = [];
                 if (data.response.content && Array.isArray(data.response.content)) {
                     let textParts = [];
                     for (const block of data.response.content) {
@@ -1868,6 +1878,9 @@
                             if (block.citations && Array.isArray(block.citations)) {
                                 citations = citations.concat(block.citations);
                             }
+                        } else if (block.type === 'tool_use') {
+                            // Capture tool use blocks (Read, Edit, Bash, etc.)
+                            toolUseBlocks.push(block);
                         } else if (block.type === 'server_tool_use' && block.name === 'web_search') {
                             // Capture search query
                             if (block.input && block.input.query) {
@@ -1931,6 +1944,34 @@
                     html += '</div></details></div>';
                 }
 
+                // Show tool calls section if present
+                if (toolUseBlocks.length > 0) {
+                    html += '<div class="modal-section">';
+                    html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">🔧 Tool Calls <span style="color:#888;font-weight:normal">(' + toolUseBlocks.length + ')</span></summary>';
+                    html += '<div style="margin-top:12px">';
+                    for (const tool of toolUseBlocks) {
+                        const toolName = tool.name || 'unknown';
+                        const toolId = tool.id || '';
+                        const toolInput = tool.input || {};
+                        html += '<div style="margin-bottom:12px;padding:12px;background:#1e293b;border-radius:8px;border-left:3px solid #f59e0b">';
+                        html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
+                        html += '<span style="color:#fbbf24;font-weight:600">' + escapeHtml(toolName) + '</span>';
+                        html += '<span style="color:#64748b;font-size:11px;font-family:monospace">' + escapeHtml(toolId) + '</span>';
+                        html += '</div>';
+                        // Show input parameters
+                        const inputStr = JSON.stringify(toolInput, null, 2);
+                        if (inputStr.length > 500) {
+                            html += '<details><summary style="cursor:pointer;color:#94a3b8;font-size:12px">Show input (' + Object.keys(toolInput).length + ' params)</summary>';
+                            html += '<pre style="margin-top:8px;padding:8px;background:#0f172a;border-radius:4px;font-size:11px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;color:#e2e8f0">' + escapeHtml(inputStr) + '</pre>';
+                            html += '</details>';
+                        } else {
+                            html += '<pre style="padding:8px;background:#0f172a;border-radius:4px;font-size:11px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;color:#e2e8f0;margin:0">' + escapeHtml(inputStr) + '</pre>';
+                        }
+                        html += '</div>';
+                    }
+                    html += '</div></details></div>';
+                }
+
                 // Check for thinking content wrapped in <think> tags
                 const thinkMatch = responseContent.match(/^<think>([\s\S]*?)<\/think>([\s\S]*)$/);
                 if (thinkMatch) {
@@ -1953,7 +1994,7 @@
                     html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">Response</summary>';
                     html += '<div class="code-block" style="margin-top:12px">' + escapeHtml(responseContent) + '</div>';
                     html += '</details></div>';
-                } else if (!webSearchResults.length) {
+                } else if (!webSearchResults.length && !toolUseBlocks.length) {
                     html += '<div class="modal-section">';
                     html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">Response (raw)</summary>';
                     html += '<div class="code-block" style="margin-top:12px">' + escapeHtml(JSON.stringify(data.response, null, 2)) + '</div>';
@@ -2078,10 +2119,18 @@
             return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         }
 
-        function closeModal(event) {
+        function closeModal(event, skipPushState) {
             if (event && event.target !== event.currentTarget) return;
             hideGlobalTooltip();
             document.getElementById('modal-overlay').classList.remove('active');
+            currentRequestId = null;
+
+            // Remove request param from URL (unless called from popstate)
+            if (!skipPushState) {
+                const url = new URL(window.location);
+                url.searchParams.delete('request');
+                window.history.pushState({}, '', url);
+            }
         }
 
         function getGlobalTooltipEl() {
@@ -2316,8 +2365,19 @@
         const urlParams = new URLSearchParams(window.location.search);
         const requestId = urlParams.get('request');
         if (requestId) {
-            showRequestDetail(parseInt(requestId));
+            showRequestDetail(parseInt(requestId), true); // skipPushState on initial load
         }
+
+        // Handle browser back/forward navigation
+        window.addEventListener('popstate', (event) => {
+            const url = new URL(window.location);
+            const reqId = url.searchParams.get('request');
+            if (reqId) {
+                showRequestDetail(parseInt(reqId), true);
+            } else if (currentRequestId) {
+                closeModal(null, true);
+            }
+        });
 
         if (currentTab === 'llm') {
             loadStats();
