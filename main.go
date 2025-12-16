@@ -29,7 +29,6 @@ import (
 	"llm-proxy/internal/app"
 	"llm-proxy/internal/domain"
 	"llm-proxy/internal/ports"
-	"llm-proxy/web"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -174,6 +173,9 @@ var imageGenHandler *httphandlers.ImageGenHandler
 
 // History and stats handler
 var historyHandler *httphandlers.HistoryHandler
+
+// UI handler
+var uiHandler *httphandlers.UIHandler
 
 // Database
 var db *sql.DB
@@ -1242,61 +1244,6 @@ func handleModelsConfig(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
-func handleAnalyticsPage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html")
-	data, err := web.Templates.ReadFile(web.AnalyticsTemplate)
-	if err != nil {
-		http.Error(w, "Failed to load template", http.StatusInternalServerError)
-		return
-	}
-	w.Write(data)
-}
-
-
-func handleStatsPage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html")
-	data, err := web.Templates.ReadFile(web.StatsTemplate)
-	if err != nil {
-		http.Error(w, "Failed to load template", http.StatusInternalServerError)
-		return
-	}
-	w.Write(data)
-}
-
-
-func handleDashboard(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html")
-	data, err := web.Templates.ReadFile(web.DashboardTemplate)
-	if err != nil {
-		http.Error(w, "Failed to load template", http.StatusInternalServerError)
-		return
-	}
-	w.Write(data)
-}
-
-// handleRequestPage handles /request/{id} URLs and redirects to /?request={id}
-func handleRequestPage(w http.ResponseWriter, r *http.Request) {
-	// Extract ID from path like /request/123
-	path := strings.TrimPrefix(r.URL.Path, "/request/")
-	if path == "" || path == r.URL.Path {
-		http.Error(w, "Request ID required", http.StatusBadRequest)
-		return
-	}
-	// Redirect to dashboard with request param
-	http.Redirect(w, r, "/?request="+path, http.StatusFound)
-}
-
-
-func handleTestPlayground(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html")
-	data, err := web.Templates.ReadFile(web.PlaygroundTemplate)
-	if err != nil {
-		http.Error(w, "Failed to load template", http.StatusInternalServerError)
-		return
-	}
-	w.Write(data)
-}
-
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "service": "llm-proxy"})
@@ -2238,9 +2185,12 @@ func main() {
 	historyHandler = httphandlers.NewHistoryHandler(db, &dbMutex, requestCache)
 	historyHandler.GetPending = getPendingRequests
 
+	// Initialize UI handler
+	uiHandler = httphandlers.NewUIHandler()
+
 	// Routes
-	http.HandleFunc("/", handleDashboard)
-	http.HandleFunc("/request/", handleRequestPage)
+	http.HandleFunc("/", uiHandler.HandleDashboard)
+	http.HandleFunc("/request/", uiHandler.HandleRequestPage)
 	http.HandleFunc("/health", handleHealth)
 	http.HandleFunc("/metrics", handleMetrics)
 	http.Handle("/v1/chat/completions", chatHandler)
@@ -2268,9 +2218,9 @@ func main() {
 	http.HandleFunc("/api/system-metrics", withCORS(handleSystemMetrics))
 	http.HandleFunc("/api/system/truncate-logs", withCORS(handleTruncateLogs))
 	http.HandleFunc("/api/system/db-stats", withCORS(handleDbStats))
-	http.HandleFunc("/analytics", handleAnalyticsPage)
-	http.HandleFunc("/stats", handleStatsPage)
-	http.HandleFunc("/test", handleTestPlayground)
+	http.HandleFunc("/analytics", uiHandler.HandleAnalyticsPage)
+	http.HandleFunc("/stats", uiHandler.HandleStatsPage)
+	http.HandleFunc("/test", uiHandler.HandleTestPlayground)
 	http.HandleFunc("/v1/audio/transcriptions", sttHandler.HandleTranscription)
 	http.HandleFunc("/v1/audio/transcriptions/stream", sttHandler.HandleStream)
 	http.HandleFunc("/v1/audio/speech", ttsHandler.HandleTTS)

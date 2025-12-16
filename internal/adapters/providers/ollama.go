@@ -186,3 +186,102 @@ func (p *OllamaProvider) Chat(req *domain.ChatCompletionRequest, model string) (
 		},
 	}, nil
 }
+
+// OllamaTagsResponse is the response from Ollama /api/tags.
+type OllamaTagsResponse struct {
+	Models []struct {
+		Name string `json:"name"`
+	} `json:"models"`
+}
+
+// OllamaModelDetails is the detailed response from Ollama /api/show.
+type OllamaModelDetails struct {
+	Details struct {
+		Family   string   `json:"family"`
+		Families []string `json:"families"`
+	} `json:"details"`
+}
+
+// GetModels fetches the list of available models from Ollama.
+func (p *OllamaProvider) GetModels() []string {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("http://" + p.Host + "/api/tags")
+	if err != nil {
+		log.Printf("Failed to fetch Ollama models: %v", err)
+		return []string{"mistral:7b", "gemma3:latest"} // fallback
+	}
+	defer resp.Body.Close()
+
+	var tagsResp OllamaTagsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tagsResp); err != nil {
+		log.Printf("Failed to decode Ollama models: %v", err)
+		return []string{"mistral:7b", "gemma3:latest"} // fallback
+	}
+
+	models := make([]string, 0, len(tagsResp.Models))
+	for _, m := range tagsResp.Models {
+		models = append(models, m.Name)
+	}
+	return models
+}
+
+// GetVisionModels returns only vision-capable Ollama models.
+func (p *OllamaProvider) GetVisionModels() []string {
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	// First get all models
+	resp, err := client.Get("http://" + p.Host + "/api/tags")
+	if err != nil {
+		log.Printf("Failed to fetch Ollama models: %v", err)
+		return []string{}
+	}
+	defer resp.Body.Close()
+
+	var tagsResp OllamaTagsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tagsResp); err != nil {
+		log.Printf("Failed to decode Ollama models: %v", err)
+		return []string{}
+	}
+
+	visionModels := []string{}
+	for _, m := range tagsResp.Models {
+		// Check if model supports vision by querying details
+		detailResp, err := client.Post("http://"+p.Host+"/api/show",
+			"application/json",
+			strings.NewReader(`{"name":"`+m.Name+`"}`))
+		if err != nil {
+			continue
+		}
+
+		var details OllamaModelDetails
+		json.NewDecoder(detailResp.Body).Decode(&details)
+		detailResp.Body.Close()
+
+		// Check for vision capability indicators
+		isVision := false
+		// Check family names for vision indicators
+		family := strings.ToLower(details.Details.Family)
+		if strings.Contains(family, "vl") || strings.Contains(family, "llava") ||
+			strings.Contains(family, "vision") || strings.Contains(family, "clip") {
+			isVision = true
+		}
+		// Check families array for clip (vision encoder)
+		for _, f := range details.Details.Families {
+			if strings.ToLower(f) == "clip" || strings.Contains(strings.ToLower(f), "vl") {
+				isVision = true
+				break
+			}
+		}
+		// Also check model name for common vision model patterns
+		nameLower := strings.ToLower(m.Name)
+		if strings.Contains(nameLower, "llava") || strings.Contains(nameLower, "-vl") ||
+			strings.Contains(nameLower, "vision") {
+			isVision = true
+		}
+
+		if isVision {
+			visionModels = append(visionModels, m.Name)
+		}
+	}
+	return visionModels
+}
