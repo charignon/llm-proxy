@@ -1860,15 +1860,31 @@
                 let citations = [];
 
                 // Handle OpenAI-style response (choices array)
+                let toolUseBlocks = [];
                 if (data.response.choices && data.response.choices.length > 0) {
                     const choice = data.response.choices[0];
-                    if (choice.message && choice.message.content) {
-                        responseContent = choice.message.content;
+                    if (choice.message) {
+                        if (choice.message.content) {
+                            responseContent = choice.message.content;
+                        }
+                        // Handle OpenAI-style tool calls
+                        if (choice.message.tool_calls && Array.isArray(choice.message.tool_calls)) {
+                            for (const tc of choice.message.tool_calls) {
+                                if (tc.type === 'function' && tc.function) {
+                                    let args = {};
+                                    try { args = JSON.parse(tc.function.arguments || '{}'); } catch(e) {}
+                                    toolUseBlocks.push({
+                                        name: tc.function.name,
+                                        id: tc.id,
+                                        input: args
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
 
                 // Handle Anthropic-style response (content array with web_search blocks)
-                let toolUseBlocks = [];
                 if (data.response.content && Array.isArray(data.response.content)) {
                     let textParts = [];
                     for (const block of data.response.content) {
