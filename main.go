@@ -519,6 +519,9 @@ func initDB() error {
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_model ON requests(model)`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_request_type ON requests(request_type)`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_client_ip ON requests(client_ip)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_cached ON requests(cached)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_usecase ON requests(usecase)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_usecase_sensitive_precision ON requests(usecase, sensitive, precision)`)
 
 	return nil
 }
