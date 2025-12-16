@@ -1062,7 +1062,7 @@
 
                 const isSelected = selectedForCompare.has(req.id);
                 tr.innerHTML = '<td onclick="event.stopPropagation()"><input type="checkbox" ' + (isSelected ? 'checked' : '') + ' onchange="toggleCompareSelection(' + req.id + ', this.checked)"></td>' +
-                    '<td title="' + dateStr + '">' + time + '</td>' +
+                    '<td class="time-cell" data-date="' + dateStr + '">' + time + '</td>' +
                     '<td><span style="font-family:monospace;font-size:11px;color:#888" title="' + hash + '">' + hash.substring(0, 8) + '</span></td>' +
                     '<td>' + typeBadge + ' ' + replayBadge + '</td>' +
                     '<td><span class="badge ' + req.provider + '">' + req.provider + '</span></td>' +
@@ -2186,27 +2186,35 @@
             el.style.display = 'none';
         }
 
-        // Reliable hover tooltips for tool badges (native title tooltips are flaky)
+        // Reliable hover tooltips for tool badges and time cells (native title tooltips are flaky)
         document.addEventListener('mouseover', (e) => {
-            const target = e.target && e.target.closest ? e.target.closest('.tool-badge') : null;
-            if (!target) return;
-            const text = target.getAttribute('data-tooltip') || '';
-            showGlobalTooltip(text, e.clientX, e.clientY);
+            const toolBadge = e.target && e.target.closest ? e.target.closest('.tool-badge') : null;
+            const timeCell = e.target && e.target.closest ? e.target.closest('.time-cell') : null;
+            if (toolBadge) {
+                showGlobalTooltip(toolBadge.getAttribute('data-tooltip') || '', e.clientX, e.clientY);
+            } else if (timeCell) {
+                showGlobalTooltip(timeCell.getAttribute('data-date') || '', e.clientX, e.clientY);
+            }
         });
         document.addEventListener('mousemove', (e) => {
-            const target = e.target && e.target.closest ? e.target.closest('.tool-badge') : null;
-            if (!target) return;
+            const toolBadge = e.target && e.target.closest ? e.target.closest('.tool-badge') : null;
+            const timeCell = e.target && e.target.closest ? e.target.closest('.time-cell') : null;
             const el = getGlobalTooltipEl();
             if (!el || el.style.display === 'none') return;
-            const text = target.getAttribute('data-tooltip') || '';
-            showGlobalTooltip(text, e.clientX, e.clientY);
+            if (toolBadge) {
+                showGlobalTooltip(toolBadge.getAttribute('data-tooltip') || '', e.clientX, e.clientY);
+            } else if (timeCell) {
+                showGlobalTooltip(timeCell.getAttribute('data-date') || '', e.clientX, e.clientY);
+            }
         });
         document.addEventListener('mouseout', (e) => {
             if (!e.target) return;
-            const from = e.target.closest ? e.target.closest('.tool-badge') : null;
-            if (!from) return;
-            const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.tool-badge') : null;
-            if (to) return; // moving between badges
+            const fromBadge = e.target.closest ? e.target.closest('.tool-badge') : null;
+            const fromTime = e.target.closest ? e.target.closest('.time-cell') : null;
+            if (!fromBadge && !fromTime) return;
+            const toBadge = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.tool-badge') : null;
+            const toTime = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.time-cell') : null;
+            if (toBadge || toTime) return; // moving between tooltip elements
             hideGlobalTooltip();
         });
         window.addEventListener('scroll', hideGlobalTooltip, true);
