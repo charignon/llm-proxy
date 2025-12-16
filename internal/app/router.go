@@ -11,8 +11,9 @@ import (
 
 // Router handles routing decisions for chat completion requests.
 type Router struct {
-	textRoutes   map[string]map[string]*domain.RouteConfig // sensitive -> precision -> config
-	visionRoutes map[string]map[string]*domain.RouteConfig // sensitive -> precision -> config
+	textRoutes     map[string]map[string]*domain.RouteConfig // sensitive -> precision -> config
+	visionRoutes   map[string]map[string]*domain.RouteConfig // sensitive -> precision -> config
+	imageGenRoutes map[string]map[string]*domain.RouteConfig // sensitive -> precision -> config
 
 	// Usecase overrides: usecase -> type -> sensitive -> precision -> config
 	usecaseRoutes map[string]map[string]map[string]map[string]*domain.RouteConfig
@@ -183,4 +184,60 @@ func (r *Router) GetTextRoutes() map[string]map[string]*domain.RouteConfig {
 // GetVisionRoutes returns the vision routing table.
 func (r *Router) GetVisionRoutes() map[string]map[string]*domain.RouteConfig {
 	return r.visionRoutes
+}
+
+// SetImageGenRoutes sets the image generation routing table.
+func (r *Router) SetImageGenRoutes(routes map[string]map[string]*domain.RouteConfig) {
+	r.imageGenRoutes = routes
+}
+
+// GetImageGenRoutes returns the image generation routing table.
+func (r *Router) GetImageGenRoutes() map[string]map[string]*domain.RouteConfig {
+	return r.imageGenRoutes
+}
+
+// ResolveImageGenRoute determines the provider and model for an image generation request.
+func (r *Router) ResolveImageGenRoute(req *domain.ImageGenerationRequest) (*domain.RouteConfig, error) {
+	// If model is explicitly specified (not a routing keyword), use it directly
+	if req.Model != "" && req.Model != "auto" && req.Model != "route" {
+		// For image generation, only OpenAI DALL-E models are supported
+		return &domain.RouteConfig{Provider: "openai", Model: req.Model}, nil
+	}
+
+	// Default to sensitive=true for privacy
+	sensitive := "true"
+	if req.Sensitive != nil && !*req.Sensitive {
+		sensitive = "false"
+	}
+
+	// Sensitive requests not supported for image generation (no local provider)
+	if sensitive == "true" {
+		return nil, fmt.Errorf("image generation not available for sensitive requests")
+	}
+
+	precision := req.Precision
+	if precision == "" {
+		precision = "medium"
+	}
+
+	// Check for usecase-specific override first
+	if req.Usecase != "" {
+		if override := r.GetUsecaseRoute(req.Usecase, "image_gen", sensitive, precision); override != nil {
+			return override, nil
+		}
+	}
+
+	// Use image generation routing table if available
+	if r.imageGenRoutes != nil {
+		routes, ok := r.imageGenRoutes[sensitive]
+		if ok {
+			route, ok := routes[precision]
+			if ok && route != nil {
+				return route, nil
+			}
+		}
+	}
+
+	// Default to DALL-E 3
+	return &domain.RouteConfig{Provider: "openai", Model: "dall-e-3"}, nil
 }
