@@ -581,6 +581,43 @@
                 <h2 class="section-title">CPU Cores</h2>
                 <div id="cpu-cores-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px;"></div>
             </div>
+
+            <!-- llama.cpp Backend Section -->
+            <div class="section" id="llamacpp-section" style="display: none;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <h2 class="section-title" style="margin: 0;">🦙 Local Vision Backend</h2>
+                    <div id="llamacpp-toggle" style="display: flex; align-items: center; gap: 12px;">
+                        <button id="btn-ollama" onclick="setBackend('ollama')" class="type-filter">Ollama</button>
+                        <button id="btn-llamacpp" onclick="setBackend('llamacpp')" class="type-filter">llama.cpp</button>
+                    </div>
+                </div>
+                <div class="stats-grid" id="llamacpp-stats">
+                    <div class="stat-card">
+                        <div class="stat-label">Status</div>
+                        <div class="stat-value" id="llamacpp-status" style="font-size: 24px;">-</div>
+                        <div id="llamacpp-host" style="margin-top: 4px; font-size: 11px; color: #888;"></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Model</div>
+                        <div class="stat-value" id="llamacpp-model" style="font-size: 18px; word-break: break-all;">-</div>
+                        <div id="llamacpp-modalities" style="margin-top: 4px; font-size: 11px; color: #888;"></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Slots</div>
+                        <div style="display: flex; align-items: baseline; gap: 8px;">
+                            <div class="stat-value" id="llamacpp-slots" style="font-size: 32px;">-</div>
+                            <div id="llamacpp-slots-detail" style="font-size: 13px; color: #888;"></div>
+                        </div>
+                        <div id="llamacpp-slots-bar" style="margin-top: 8px; background: #374151; border-radius: 4px; height: 8px; overflow: hidden;">
+                            <div id="llamacpp-slots-fill" style="width: 0%; height: 100%; background: #22c55e; border-radius: 4px; transition: width 0.5s;"></div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Build</div>
+                        <div class="stat-value" id="llamacpp-build" style="font-size: 16px;">-</div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Models Tab -->
@@ -1563,9 +1600,13 @@
             // System metrics tab
             if (tabName === 'system') {
                 loadSystemMetrics();
+                loadBackendInfo();
                 // Auto-refresh every 2 seconds
                 if (systemMetricsInterval) clearInterval(systemMetricsInterval);
-                systemMetricsInterval = setInterval(loadSystemMetrics, 2000);
+                systemMetricsInterval = setInterval(() => {
+                    loadSystemMetrics();
+                    loadLlamaCppInfo();
+                }, 2000);
             } else {
                 // Stop auto-refresh when leaving tab
                 if (systemMetricsInterval) {
@@ -1648,6 +1689,97 @@
                 }
             } catch (err) {
                 console.error('Failed to load system metrics:', err);
+            }
+        }
+
+        // llama.cpp backend management
+        async function loadBackendInfo() {
+            try {
+                // Load backend preference
+                const backendResp = await fetch('/api/backend');
+                const backendData = await backendResp.json();
+
+                if (backendData.available) {
+                    document.getElementById('llamacpp-section').style.display = 'block';
+
+                    // Update toggle buttons
+                    document.getElementById('btn-ollama').classList.toggle('active', backendData.backend === 'ollama');
+                    document.getElementById('btn-llamacpp').classList.toggle('active', backendData.backend === 'llamacpp');
+
+                    // Load llama.cpp info
+                    await loadLlamaCppInfo();
+                }
+            } catch (err) {
+                console.error('Failed to load backend info:', err);
+            }
+        }
+
+        async function loadLlamaCppInfo() {
+            try {
+                const resp = await fetch('/api/llamacpp/info');
+                const data = await resp.json();
+
+                if (data.available && data.healthy) {
+                    document.getElementById('llamacpp-status').textContent = '✓ Healthy';
+                    document.getElementById('llamacpp-status').style.color = '#22c55e';
+                } else if (data.available) {
+                    document.getElementById('llamacpp-status').textContent = '⚠ Unhealthy';
+                    document.getElementById('llamacpp-status').style.color = '#f59e0b';
+                } else {
+                    document.getElementById('llamacpp-status').textContent = '✗ Offline';
+                    document.getElementById('llamacpp-status').style.color = '#ef4444';
+                    return;
+                }
+
+                document.getElementById('llamacpp-host').textContent = data.host || '';
+
+                // Model info
+                const modelName = data.model_alias || 'Unknown';
+                document.getElementById('llamacpp-model').textContent = modelName;
+
+                // Modalities
+                const modalities = data.modalities || {};
+                const modalityText = [];
+                if (modalities.vision) modalityText.push('👁 Vision');
+                if (modalities.audio) modalityText.push('🔊 Audio');
+                document.getElementById('llamacpp-modalities').textContent = modalityText.join(' • ') || 'Text only';
+
+                // Slots
+                const total = data.total_slots || 0;
+                const active = data.active_slots || 0;
+                const idle = data.idle_slots || total;
+                document.getElementById('llamacpp-slots').textContent = total;
+                document.getElementById('llamacpp-slots-detail').textContent = active + ' active, ' + idle + ' idle';
+
+                const usagePercent = total > 0 ? (active / total) * 100 : 0;
+                document.getElementById('llamacpp-slots-fill').style.width = usagePercent + '%';
+                document.getElementById('llamacpp-slots-fill').style.background = usagePercent > 80 ? '#ef4444' : usagePercent > 50 ? '#f59e0b' : '#22c55e';
+
+                // Build info
+                document.getElementById('llamacpp-build').textContent = data.build_info || '-';
+            } catch (err) {
+                console.error('Failed to load llama.cpp info:', err);
+                document.getElementById('llamacpp-status').textContent = '✗ Error';
+                document.getElementById('llamacpp-status').style.color = '#ef4444';
+            }
+        }
+
+        async function setBackend(backend) {
+            try {
+                const resp = await fetch('/api/backend', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ backend: backend })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    // Update toggle buttons
+                    document.getElementById('btn-ollama').classList.toggle('active', data.backend === 'ollama');
+                    document.getElementById('btn-llamacpp').classList.toggle('active', data.backend === 'llamacpp');
+                }
+            } catch (err) {
+                console.error('Failed to set backend:', err);
+                alert('Failed to change backend: ' + err.message);
             }
         }
 

@@ -199,6 +199,10 @@ func initCache() {
 var disabledModels = make(map[string]bool)
 var disabledModelsMutex sync.RWMutex
 
+// Local vision backend preference: "ollama" or "llamacpp"
+var localVisionBackend = "ollama" // default to ollama
+var localVisionBackendMutex sync.RWMutex
+
 func isModelDisabled(model string) bool {
 	disabledModelsMutex.RLock()
 	defer disabledModelsMutex.RUnlock()
@@ -224,6 +228,64 @@ func loadDisabledModels() {
 		disabledModels[model] = true
 	}
 	log.Printf("Loaded %d disabled models", len(disabledModels))
+}
+
+// loadLocalVisionBackend loads the local vision backend preference from the database.
+func loadLocalVisionBackend() {
+	var value string
+	err := db.QueryRow(`SELECT value FROM settings WHERE key = 'local_vision_backend'`).Scan(&value)
+	if err != nil {
+		// Default to ollama if not set
+		localVisionBackend = "ollama"
+		log.Printf("Local vision backend: ollama (default)")
+		return
+	}
+	localVisionBackendMutex.Lock()
+	defer localVisionBackendMutex.Unlock()
+	if value == "llamacpp" || value == "ollama" {
+		localVisionBackend = value
+	} else {
+		localVisionBackend = "ollama"
+	}
+	log.Printf("Local vision backend: %s", localVisionBackend)
+}
+
+// getLocalVisionBackend returns the current local vision backend preference.
+func getLocalVisionBackend() string {
+	localVisionBackendMutex.RLock()
+	defer localVisionBackendMutex.RUnlock()
+	return localVisionBackend
+}
+
+// setLocalVisionBackend sets the local vision backend preference and persists to database.
+func setLocalVisionBackend(backend string) error {
+	if backend != "ollama" && backend != "llamacpp" {
+		return fmt.Errorf("invalid backend: %s (must be 'ollama' or 'llamacpp')", backend)
+	}
+
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	_, err := db.Exec(`INSERT OR REPLACE INTO settings (key, value) VALUES ('local_vision_backend', ?)`, backend)
+	if err != nil {
+		return err
+	}
+
+	localVisionBackendMutex.Lock()
+	localVisionBackend = backend
+	localVisionBackendMutex.Unlock()
+
+	log.Printf("Local vision backend changed to: %s", backend)
+	return nil
+}
+
+// getLocalVisionProvider returns the chat provider to use for local vision requests.
+func getLocalVisionProvider() ports.ChatProvider {
+	backend := getLocalVisionBackend()
+	if backend == "llamacpp" && llamacppProvider != nil {
+		return llamacppProvider
+	}
+	return ollamaProvider
 }
 
 // Pending requests tracker
@@ -414,6 +476,17 @@ func initDB() error {
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS disabled_models (
 			model TEXT PRIMARY KEY NOT NULL
+		)
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Create settings table for key-value configuration
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS settings (
+			key TEXT PRIMARY KEY NOT NULL,
+			value TEXT NOT NULL
 		)
 	`)
 	if err != nil {
@@ -674,11 +747,8 @@ var chatProviders map[string]ChatProvider
 // ollamaProvider is stored separately for model discovery functions.
 var ollamaProvider *providers.OllamaProvider
 
-// llamacppProvider is stored separately for health checks.
+// llamacppProvider is stored separately for health checks and backend switching.
 var llamacppProvider *providers.LlamaCppProvider
-
-// localVisionBalancer load-balances vision requests between Ollama and llama.cpp.
-var localVisionBalancer *providers.LoadBalancedProvider
 
 func initChatProviders() {
 	ollamaProvider = providers.NewOllamaProvider(ollamaHost)
@@ -689,36 +759,37 @@ func initChatProviders() {
 		"gemini":    providers.NewGeminiProvider(geminiKey),
 	}
 
-	// If llama.cpp host is configured, add it and set up load balancing
+	// If llama.cpp host is configured, add it as a provider
 	if llamacppHost != "" {
 		llamacppProvider = providers.NewLlamaCppProvider(llamacppHost)
 		chatProviders["llamacpp"] = llamacppProvider
-
-		// Create load balancer for local vision models (Ollama + llama.cpp)
-		localVisionBalancer = providers.NewLoadBalancedProvider("local-vision",
-			ollamaProvider,
-			llamacppProvider,
-		)
-		chatProviders["local-vision"] = localVisionBalancer
-		log.Printf("llama.cpp provider configured at %s, load balancing enabled", llamacppHost)
+		log.Printf("llama.cpp provider configured at %s", llamacppHost)
 	}
 }
 
-// enableVisionLoadBalancing updates vision routing to use the load balancer
-// when llama.cpp is configured. Must be called after initChatProviders.
-func enableVisionLoadBalancing() {
-	if llamacppHost == "" || localVisionBalancer == nil {
+// enableVisionBackendSwitch registers a selectable provider for local vision
+// that delegates to either Ollama or llama.cpp based on the backend preference.
+func enableVisionBackendSwitch() {
+	if llamacppHost == "" || llamacppProvider == nil {
 		return
 	}
 
-	// Update sensitive vision routes to use load-balanced provider
+	// Create a selectable provider that delegates based on preference
+	selectableProvider := providers.NewSelectableProvider(
+		ollamaProvider,
+		llamacppProvider,
+		getLocalVisionBackend,
+	)
+	chatProviders["local-vision"] = selectableProvider
+
+	// Update sensitive vision routes to use selectable provider
 	for precision, config := range visionRoutingTable["true"] {
 		if config != nil && config.Provider == "ollama" && config.Model == "qwen3-vl:30b" {
 			visionRoutingTable["true"][precision] = &RouteConfig{
 				Provider: "local-vision",
 				Model:    "qwen3-vl:30b",
 			}
-			log.Printf("Vision route sensitive=true precision=%s now uses load balancer", precision)
+			log.Printf("Vision route sensitive=true precision=%s now uses selectable backend", precision)
 		}
 	}
 
@@ -728,7 +799,7 @@ func enableVisionLoadBalancing() {
 			Provider: "local-vision",
 			Model:    config.Model,
 		}
-		log.Printf("Vision route sensitive=false precision=low now uses load balancer")
+		log.Printf("Vision route sensitive=false precision=low now uses selectable backend")
 	}
 }
 
@@ -1291,6 +1362,131 @@ func handleModelsConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+// handleBackend returns or sets the local vision backend preference (ollama vs llamacpp).
+// GET: returns {"backend": "ollama" or "llamacpp", "available": bool}
+// POST: sets backend with {"backend": "ollama" or "llamacpp"}
+func handleBackend(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"backend":   getLocalVisionBackend(),
+			"available": llamacppHost != "" && llamacppProvider != nil,
+		})
+		return
+	}
+
+	if r.Method == "POST" {
+		var req struct {
+			Backend string `json:"backend"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		if err := setLocalVisionBackend(req.Backend); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"backend": getLocalVisionBackend(),
+		})
+		return
+	}
+
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+// handleLlamaCppInfo returns llama.cpp server info (model, slots, status).
+func handleLlamaCppInfo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if llamacppHost == "" || llamacppProvider == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"available": false,
+			"error":     "llama.cpp not configured",
+		})
+		return
+	}
+
+	// Fetch /props from llama-server
+	propsResp, err := http.Get("http://" + llamacppHost + "/props")
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"available": false,
+			"healthy":   false,
+			"error":     err.Error(),
+		})
+		return
+	}
+	defer propsResp.Body.Close()
+
+	var props map[string]interface{}
+	if err := json.NewDecoder(propsResp.Body).Decode(&props); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"available": true,
+			"healthy":   false,
+			"error":     "failed to parse props: " + err.Error(),
+		})
+		return
+	}
+
+	// Fetch /slots from llama-server
+	slotsResp, err := http.Get("http://" + llamacppHost + "/slots")
+	var slots []map[string]interface{}
+	if err == nil {
+		defer slotsResp.Body.Close()
+		json.NewDecoder(slotsResp.Body).Decode(&slots)
+	}
+
+	// Count active/idle slots
+	totalSlots := len(slots)
+	activeSlots := 0
+	for _, slot := range slots {
+		if processing, ok := slot["is_processing"].(bool); ok && processing {
+			activeSlots++
+		}
+	}
+
+	result := map[string]interface{}{
+		"available":    true,
+		"healthy":      llamacppProvider.IsHealthy(),
+		"host":         llamacppHost,
+		"model_alias":  props["model_alias"],
+		"model_path":   props["model_path"],
+		"total_slots":  props["total_slots"],
+		"active_slots": activeSlots,
+		"idle_slots":   totalSlots - activeSlots,
+		"modalities":   props["modalities"],
+		"build_info":   props["build_info"],
+	}
+
+	json.NewEncoder(w).Encode(result)
+}
+
+// handleLlamaCppMetrics returns llama.cpp Prometheus metrics.
+func handleLlamaCppMetrics(w http.ResponseWriter, r *http.Request) {
+	if llamacppHost == "" || llamacppProvider == nil {
+		http.Error(w, "llama.cpp not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Fetch /metrics from llama-server
+	metricsResp, err := http.Get("http://" + llamacppHost + "/metrics")
+	if err != nil {
+		http.Error(w, "Failed to fetch metrics: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer metricsResp.Body.Close()
+
+	// Forward the Prometheus metrics
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	io.Copy(w, metricsResp.Body)
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -2183,6 +2379,9 @@ func main() {
 	// Load disabled models from database
 	loadDisabledModels()
 
+	// Load local vision backend preference
+	loadLocalVisionBackend()
+
 	// Initialize cache
 	initCache()
 
@@ -2193,8 +2392,8 @@ func main() {
 	// Initialize provider adapters (ports -> implementations)
 	initChatProviders()
 
-	// Enable load balancing for vision routes if llama.cpp is configured
-	enableVisionLoadBalancing()
+	// Enable backend switching for vision routes if llama.cpp is configured
+	enableVisionBackendSwitch()
 
 	// Initialize chat handler (primary adapter)
 	chatHandler = &httphandlers.ChatHandler{
@@ -2280,6 +2479,9 @@ func main() {
 	http.HandleFunc("/api/system-metrics", withCORS(handleSystemMetrics))
 	http.HandleFunc("/api/system/truncate-logs", withCORS(handleTruncateLogs))
 	http.HandleFunc("/api/system/db-stats", withCORS(handleDbStats))
+	http.HandleFunc("/api/backend", withCORS(handleBackend))
+	http.HandleFunc("/api/llamacpp/info", withCORS(handleLlamaCppInfo))
+	http.HandleFunc("/api/llamacpp/metrics", withCORS(handleLlamaCppMetrics))
 	http.HandleFunc("/analytics", uiHandler.HandleAnalyticsPage)
 	http.HandleFunc("/stats", uiHandler.HandleStatsPage)
 	http.HandleFunc("/test", uiHandler.HandleTestPlayground)
@@ -2304,6 +2506,9 @@ func main() {
 	log.Printf("Gemini key: %v", geminiKey != "")
 	log.Printf("AIDA token: %v", aidaToken != "")
 	log.Printf("Ollama host: %s", ollamaHost)
+	if llamacppHost != "" {
+		log.Printf("llama.cpp host: %s (backend: %s)", llamacppHost, getLocalVisionBackend())
+	}
 
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatal(err)
