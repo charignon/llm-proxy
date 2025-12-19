@@ -83,7 +83,6 @@ var ModelPricing = map[string][2]float64{
 	"llama3.3:70b":       {0, 0},
 	"llama3.1-large":     {0, 0},
 	"llama4:scout":       {0, 0},
-	"gemma3:latest":      {0, 0},
 	"mistral:7b":         {0, 0},
 	"devstral:24b":       {0, 0},
 	"deepseek-r1:70b":    {0, 0},
@@ -132,7 +131,7 @@ func DefaultTextRoutes() map[string]map[string]*domain.RouteConfig {
 		"true": {
 			"very_high": nil, // Not available - Claude requires cloud
 			"high":      {Provider: "ollama", Model: "llama3.3:70b"},
-			"medium":    {Provider: "ollama", Model: "gemma3:latest"},
+			"medium":    {Provider: "ollama", Model: "qwen3-vl:30b"},
 			"low":       {Provider: "ollama", Model: "mistral:7b"},
 		},
 	}

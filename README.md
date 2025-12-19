@@ -83,7 +83,7 @@ curl http://localhost:8080/v1/chat/completions \
 | false | medium | OpenAI | gpt-4o-mini |
 | false | low | Ollama | mistral:7b |
 | true | high | Ollama | llama3.3:70b |
-| true | medium | Ollama | gemma3:latest |
+| true | medium | Ollama | qwen3-vl:30b |
 | true | low | Ollama | mistral:7b |
 
 ## Endpoints

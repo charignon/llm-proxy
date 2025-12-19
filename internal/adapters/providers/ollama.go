@@ -208,18 +208,22 @@ func (p *OllamaProvider) GetModels() []string {
 	resp, err := client.Get("http://" + p.Host + "/api/tags")
 	if err != nil {
 		log.Printf("Failed to fetch Ollama models: %v", err)
-		return []string{"mistral:7b", "gemma3:latest"} // fallback
+		return []string{"mistral:7b", "qwen3-vl:30b"} // fallback
 	}
 	defer resp.Body.Close()
 
 	var tagsResp OllamaTagsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tagsResp); err != nil {
 		log.Printf("Failed to decode Ollama models: %v", err)
-		return []string{"mistral:7b", "gemma3:latest"} // fallback
+		return []string{"mistral:7b", "qwen3-vl:30b"} // fallback
 	}
 
 	models := make([]string, 0, len(tagsResp.Models))
 	for _, m := range tagsResp.Models {
+		name := strings.ToLower(m.Name)
+		if strings.Contains(name, "gemma") {
+			continue
+		}
 		models = append(models, m.Name)
 	}
 	return models
@@ -280,6 +284,9 @@ func (p *OllamaProvider) GetVisionModels() []string {
 		}
 
 		if isVision {
+			if strings.Contains(strings.ToLower(m.Name), "gemma") {
+				continue
+			}
 			visionModels = append(visionModels, m.Name)
 		}
 	}

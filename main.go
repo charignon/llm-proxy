@@ -44,7 +44,7 @@ var (
 	geminiKey        = getEnv("GEMINI_API_KEY", "")
 	aidaToken        = getEnv("AIDA_TOKEN", "") // Google AIDA API token for Jules
 	ollamaHost       = getEnv("OLLAMA_HOST", "localhost:11434")
-	llamacppHost     = getEnv("LLAMACPP_HOST", "")  // Optional: llama.cpp server for load balancing (e.g., "studio.lan:8081")
+	llamacppHost     = getEnv("LLAMACPP_HOST", "") // Optional: llama.cpp server for load balancing (e.g., "studio.lan:8081")
 	dataDir          = getEnv("DATA_DIR", "./data")
 	cacheTTLHours    = 24 * 7                                                // 1 week cache
 	whisperServerURL = getEnv("WHISPER_SERVER_URL", "http://localhost:8890") // Local whisper server
@@ -80,38 +80,38 @@ var modelPricing = map[string][2]float64{
 	"gpt-5.1-codex":      {1.25, 10.00},
 	"gpt-5.1-codex-max":  {1.25, 10.00},
 	"gpt-5.1-codex-mini": {0.25, 2.00},
+	"gpt-5.2-codex":      {1.75, 14.00},
 	// Anthropic - Claude 4.5 models only
 	"claude-opus-4-5-20251101":   {5.00, 25.00},
 	"claude-sonnet-4-5-20250929": {3.00, 15.00},
 	"claude-haiku-4-5-20251001":  {1.00, 5.00},
 	// Ollama (free)
-	"qwen3-vl:30b":         {0, 0},
-	"qwen3-vl:235b":        {0, 0},
-	"llama3.3:70b":         {0, 0},
-	"llama3.1-large":       {0, 0},
-	"llama4:scout":         {0, 0},
-	"gemma3:latest":        {0, 0},
-	"mistral:7b":           {0, 0},
-	"devstral:24b":         {0, 0},
-	"deepseek-r1:70b":      {0, 0},
-	"qwen3-coder:30b":      {0, 0},
-	"deepseek-coder:33b":   {0, 0},
-	"phi4:14b":             {0, 0},
-	"codestral:latest":     {0, 0},
-	"granite3.1-moe:3b":    {0, 0},
+	"qwen3-vl:30b":       {0, 0},
+	"qwen3-vl:235b":      {0, 0},
+	"llama3.3:70b":       {0, 0},
+	"llama3.1-large":     {0, 0},
+	"llama4:scout":       {0, 0},
+	"mistral:7b":         {0, 0},
+	"devstral:24b":       {0, 0},
+	"deepseek-r1:70b":    {0, 0},
+	"qwen3-coder:30b":    {0, 0},
+	"deepseek-coder:33b": {0, 0},
+	"phi4:14b":           {0, 0},
+	"codestral:latest":   {0, 0},
+	"granite3.1-moe:3b":  {0, 0},
 	// Google Gemini models
-	"gemini-3.0-pro":                 {2.50, 15.00},
-	"gemini-3.0-flash":               {0.25, 1.00},
-	"gemini-2.5-pro":                 {1.25, 10.00},
-	"gemini-2.5-flash":               {0.15, 0.60},
-	"gemini-2.5-flash-lite":          {0.02, 0.10},
-	"gemini-2.0-flash":               {0.10, 0.40},
-	"gemini-2.0-flash-lite":          {0.02, 0.08},
-	"gemini-1.5-pro":                 {1.25, 5.00},
-	"gemini-1.5-flash":               {0.075, 0.30},
-	"gemini-1.5-flash-8b":            {0.0375, 0.15},
-	"gemini-exp-1206":                {0, 0}, // Free experimental
-	"gemini-2.0-flash-thinking-exp":  {0, 0}, // Free experimental
+	"gemini-3.0-pro":                {2.50, 15.00},
+	"gemini-3.0-flash":              {0.25, 1.00},
+	"gemini-2.5-pro":                {1.25, 10.00},
+	"gemini-2.5-flash":              {0.15, 0.60},
+	"gemini-2.5-flash-lite":         {0.02, 0.10},
+	"gemini-2.0-flash":              {0.10, 0.40},
+	"gemini-2.0-flash-lite":         {0.02, 0.08},
+	"gemini-1.5-pro":                {1.25, 5.00},
+	"gemini-1.5-flash":              {0.075, 0.30},
+	"gemini-1.5-flash-8b":           {0.0375, 0.15},
+	"gemini-exp-1206":               {0, 0}, // Free experimental
+	"gemini-2.0-flash-thinking-exp": {0, 0}, // Free experimental
 }
 
 // RouteConfig is an alias to the domain type for routing decisions.
@@ -135,7 +135,7 @@ var routingTable = map[string]map[string]*RouteConfig{
 	"true": {
 		"very_high": nil, // Not available - Claude requires cloud
 		"high":      {Provider: "ollama", Model: "llama3.3:70b"},
-		"medium":    {Provider: "ollama", Model: "gemma3:latest"},
+		"medium":    {Provider: "ollama", Model: "qwen3-vl:30b"},
 		"low":       {Provider: "ollama", Model: "mistral:7b"},
 	},
 }
@@ -360,7 +360,6 @@ type ImageURL = domain.ImageURL
 type ChatCompletionResponse = domain.ChatCompletionResponse
 type Choice = domain.Choice
 type Usage = domain.Usage
-
 
 // withCORS wraps a handler to add CORS headers for cross-origin requests
 func withCORS(h http.HandlerFunc) http.HandlerFunc {
@@ -2307,13 +2306,13 @@ func handleAIDALog(w http.ResponseWriter, r *http.Request) {
 	r.Body.Close()
 
 	var logEntry struct {
-		Timestamp       float64           `json:"timestamp"`
-		Method          string            `json:"method"`
-		URL             string            `json:"url"`
-		RequestHeaders  map[string]string `json:"request_headers"`
-		RequestBody     string            `json:"request_body"`
-		ResponseStatus  int               `json:"response_status"`
-		ResponseBody    string            `json:"response_body"`
+		Timestamp      float64           `json:"timestamp"`
+		Method         string            `json:"method"`
+		URL            string            `json:"url"`
+		RequestHeaders map[string]string `json:"request_headers"`
+		RequestBody    string            `json:"request_body"`
+		ResponseStatus int               `json:"response_status"`
+		ResponseBody   string            `json:"response_body"`
 	}
 
 	if err := json.Unmarshal(body, &logEntry); err != nil {
