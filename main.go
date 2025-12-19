@@ -2455,8 +2455,8 @@ func main() {
 	// Initialize STT handler (Whisper transcription)
 	sttHandler = httphandlers.NewSTTHandler(whisperServerURL, openaiKey, requestLogger)
 
-	// Initialize TTS handler (Kokoro TTS)
-	ttsHandler = httphandlers.NewTTSHandler(ttsServerURL, requestLogger)
+	// Initialize TTS handler (Kokoro TTS + OpenAI TTS)
+	ttsHandler = httphandlers.NewTTSHandler(ttsServerURL, openaiKey, requestLogger)
 
 	// Initialize Web Search handler
 	webSearchHandler = httphandlers.NewWebSearchHandler(anthropicKey, openaiKey, requestLogger)

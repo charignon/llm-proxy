@@ -2,12 +2,14 @@
 package http
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"llm-proxy/internal/domain"
@@ -27,13 +29,15 @@ var TTSVoiceMap = map[string]string{
 // TTSHandler handles text-to-speech requests.
 type TTSHandler struct {
 	TTSServerURL string
+	OpenAIAPIKey string
 	Logger       ports.RequestLogger
 }
 
 // NewTTSHandler creates a new TTS handler.
-func NewTTSHandler(ttsServerURL string, logger ports.RequestLogger) *TTSHandler {
+func NewTTSHandler(ttsServerURL string, openaiAPIKey string, logger ports.RequestLogger) *TTSHandler {
 	return &TTSHandler{
 		TTSServerURL: ttsServerURL,
+		OpenAIAPIKey: openaiAPIKey,
 		Logger:       logger,
 	}
 }
@@ -67,7 +71,7 @@ func (h *TTSHandler) HandleTTS(w http.ResponseWriter, r *http.Request) {
 
 	// Set defaults
 	if req.Voice == "" {
-		req.Voice = "af_nicole" // American female - same as appdaemon default
+		req.Voice = "alloy"
 	}
 	if req.ResponseFormat == "" {
 		req.ResponseFormat = "mp3"
@@ -76,6 +80,96 @@ func (h *TTSHandler) HandleTTS(w http.ResponseWriter, r *http.Request) {
 		req.Speed = 1.0
 	}
 
+	// Check if this should go to OpenAI TTS
+	if strings.HasPrefix(req.Model, "tts-1") {
+		h.handleOpenAITTS(w, r, req, body, startTime)
+		return
+	}
+
+	// Use Kokoro for everything else
+	h.handleKokoroTTS(w, r, req, body, startTime)
+}
+
+// handleOpenAITTS forwards the request to OpenAI's TTS API.
+func (h *TTSHandler) handleOpenAITTS(w http.ResponseWriter, r *http.Request, req domain.TTSRequest, body []byte, startTime time.Time) {
+	// Prepare log entry
+	logEntry := &domain.RequestLog{
+		Timestamp:   startTime,
+		RequestType: "tts",
+		Provider:    "openai",
+		Model:       req.Model,
+		Voice:       req.Voice,
+		InputChars:  len(req.Input),
+		RequestBody: body,
+		ClientIP:    getClientIP(r),
+	}
+
+	// Forward to OpenAI
+	client := &http.Client{Timeout: 120 * time.Second}
+	openaiReq, err := http.NewRequest("POST", "https://api.openai.com/v1/audio/speech", bytes.NewReader(body))
+	if err != nil {
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		logEntry.Success = false
+		logEntry.Error = err.Error()
+		h.Logger.LogRequest(logEntry)
+		http.Error(w, "Failed to create request: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	openaiReq.Header.Set("Content-Type", "application/json")
+	openaiReq.Header.Set("Authorization", "Bearer "+h.OpenAIAPIKey)
+
+	resp, err := client.Do(openaiReq)
+	if err != nil {
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		logEntry.Success = false
+		logEntry.Error = err.Error()
+		h.Logger.LogRequest(logEntry)
+
+		log.Printf("OpenAI TTS request failed: %v", err)
+		http.Error(w, "OpenAI TTS unavailable: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		logEntry.Success = false
+		logEntry.Error = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		h.Logger.LogRequest(logEntry)
+
+		log.Printf("OpenAI TTS error %d: %s", resp.StatusCode, string(respBody))
+		http.Error(w, fmt.Sprintf("OpenAI TTS error: %s", string(respBody)), resp.StatusCode)
+		return
+	}
+
+	latencyMs := time.Since(startTime).Milliseconds()
+	logEntry.LatencyMs = latencyMs
+	logEntry.Success = true
+	h.Logger.LogRequest(logEntry)
+
+	log.Printf("OpenAI TTS complete (%dms): model=%s voice=%s, len=%d chars", latencyMs, req.Model, req.Voice, len(req.Input))
+
+	// Stream audio response back to client
+	contentType := "audio/mpeg"
+	if req.ResponseFormat == "wav" {
+		contentType = "audio/wav"
+	} else if req.ResponseFormat == "opus" {
+		contentType = "audio/opus"
+	} else if req.ResponseFormat == "aac" {
+		contentType = "audio/aac"
+	} else if req.ResponseFormat == "flac" {
+		contentType = "audio/flac"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=\"speech.%s\"", req.ResponseFormat))
+	io.Copy(w, resp.Body)
+}
+
+// handleKokoroTTS forwards the request to local Kokoro TTS.
+func (h *TTSHandler) handleKokoroTTS(w http.ResponseWriter, r *http.Request, req domain.TTSRequest, body []byte, startTime time.Time) {
 	// Map OpenAI voice to Kokoro voice
 	kokoroVoice, ok := TTSVoiceMap[req.Voice]
 	if !ok {
@@ -136,7 +230,7 @@ func (h *TTSHandler) HandleTTS(w http.ResponseWriter, r *http.Request) {
 	logEntry.Success = true
 	h.Logger.LogRequest(logEntry)
 
-	log.Printf("TTS complete (%dms): voice=%s, len=%d chars", latencyMs, kokoroVoice, len(req.Input))
+	log.Printf("Kokoro TTS complete (%dms): voice=%s, len=%d chars", latencyMs, kokoroVoice, len(req.Input))
 
 	// Stream audio response back to client
 	contentType := "audio/mpeg"
