@@ -6,4 +6,6 @@ data/
 
 # API keys
 *_key.txt
+.env
+
 .aider*
