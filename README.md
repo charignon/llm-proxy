@@ -12,25 +12,36 @@ A unified AI gateway that routes requests to multiple LLM providers (OpenAI, Ant
 - **Web Dashboard**: Real-time analytics and request history
 - **Multi-Modal**: Supports text, vision, speech-to-text, and text-to-speech
 
-## Quick Start (Local Development)
+## Quick Start
 
-### Prerequisites
+**You only need ONE provider** - use whichever you have:
+- **Ollama only**: Free, local, no API keys needed
+- **OpenAI only**: Just set `OPENAI_API_KEY`
+- **Anthropic only**: Just set `ANTHROPIC_API_KEY`
+- **Mix and match**: Use multiple providers for smart routing
 
-- Go 1.22 or later
-- (Optional) [Ollama](https://ollama.ai) for local models
-- (Optional) API keys for cloud providers
-
-### Build and Run
+### Install Script (Recommended)
 
 ```bash
-# Clone the repository
+# Clone and run the install script
 git clone https://github.com/charignon/llm-proxy.git
 cd llm-proxy
+./install.sh
+```
 
-# Build
+The script will:
+- Check for Go 1.22+
+- Build the binary
+- Detect available providers (Ollama, API keys)
+- Create a config file
+- Optionally install as a system service
+
+### Manual Build
+
+```bash
+git clone https://github.com/charignon/llm-proxy.git
+cd llm-proxy
 go build -o llm-proxy .
-
-# Run (default port 8080)
 ./llm-proxy
 ```
 
