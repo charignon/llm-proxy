@@ -92,6 +92,13 @@ func (h *TTSHandler) HandleTTS(w http.ResponseWriter, r *http.Request) {
 
 // handleOpenAITTS forwards the request to OpenAI's TTS API.
 func (h *TTSHandler) handleOpenAITTS(w http.ResponseWriter, r *http.Request, req domain.TTSRequest, body []byte, startTime time.Time) {
+	// Calculate cost: tts-1 = $0.015/1K chars, tts-1-hd = $0.030/1K chars
+	costPer1K := 0.015
+	if req.Model == "tts-1-hd" {
+		costPer1K = 0.030
+	}
+	costUSD := float64(len(req.Input)) / 1000.0 * costPer1K
+
 	// Prepare log entry
 	logEntry := &domain.RequestLog{
 		Timestamp:   startTime,
@@ -100,6 +107,7 @@ func (h *TTSHandler) handleOpenAITTS(w http.ResponseWriter, r *http.Request, req
 		Model:       req.Model,
 		Voice:       req.Voice,
 		InputChars:  len(req.Input),
+		CostUSD:     costUSD,
 		RequestBody: body,
 		ClientIP:    getClientIP(r),
 	}
