@@ -37,8 +37,8 @@ type ChatHandler struct {
 
 	// GetProviderOverride checks if a different provider should be used.
 	// Used to route ollama vision models to llamacpp based on backend setting.
-	// Returns the override provider or nil to use the default.
-	GetProviderOverride func(provider, model string) ports.ChatProvider
+	// Returns the override provider and name, or nil/"" to use the default.
+	GetProviderOverride func(provider, model string) (ports.ChatProvider, string)
 }
 
 // MetricsRecorder interface for recording request metrics.
@@ -215,14 +215,17 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Make the actual call
 	var resp *domain.ChatCompletionResponse
+	actualProviderName := route.Provider
 	provider, ok := h.Providers[route.Provider]
 	if !ok {
 		err = fmt.Errorf("unknown provider: %s", route.Provider)
 	} else {
 		// Check for provider override (e.g., llamacpp instead of ollama for vision)
 		if h.GetProviderOverride != nil {
-			if override := h.GetProviderOverride(route.Provider, route.Model); override != nil {
+			if override, overrideName := h.GetProviderOverride(route.Provider, route.Model); override != nil {
 				provider = override
+				actualProviderName = overrideName
+				logEntry.Provider = overrideName
 			}
 		}
 		resp, err = provider.Chat(&req, route.Model)
@@ -235,7 +238,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		logEntry.Error = err.Error()
 
 		h.Logger.LogRequest(logEntry)
-		h.Metrics.RecordRequest(route.Provider, route.Model, "error", logEntry.LatencyMs, 0, 0, 0, false)
+		h.Metrics.RecordRequest(actualProviderName, route.Model, "error", logEntry.LatencyMs, 0, 0, 0, false)
 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -257,10 +260,10 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestID := h.Logger.LogRequest(logEntry)
 
 	// Record metrics
-	h.Metrics.RecordRequest(route.Provider, route.Model, "success", logEntry.LatencyMs, logEntry.InputTokens, logEntry.OutputTokens, logEntry.CostUSD, false)
+	h.Metrics.RecordRequest(actualProviderName, route.Model, "success", logEntry.LatencyMs, logEntry.InputTokens, logEntry.OutputTokens, logEntry.CostUSD, false)
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-LLM-Proxy-Provider", route.Provider)
+	w.Header().Set("X-LLM-Proxy-Provider", actualProviderName)
 	w.Header().Set("X-LLM-Proxy-Model", route.Model)
 	w.Header().Set("X-LLM-Proxy-Latency-Ms", fmt.Sprintf("%d", logEntry.LatencyMs))
 	w.Header().Set("X-LLM-Proxy-Cost-USD", fmt.Sprintf("%.6f", logEntry.CostUSD))

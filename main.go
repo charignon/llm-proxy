@@ -290,23 +290,24 @@ func getLocalVisionProvider() ports.ChatProvider {
 
 // getProviderOverride returns an override provider for vision models if llamacpp is preferred.
 // This intercepts ollama vision model requests and routes them to llamacpp when the backend is set.
-func getProviderOverride(provider, model string) ports.ChatProvider {
+// Returns the provider and name, or nil/"" if no override.
+func getProviderOverride(provider, model string) (ports.ChatProvider, string) {
 	// Only intercept ollama vision model requests when llamacpp is preferred
 	if provider != "ollama" || llamacppProvider == nil {
-		return nil
+		return nil, ""
 	}
 
 	// Check if this is a vision model (qwen3-vl)
 	if !strings.Contains(strings.ToLower(model), "qwen3-vl") {
-		return nil
+		return nil, ""
 	}
 
 	// Return llamacpp provider if that's the preferred backend
 	if getLocalVisionBackend() == "llamacpp" {
-		return llamacppProvider
+		return llamacppProvider, "llamacpp"
 	}
 
-	return nil
+	return nil, ""
 }
 
 // Pending requests tracker
