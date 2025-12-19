@@ -44,6 +44,7 @@ var (
 	geminiKey        = getEnv("GEMINI_API_KEY", "")
 	aidaToken        = getEnv("AIDA_TOKEN", "") // Google AIDA API token for Jules
 	ollamaHost       = getEnv("OLLAMA_HOST", "localhost:11434")
+	llamacppHost     = getEnv("LLAMACPP_HOST", "")  // Optional: llama.cpp server for load balancing (e.g., "studio.lan:8081")
 	dataDir          = getEnv("DATA_DIR", "./data")
 	cacheTTLHours    = 24 * 7                                                // 1 week cache
 	whisperServerURL = getEnv("WHISPER_SERVER_URL", "http://localhost:8890") // Local whisper server
@@ -673,6 +674,12 @@ var chatProviders map[string]ChatProvider
 // ollamaProvider is stored separately for model discovery functions.
 var ollamaProvider *providers.OllamaProvider
 
+// llamacppProvider is stored separately for health checks.
+var llamacppProvider *providers.LlamaCppProvider
+
+// localVisionBalancer load-balances vision requests between Ollama and llama.cpp.
+var localVisionBalancer *providers.LoadBalancedProvider
+
 func initChatProviders() {
 	ollamaProvider = providers.NewOllamaProvider(ollamaHost)
 	chatProviders = map[string]ChatProvider{
@@ -680,6 +687,48 @@ func initChatProviders() {
 		"anthropic": providers.NewAnthropicProvider(anthropicKey),
 		"ollama":    ollamaProvider,
 		"gemini":    providers.NewGeminiProvider(geminiKey),
+	}
+
+	// If llama.cpp host is configured, add it and set up load balancing
+	if llamacppHost != "" {
+		llamacppProvider = providers.NewLlamaCppProvider(llamacppHost)
+		chatProviders["llamacpp"] = llamacppProvider
+
+		// Create load balancer for local vision models (Ollama + llama.cpp)
+		localVisionBalancer = providers.NewLoadBalancedProvider("local-vision",
+			ollamaProvider,
+			llamacppProvider,
+		)
+		chatProviders["local-vision"] = localVisionBalancer
+		log.Printf("llama.cpp provider configured at %s, load balancing enabled", llamacppHost)
+	}
+}
+
+// enableVisionLoadBalancing updates vision routing to use the load balancer
+// when llama.cpp is configured. Must be called after initChatProviders.
+func enableVisionLoadBalancing() {
+	if llamacppHost == "" || localVisionBalancer == nil {
+		return
+	}
+
+	// Update sensitive vision routes to use load-balanced provider
+	for precision, config := range visionRoutingTable["true"] {
+		if config != nil && config.Provider == "ollama" && config.Model == "qwen3-vl:30b" {
+			visionRoutingTable["true"][precision] = &RouteConfig{
+				Provider: "local-vision",
+				Model:    "qwen3-vl:30b",
+			}
+			log.Printf("Vision route sensitive=true precision=%s now uses load balancer", precision)
+		}
+	}
+
+	// Also update non-sensitive low precision route if it uses ollama
+	if config := visionRoutingTable["false"]["low"]; config != nil && config.Provider == "ollama" {
+		visionRoutingTable["false"]["low"] = &RouteConfig{
+			Provider: "local-vision",
+			Model:    config.Model,
+		}
+		log.Printf("Vision route sensitive=false precision=low now uses load balancer")
 	}
 }
 
@@ -1834,6 +1883,16 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(sb.String()))
 }
 
+// isLocalProvider returns true if the provider runs locally (not cloud)
+func isLocalProvider(provider string) bool {
+	switch provider {
+	case "ollama", "llamacpp", "local-vision":
+		return true
+	default:
+		return false
+	}
+}
+
 // validateRoutingTableSecurity ensures sensitive data never goes to cloud providers
 // This is a critical security check that runs on startup
 func validateRoutingTableSecurity() {
@@ -1843,9 +1902,9 @@ func validateRoutingTableSecurity() {
 	for sensitive, precisions := range routingTable {
 		if sensitive == "true" {
 			for precision, config := range precisions {
-				if config != nil && config.Provider != "ollama" {
+				if config != nil && !isLocalProvider(config.Provider) {
 					violations = append(violations,
-						fmt.Sprintf("TEXT sensitive=true precision=%s routes to %s/%s (must be ollama)",
+						fmt.Sprintf("TEXT sensitive=true precision=%s routes to %s/%s (must be local provider)",
 							precision, config.Provider, config.Model))
 				}
 			}
@@ -1856,9 +1915,9 @@ func validateRoutingTableSecurity() {
 	for sensitive, precisions := range visionRoutingTable {
 		if sensitive == "true" {
 			for precision, config := range precisions {
-				if config != nil && config.Provider != "ollama" {
+				if config != nil && !isLocalProvider(config.Provider) {
 					violations = append(violations,
-						fmt.Sprintf("VISION sensitive=true precision=%s routes to %s/%s (must be ollama)",
+						fmt.Sprintf("VISION sensitive=true precision=%s routes to %s/%s (must be local provider)",
 							precision, config.Provider, config.Model))
 				}
 			}
@@ -1873,7 +1932,7 @@ func validateRoutingTableSecurity() {
 		log.Fatal("Refusing to start due to routing configuration security violations")
 	}
 
-	log.Println("Security check passed: all sensitive routes use local Ollama")
+	log.Println("Security check passed: all sensitive routes use local providers")
 }
 
 // handleAIDAProxy proxies requests to Google's AIDA API (used by Jules CLI)
@@ -2133,6 +2192,9 @@ func main() {
 
 	// Initialize provider adapters (ports -> implementations)
 	initChatProviders()
+
+	// Enable load balancing for vision routes if llama.cpp is configured
+	enableVisionLoadBalancing()
 
 	// Initialize chat handler (primary adapter)
 	chatHandler = &httphandlers.ChatHandler{
