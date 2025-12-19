@@ -34,6 +34,9 @@ func NewRouter(
 
 // ResolveRoute determines the provider and model for a chat completion request.
 func (r *Router) ResolveRoute(req *domain.ChatCompletionRequest) (*domain.RouteConfig, error) {
+	// Force nvr-proxy callers off legacy models (llava/gemma) to qwen3-vl:30b
+	req.Model = forceNVRProxyModel(req.Model, req.Usecase)
+
 	// If model is explicitly specified (not a routing keyword), use it directly
 	if req.Model != "" && req.Model != "auto" && req.Model != "route" {
 		return r.resolveExplicitModel(req.Model), nil
@@ -103,6 +106,21 @@ func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 	// Codex models are OpenAI (already default, but explicit for clarity)
 	// gpt-5-codex, gpt-5.1-codex, gpt-5.1-codex-max, gpt-5.1-codex-mini, etc.
 	return &domain.RouteConfig{Provider: provider, Model: model}
+}
+
+func forceNVRProxyModel(model, usecase string) string {
+	if usecase != "nvr-proxy-scheduled" && usecase != "nvr-proxy-analyze" && usecase != "nvr-proxy-manual" {
+		return model
+	}
+	m := strings.TrimSpace(model)
+	l := strings.ToLower(m)
+	if l == "" {
+		return m
+	}
+	if strings.Contains(l, "gemma") || strings.Contains(l, "llava") {
+		return "ollama/qwen3-vl:30b"
+	}
+	return m
 }
 
 // GetUsecaseRoute retrieves a usecase-specific route override.

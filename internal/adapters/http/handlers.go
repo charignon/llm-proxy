@@ -34,6 +34,11 @@ type ChatHandler struct {
 
 	// Model availability check (returns true if model is disabled)
 	IsModelDisabled func(model string) bool
+
+	// GetProviderOverride checks if a different provider should be used.
+	// Used to route ollama vision models to llamacpp based on backend setting.
+	// Returns the override provider or nil to use the default.
+	GetProviderOverride func(provider, model string) ports.ChatProvider
 }
 
 // MetricsRecorder interface for recording request metrics.
@@ -62,6 +67,22 @@ func getClientIP(r *http.Request) string {
 		return r.RemoteAddr // Return as-is if no port
 	}
 	return ip
+}
+
+// normalizeNVRProxyModel forces scheduled/manual NVR callers off llava/gemma and onto qwen3-vl:30b
+func normalizeNVRProxyModel(model, usecase string) string {
+	if usecase != "nvr-proxy-scheduled" && usecase != "nvr-proxy-analyze" && usecase != "nvr-proxy-manual" {
+		return model
+	}
+	m := strings.TrimSpace(model)
+	l := strings.ToLower(m)
+	if l == "" {
+		return m
+	}
+	if strings.Contains(l, "gemma") || strings.Contains(l, "llava") {
+		return "ollama/qwen3-vl:30b"
+	}
+	return m
 }
 
 // ServeHTTP handles the chat completion request.
@@ -94,10 +115,14 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Rewrite legacy/banned models for nvr-proxy callers to qwen3-vl:30b
+	originalModel := req.Model
+	req.Model = normalizeNVRProxyModel(req.Model, req.Usecase)
+
 	startTime := time.Now()
 	logEntry := &domain.RequestLog{
 		Timestamp:      startTime,
-		RequestedModel: req.Model,
+		RequestedModel: originalModel,
 		Precision:      req.Precision,
 		Usecase:        req.Usecase,
 		HasImages:      req.HasImages(),
@@ -194,6 +219,12 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		err = fmt.Errorf("unknown provider: %s", route.Provider)
 	} else {
+		// Check for provider override (e.g., llamacpp instead of ollama for vision)
+		if h.GetProviderOverride != nil {
+			if override := h.GetProviderOverride(route.Provider, route.Model); override != nil {
+				provider = override
+			}
+		}
 		resp, err = provider.Chat(&req, route.Model)
 	}
 
@@ -510,8 +541,8 @@ func (h *ChatHandler) fakeStreamCachedResponse(w http.ResponseWriter, cached []b
 
 // ResponsesHandler handles OpenAI Responses API requests with smart routing.
 type ResponsesHandler struct {
-	ChatHandler   *ChatHandler      // Reuse chat handler for translated requests
-	OpenAIKey     string            // API key for direct OpenAI forwarding
+	ChatHandler   *ChatHandler            // Reuse chat handler for translated requests
+	OpenAIKey     string                  // API key for direct OpenAI forwarding
 	Mode          domain.ResponsesAPIMode // auto, openai, or translate
 	Logger        ports.RequestLogger
 	Metrics       MetricsRecorder

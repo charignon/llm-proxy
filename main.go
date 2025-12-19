@@ -288,6 +288,27 @@ func getLocalVisionProvider() ports.ChatProvider {
 	return ollamaProvider
 }
 
+// getProviderOverride returns an override provider for vision models if llamacpp is preferred.
+// This intercepts ollama vision model requests and routes them to llamacpp when the backend is set.
+func getProviderOverride(provider, model string) ports.ChatProvider {
+	// Only intercept ollama vision model requests when llamacpp is preferred
+	if provider != "ollama" || llamacppProvider == nil {
+		return nil
+	}
+
+	// Check if this is a vision model (qwen3-vl)
+	if !strings.Contains(strings.ToLower(model), "qwen3-vl") {
+		return nil
+	}
+
+	// Return llamacpp provider if that's the preferred backend
+	if getLocalVisionBackend() == "llamacpp" {
+		return llamacppProvider
+	}
+
+	return nil
+}
+
 // Pending requests tracker
 var pendingRequests = make(map[string]*PendingRequest)
 var pendingMutex sync.RWMutex
@@ -2396,16 +2417,17 @@ func main() {
 
 	// Initialize chat handler (primary adapter)
 	chatHandler = &httphandlers.ChatHandler{
-		Router:          router,
-		Providers:       chatProviders,
-		Cache:           requestCache,
-		Logger:          requestLogger,
-		Metrics:         metrics,
-		GenerateKey:     generateCacheKey,
-		CalculateCost:   calculateCost,
-		AddPending:      addPendingRequest,
-		RemovePending:   removePendingRequest,
-		IsModelDisabled: isModelDisabled,
+		Router:              router,
+		Providers:           chatProviders,
+		Cache:               requestCache,
+		Logger:              requestLogger,
+		Metrics:             metrics,
+		GenerateKey:         generateCacheKey,
+		CalculateCost:       calculateCost,
+		AddPending:          addPendingRequest,
+		RemovePending:       removePendingRequest,
+		IsModelDisabled:     isModelDisabled,
+		GetProviderOverride: getProviderOverride,
 	}
 
 	// Initialize Responses API handler (OpenAI's newer API with smart routing)
