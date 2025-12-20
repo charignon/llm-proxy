@@ -24,6 +24,7 @@ import (
 
 	"llm-proxy/internal/adapters/cache"
 	httphandlers "llm-proxy/internal/adapters/http"
+	"llm-proxy/internal/adapters/loadmanager"
 	"llm-proxy/internal/adapters/providers"
 	"llm-proxy/internal/adapters/repository"
 	"llm-proxy/internal/app"
@@ -171,6 +172,9 @@ var sttHandler *httphandlers.STTHandler
 var ttsHandler *httphandlers.TTSHandler
 var webSearchHandler *httphandlers.WebSearchHandler
 var imageGenHandler *httphandlers.ImageGenHandler
+
+// Concurrency manager for dynamic load-based limiting
+var sttConcurrencyMgr *loadmanager.ConcurrencyManager
 
 // History and stats handler
 var historyHandler *httphandlers.HistoryHandler
@@ -849,6 +853,20 @@ func getClientIP(r *http.Request) string {
 	return ip
 }
 
+func isModelLocal(model string) bool {
+	if strings.HasPrefix(model, "ollama/") {
+		return true
+	}
+	if strings.HasPrefix(model, "claude") {
+		return false
+	}
+	if strings.Contains(model, ":") || model == "llama3" || model == "llava" || strings.HasPrefix(model, "qwen") {
+		return true
+	}
+	// Default to false (cloud provider)
+	return false
+}
+
 func handleModels(w http.ResponseWriter, r *http.Request) {
 	models := []map[string]interface{}{}
 	seen := make(map[string]bool)
@@ -858,6 +876,7 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 		"id":       "auto",
 		"object":   "model",
 		"owned_by": "llm-proxy",
+		"local":    false,
 	})
 	seen["auto"] = true
 
@@ -868,6 +887,7 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 				"id":       model,
 				"object":   "model",
 				"owned_by": "llm-proxy",
+				"local":    isModelLocal(model),
 			})
 			seen[model] = true
 		}
@@ -880,6 +900,7 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 				"id":       model,
 				"object":   "model",
 				"owned_by": "llm-proxy",
+				"local":    isModelLocal(model),
 			})
 			seen[model] = true
 		}
@@ -2092,6 +2113,48 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 	sb.WriteString("# TYPE llm_proxy_pending_requests gauge\n")
 	sb.WriteString(fmt.Sprintf("llm_proxy_pending_requests %d\n", pendingCount))
 
+	// --- STT Concurrency Metrics ---
+	if sttConcurrencyMgr != nil {
+		metrics := sttConcurrencyMgr.GetMetrics()
+		stats := sttConcurrencyMgr.GetStats()
+
+		sb.WriteString("\n# HELP llm_proxy_stt_cpu_percent Current CPU usage percentage\n")
+		sb.WriteString("# TYPE llm_proxy_stt_cpu_percent gauge\n")
+		sb.WriteString(fmt.Sprintf("llm_proxy_stt_cpu_percent %.2f\n", metrics.CPUPercent))
+
+		sb.WriteString("\n# HELP llm_proxy_stt_mem_percent Current memory usage percentage\n")
+		sb.WriteString("# TYPE llm_proxy_stt_mem_percent gauge\n")
+		sb.WriteString(fmt.Sprintf("llm_proxy_stt_mem_percent %.2f\n", metrics.MemPercent))
+
+		sb.WriteString("\n# HELP llm_proxy_stt_mem_free_gb Free memory in gigabytes\n")
+		sb.WriteString("# TYPE llm_proxy_stt_mem_free_gb gauge\n")
+		sb.WriteString(fmt.Sprintf("llm_proxy_stt_mem_free_gb %.2f\n", metrics.MemFreeGB))
+
+		sb.WriteString("\n# HELP llm_proxy_stt_allowed_concurrent Dynamically allowed concurrent STT requests\n")
+		sb.WriteString("# TYPE llm_proxy_stt_allowed_concurrent gauge\n")
+		sb.WriteString(fmt.Sprintf("llm_proxy_stt_allowed_concurrent %d\n", metrics.AllowedConcurrent))
+
+		sb.WriteString("\n# HELP llm_proxy_stt_current_concurrent Current concurrent STT requests\n")
+		sb.WriteString("# TYPE llm_proxy_stt_current_concurrent gauge\n")
+		sb.WriteString(fmt.Sprintf("llm_proxy_stt_current_concurrent %d\n", stats["current_concurrent"]))
+
+		sb.WriteString("\n# HELP llm_proxy_stt_queue_pending Pending STT requests in queue\n")
+		sb.WriteString("# TYPE llm_proxy_stt_queue_pending gauge\n")
+		sb.WriteString(fmt.Sprintf("llm_proxy_stt_queue_pending %d\n", stats["queue_pending"]))
+
+		sb.WriteString("\n# HELP llm_proxy_stt_requests_total Total STT requests since service start\n")
+		sb.WriteString("# TYPE llm_proxy_stt_requests_total counter\n")
+		sb.WriteString(fmt.Sprintf("llm_proxy_stt_requests_total %d\n", stats["total_requests"]))
+
+		sb.WriteString("\n# HELP llm_proxy_stt_rejections_total Rejected STT requests (queue full)\n")
+		sb.WriteString("# TYPE llm_proxy_stt_rejections_total counter\n")
+		sb.WriteString(fmt.Sprintf("llm_proxy_stt_rejections_total %d\n", stats["total_rejections"]))
+
+		sb.WriteString("\n# HELP llm_proxy_stt_rejection_rate Current rejection rate (0.0-1.0)\n")
+		sb.WriteString("# TYPE llm_proxy_stt_rejection_rate gauge\n")
+		sb.WriteString(fmt.Sprintf("llm_proxy_stt_rejection_rate %.4f\n", stats["rejection_rate"]))
+	}
+
 	// Service info
 	sb.WriteString("\n# HELP llm_proxy_info Service information\n")
 	sb.WriteString("# TYPE llm_proxy_info gauge\n")
@@ -2452,8 +2515,13 @@ func main() {
 	}
 	log.Printf("Responses API mode: %s", responsesMode)
 
+	// Initialize STT concurrency manager (max 5 concurrent, queue up to 20)
+	sttConcurrencyMgr = loadmanager.NewConcurrencyManager(5, 20)
+	log.Printf("STT concurrency manager initialized: max 5 concurrent, queue 20")
+
 	// Initialize STT handler (Whisper transcription)
 	sttHandler = httphandlers.NewSTTHandler(whisperServerURL, openaiKey, requestLogger)
+	sttHandler.ConcurrencyMgr = sttConcurrencyMgr
 
 	// Initialize TTS handler (Kokoro TTS + OpenAI TTS)
 	ttsHandler = httphandlers.NewTTSHandler(ttsServerURL, openaiKey, requestLogger)

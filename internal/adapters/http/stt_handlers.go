@@ -3,6 +3,7 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,15 +12,17 @@ import (
 	"net/http"
 	"time"
 
+	"llm-proxy/internal/adapters/loadmanager"
 	"llm-proxy/internal/domain"
 	"llm-proxy/internal/ports"
 )
 
 // STTHandler handles speech-to-text (Whisper) transcription requests.
 type STTHandler struct {
-	WhisperServerURL string
-	OpenAIKey        string
-	Logger           ports.RequestLogger
+	WhisperServerURL  string
+	OpenAIKey         string
+	Logger            ports.RequestLogger
+	ConcurrencyMgr    *loadmanager.ConcurrencyManager
 }
 
 // NewSTTHandler creates a new STT handler.
@@ -37,6 +40,22 @@ func (h *STTHandler) HandleTranscription(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Acquire concurrency slot with 120s timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	if err := h.ConcurrencyMgr.AcquireSlot(ctx); err != nil {
+		if err == context.DeadlineExceeded {
+			http.Error(w, "Request timeout waiting for available slot", http.StatusServiceUnavailable)
+		} else {
+			// Queue full (429)
+			w.Header().Set("Retry-After", "30")
+			http.Error(w, err.Error(), http.StatusTooManyRequests)
+		}
+		return
+	}
+	defer h.ConcurrencyMgr.ReleaseSlot()
 
 	startTime := time.Now()
 
@@ -129,6 +148,22 @@ func (h *STTHandler) HandleStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Acquire concurrency slot with 300s timeout (longer for streaming)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	if err := h.ConcurrencyMgr.AcquireSlot(ctx); err != nil {
+		if err == context.DeadlineExceeded {
+			http.Error(w, "Request timeout waiting for available slot", http.StatusServiceUnavailable)
+		} else {
+			// Queue full (429)
+			w.Header().Set("Retry-After", "30")
+			http.Error(w, err.Error(), http.StatusTooManyRequests)
+		}
+		return
+	}
+	defer h.ConcurrencyMgr.ReleaseSlot()
 
 	startTime := time.Now()
 
