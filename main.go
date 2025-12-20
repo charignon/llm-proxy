@@ -2515,9 +2515,9 @@ func main() {
 	}
 	log.Printf("Responses API mode: %s", responsesMode)
 
-	// Initialize STT concurrency manager (max 5 concurrent, queue up to 20)
-	sttConcurrencyMgr = loadmanager.NewConcurrencyManager(5, 20)
-	log.Printf("STT concurrency manager initialized: max 5 concurrent, queue 20")
+	// Initialize STT concurrency manager (max 5 concurrent, queue up to 200)
+	sttConcurrencyMgr = loadmanager.NewConcurrencyManager(5, 200)
+	log.Printf("STT concurrency manager initialized: max 5 concurrent, queue 200")
 
 	// Initialize STT handler (Whisper transcription)
 	sttHandler = httphandlers.NewSTTHandler(whisperServerURL, openaiKey, requestLogger)

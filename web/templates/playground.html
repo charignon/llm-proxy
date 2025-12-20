@@ -472,32 +472,64 @@
     <script>
         const PLAYGROUND_USECASE = 'test_playground';
         let selectedImageBase64 = null;
+        let allModels = [];
 
         // Load available models for dropdowns
         async function loadModelSelectors() {
             try {
                 const resp = await fetch('/v1/models');
                 const data = await resp.json();
-                const models = (data.data || []).map(m => m.id).filter(id => id !== 'auto').sort();
+                allModels = (data.data || []).filter(m => m.id !== 'auto').sort((a, b) => a.id.localeCompare(b.id));
 
-                const chatSelect = document.getElementById('chat-model');
-                const visionSelect = document.getElementById('vision-model');
+                updateModelDropdowns('chat');
+                updateModelDropdowns('vision');
 
-                models.forEach(model => {
-                    const opt1 = document.createElement('option');
-                    opt1.value = model;
-                    opt1.textContent = model;
-                    chatSelect.appendChild(opt1);
-
-                    const opt2 = document.createElement('option');
-                    opt2.value = model;
-                    opt2.textContent = model;
-                    visionSelect.appendChild(opt2);
-                });
+                // Add event listeners for sensitive selection changes
+                document.getElementById('chat-sensitive').addEventListener('change', () => updateModelDropdowns('chat'));
+                document.getElementById('vision-sensitive').addEventListener('change', () => updateModelDropdowns('vision'));
             } catch (e) {
                 console.error('Failed to load models:', e);
             }
         }
+
+        // Filter models based on sensitive setting
+        function getFilteredModels(sensitive) {
+            if (sensitive === 'true') {
+                // Show only local models
+                return allModels.filter(m => m.local === true);
+            }
+            // Show all models when sensitive=false
+            return allModels;
+        }
+
+        // Update model dropdown based on current sensitive selection
+        function updateModelDropdowns(panelType) {
+            const sensitiveValue = document.getElementById(`${panelType}-sensitive`).value;
+            const modelSelect = document.getElementById(`${panelType}-model`);
+            const currentValue = modelSelect.value;
+            const filteredModels = getFilteredModels(sensitiveValue);
+
+            // Clear existing options (except the first one)
+            while (modelSelect.options.length > 1) {
+                modelSelect.remove(1);
+            }
+
+            // Add filtered models
+            filteredModels.forEach(model => {
+                const opt = document.createElement('option');
+                opt.value = model.id;
+                opt.textContent = model.id;
+                modelSelect.appendChild(opt);
+            });
+
+            // Restore previous selection if still available, otherwise reset
+            if (filteredModels.some(m => m.id === currentValue)) {
+                modelSelect.value = currentValue;
+            } else {
+                modelSelect.value = '';
+            }
+        }
+
         loadModelSelectors();
 
         // Helper to escape HTML

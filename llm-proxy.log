@@ -1,0 +1,13 @@
+2025/12/19 21:44:05 Loaded 0 usecase route configurations
+2025/12/19 21:44:05 Loaded 1 disabled models
+2025/12/19 21:44:05 Local vision backend: ollama (default)
+2025/12/19 21:44:05 Security check passed: all sensitive routes use local providers
+2025/12/19 21:44:05 Responses API mode: auto
+2025/12/19 21:44:05 LLM Proxy starting on port 8080
+2025/12/19 21:44:05 Whisper server: http://localhost:8890
+2025/12/19 21:44:05 TTS server: http://localhost:7788
+2025/12/19 21:44:05 OpenAI key: true
+2025/12/19 21:44:05 Anthropic key: false
+2025/12/19 21:44:05 Gemini key: false
+2025/12/19 21:44:05 AIDA token: false
+2025/12/19 21:44:05 Ollama host: localhost:11434
