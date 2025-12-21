@@ -407,6 +407,7 @@
             <button class="nav-tab" onclick="switchTab('models')">Models</button>
             <button class="nav-tab" onclick="window.location.href='/analytics'">Analytics</button>
             <button class="nav-tab" onclick="window.location.href='/stats'">Stats</button>
+            <button class="nav-tab" onclick="window.location.href='/budgets'">Budgets</button>
             <button class="nav-tab" onclick="switchTab('system')">System</button>
         </div>
 
@@ -428,6 +429,11 @@
                 <div class="stat-card">
                     <div class="stat-label">Today's Cost</div>
                     <div class="stat-value cost" id="today-cost">-</div>
+                </div>
+                <div class="stat-card" id="global-budget-card" style="display: none;">
+                    <div class="stat-label">Global Budget</div>
+                    <div class="stat-value cost" id="global-budget-spending">-</div>
+                    <div class="stat-label" style="margin-top: 8px; font-size: 12px; color: #888;" id="global-budget-details">-</div>
                 </div>
             </div>
 
@@ -1019,20 +1025,62 @@
             document.getElementById('total-cost').textContent = '$' + stats.total_cost_usd.toFixed(4);
             document.getElementById('today-cost').textContent = '$' + (stats.today?.cost_usd || 0).toFixed(4);
 
+            // Load and display global budget if enabled
+            await loadGlobalBudget();
+
             // Provider table
             const providerBody = document.querySelector('#provider-table tbody');
             providerBody.innerHTML = '';
             for (const [provider, data] of Object.entries(stats.by_provider || {})) {
                 const tr = document.createElement('tr');
+                let costCell = '$' + data.cost_usd.toFixed(4);
+                if (data.budget_usd !== undefined) {
+                    costCell += ' <span title="Provider budget" style="color: #666; font-size: 0.85em;">/ $' + data.budget_usd.toFixed(2) + '</span>';
+                }
                 tr.innerHTML = '<td><span class="badge ' + provider + '">' + provider + '</span></td>' +
                     '<td>' + data.count + '</td>' +
                     '<td>' + Math.round(data.avg_latency_ms) + 'ms</td>' +
-                    '<td>$' + data.cost_usd.toFixed(4) + '</td>';
+                    '<td>' + costCell + '</td>';
                 providerBody.appendChild(tr);
             }
 
             // Load recent requests via history API
             await loadRecentRequests();
+        }
+
+        async function loadGlobalBudget() {
+            try {
+                const globalResp = await fetch('/api/budgets/global');
+                const globalBudget = await globalResp.json();
+                
+                const budgetCard = document.getElementById('global-budget-card');
+                const spendingEl = document.getElementById('global-budget-spending');
+                const detailsEl = document.getElementById('global-budget-details');
+                
+                if (globalBudget && globalBudget.enabled) {
+                    const spendingResp = await fetch('/api/budgets/spending');
+                    const spending = await spendingResp.json();
+                    
+                    const percentage = globalBudget.budget_usd > 0 ? (spending.spending / globalBudget.budget_usd) * 100 : 0;
+                    const remaining = Math.max(0, globalBudget.budget_usd - spending.spending);
+                    
+                    // Color code based on usage
+                    let color = '#22c55e'; // green
+                    if (percentage >= 100) color = '#ef4444'; // red
+                    else if (percentage >= 80) color = '#f59e0b'; // yellow
+                    
+                    spendingEl.style.color = color;
+                    spendingEl.textContent = '$' + spending.spending.toFixed(2) + ' / $' + globalBudget.budget_usd.toFixed(2);
+                    detailsEl.textContent = percentage.toFixed(1) + '% used • $' + remaining.toFixed(2) + ' remaining';
+                    
+                    budgetCard.style.display = 'block';
+                } else {
+                    budgetCard.style.display = 'none';
+                }
+            } catch (err) {
+                console.error('Failed to load global budget:', err);
+                document.getElementById('global-budget-card').style.display = 'none';
+            }
         }
 
         async function loadRecentRequests() {

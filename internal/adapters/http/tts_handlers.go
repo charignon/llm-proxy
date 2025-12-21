@@ -31,6 +31,7 @@ type TTSHandler struct {
 	TTSServerURL string
 	OpenAIAPIKey string
 	Logger       ports.RequestLogger
+	CheckBudget  func(provider string) error
 }
 
 // NewTTSHandler creates a new TTS handler.
@@ -92,6 +93,34 @@ func (h *TTSHandler) HandleTTS(w http.ResponseWriter, r *http.Request) {
 
 // handleOpenAITTS forwards the request to OpenAI's TTS API.
 func (h *TTSHandler) handleOpenAITTS(w http.ResponseWriter, r *http.Request, req domain.TTSRequest, body []byte, startTime time.Time) {
+	// Check budget before processing request
+	if h.CheckBudget != nil {
+		if err := h.CheckBudget("openai"); err != nil {
+			logEntry := &domain.RequestLog{
+				Timestamp:   startTime,
+				RequestType: "tts",
+				Provider:    "openai",
+				Model:       req.Model,
+				Success:     false,
+				Error:       err.Error(),
+				LatencyMs:   time.Since(startTime).Milliseconds(),
+				ClientIP:    getClientIP(r),
+			}
+			h.Logger.LogRequest(logEntry)
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPaymentRequired)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": err.Error(),
+					"type":    "budget_exceeded",
+					"code":    "budget_exceeded",
+				},
+			})
+			return
+		}
+	}
+
 	// Calculate cost: tts-1 = $0.015/1K chars, tts-1-hd = $0.030/1K chars
 	costPer1K := 0.015
 	if req.Model == "tts-1-hd" {

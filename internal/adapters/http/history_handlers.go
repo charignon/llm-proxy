@@ -10,17 +10,19 @@ import (
 	"sync"
 	"time"
 
+	"llm-proxy/internal/adapters/budget"
 	"llm-proxy/internal/domain"
 	"llm-proxy/internal/ports"
 )
 
 // HistoryHandler handles request history and stats API endpoints.
 type HistoryHandler struct {
-	DB           *sql.DB
-	DBMutex      *sync.Mutex
-	Cache        ports.Cache
-	GetPending   func() []*domain.PendingRequest
-	ReplayHelper func(w http.ResponseWriter, r *http.Request, reqBody []byte, modelOverride string)
+	DB             *sql.DB
+	DBMutex        *sync.Mutex
+	Cache          ports.Cache
+	GetPending     func() []*domain.PendingRequest
+	ReplayHelper   func(w http.ResponseWriter, r *http.Request, reqBody []byte, modelOverride string)
+	BudgetRepo     ports.BudgetRepository
 }
 
 // RequestHistoryEntry represents a request in the history list.
@@ -548,17 +550,36 @@ func (h *HistoryHandler) HandleStats(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	byProvider := map[string]interface{}{}
+	now := time.Now()
 	for rows.Next() {
 		var provider string
 		var count int
 		var cost float64
 		var avgLatency float64
 		rows.Scan(&provider, &count, &cost, &avgLatency)
-		byProvider[provider] = map[string]interface{}{
+		
+		providerData := map[string]interface{}{
 			"count":          count,
 			"cost_usd":       cost,
 			"avg_latency_ms": avgLatency,
 		}
+		
+		// Add budget information if available
+		if h.BudgetRepo != nil {
+			providerBudget, err := h.BudgetRepo.GetProviderBudget(provider)
+			if err == nil && providerBudget != nil && providerBudget.Enabled {
+				// Calculate current period spending
+				periodStart, periodEnd := budget.CalculatePeriod(now, providerBudget.MonthStartDay)
+				periodSpending, err := h.BudgetRepo.GetProviderSpending(provider, periodStart, periodEnd)
+				if err == nil {
+					providerData["budget_usd"] = providerBudget.BudgetUSD
+					providerData["period_spending"] = periodSpending
+					providerData["budget_percentage"] = (periodSpending / providerBudget.BudgetUSD) * 100
+				}
+			}
+		}
+		
+		byProvider[provider] = providerData
 	}
 	stats["by_provider"] = byProvider
 

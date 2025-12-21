@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Budget Management - LLM Proxy</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0f0f1a;
+            color: #e0e0e0;
+            line-height: 1.6;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { color: #a5b4fc; margin-bottom: 8px; }
+        .subtitle { color: #888; margin-bottom: 24px; }
+        .nav-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 24px;
+            border-bottom: 1px solid #2d2d44;
+            padding-bottom: 8px;
+        }
+        .nav-tab {
+            padding: 8px 16px;
+            background: transparent;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .nav-tab:hover { background: #1a1a2e; color: #a5b4fc; }
+        .nav-tab.active { background: #1a1a2e; color: #6366f1; }
+        .section {
+            background: #1a1a2e;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .section-title { color: #a5b4fc; margin-bottom: 16px; font-size: 18px; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #2d2d44;
+        }
+        th { color: #888; font-weight: 600; font-size: 12px; text-transform: uppercase; }
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .badge.openai { background: #10b981; color: #fff; }
+        .badge.anthropic { background: #d97706; color: #fff; }
+        .badge.gemini { background: #3b82f6; color: #fff; }
+        .form-group {
+            margin-bottom: 16px;
+        }
+        label {
+            display: block;
+            color: #888;
+            margin-bottom: 6px;
+            font-size: 14px;
+        }
+        input, select {
+            width: 100%;
+            padding: 10px;
+            background: #0f0f1a;
+            border: 1px solid #2d2d44;
+            border-radius: 6px;
+            color: #e0e0e0;
+            font-size: 14px;
+        }
+        input:focus, select:focus {
+            outline: none;
+            border-color: #6366f1;
+        }
+        button {
+            padding: 10px 20px;
+            background: #6366f1;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        button:hover { background: #4f46e5; }
+        button.danger {
+            background: #ef4444;
+        }
+        button.danger:hover {
+            background: #dc2626;
+        }
+        .btn-small {
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        .muted { color: #666; font-size: 0.9em; }
+        .enabled { color: #10b981; }
+        .disabled { color: #888; }
+        .progress-bar {
+            height: 8px;
+            background: #2d2d44;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 4px;
+        }
+        .progress-fill {
+            height: 100%;
+            background: #6366f1;
+            transition: width 0.3s;
+        }
+        .progress-fill.warning { background: #f59e0b; }
+        .progress-fill.danger { background: #ef4444; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Budget Management</h1>
+        <p class="subtitle">Configure per-provider and global budget limits</p>
+
+        <div class="nav-tabs">
+            <button class="nav-tab" onclick="window.location.href='/'">Requests</button>
+            <button class="nav-tab" onclick="window.location.href='/test'">Playground</button>
+            <button class="nav-tab" onclick="window.location.href='/#routing'">Routing</button>
+            <button class="nav-tab" onclick="window.location.href='/analytics'">Analytics</button>
+            <button class="nav-tab" onclick="window.location.href='/stats'">Stats</button>
+            <button class="nav-tab active">Budgets</button>
+            <button class="nav-tab" onclick="window.location.href='/#system'">System</button>
+        </div>
+
+        <!-- Provider Budgets -->
+        <div class="section">
+            <h2 class="section-title">Provider Budgets</h2>
+            <table id="provider-budgets-table">
+                <thead>
+                    <tr>
+                        <th>Provider</th>
+                        <th>Budget</th>
+                        <th>Spending (Period)</th>
+                        <th>Usage</th>
+                        <th>Month Start</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="provider-budgets-body"></tbody>
+            </table>
+            <div style="margin-top: 20px;">
+                <h3 style="color: #a5b4fc; margin-bottom: 12px; font-size: 16px;">Add Provider Budget</h3>
+                <form id="provider-budget-form" onsubmit="addProviderBudget(event)">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Provider</label>
+                            <select id="provider-select" required>
+                                <option value="">Select provider...</option>
+                                <option value="openai">OpenAI</option>
+                                <option value="anthropic">Anthropic</option>
+                                <option value="gemini">Gemini</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Budget (USD)</label>
+                            <input type="number" id="provider-budget-amount" step="0.01" min="0" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Month Start Day (1-31)</label>
+                            <input type="number" id="provider-month-start" min="1" max="31" value="1" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Enabled</label>
+                            <select id="provider-enabled">
+                                <option value="true">Yes</option>
+                                <option value="false">No</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="submit">Add Budget</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Global Budget -->
+        <div class="section">
+            <h2 class="section-title">Global Budget</h2>
+            <div id="global-budget-display"></div>
+            <div style="margin-top: 20px;">
+                <h3 style="color: #a5b4fc; margin-bottom: 12px; font-size: 16px;">Set Global Budget</h3>
+                <form id="global-budget-form" onsubmit="setGlobalBudget(event)">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Budget (USD)</label>
+                            <input type="number" id="global-budget-amount" step="0.01" min="0" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Month Start Day (1-31)</label>
+                            <input type="number" id="global-month-start" min="1" max="31" value="1" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Enabled</label>
+                            <select id="global-enabled">
+                                <option value="true">Yes</option>
+                                <option value="false">No</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="submit">Set Global Budget</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function loadBudgets() {
+            // Load provider budgets
+            const providerResp = await fetch('/api/budgets/providers');
+            const providerBudgets = await providerResp.json() || [];
+            
+            const tbody = document.getElementById('provider-budgets-body');
+            tbody.innerHTML = '';
+            
+            for (const budget of providerBudgets) {
+                const spendingResp = await fetch(`/api/budgets/spending?provider=${budget.provider}`);
+                const spending = await spendingResp.json();
+                
+                const percentage = budget.budget_usd > 0 ? (spending.spending / budget.budget_usd) * 100 : 0;
+                const progressClass = percentage >= 100 ? 'danger' : percentage >= 80 ? 'warning' : '';
+                
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><span class="badge ${budget.provider}">${budget.provider}</span></td>
+                    <td>$${budget.budget_usd.toFixed(2)}</td>
+                    <td>$${spending.spending.toFixed(2)}</td>
+                    <td>
+                        ${percentage.toFixed(1)}%
+                        <div class="progress-bar">
+                            <div class="progress-fill ${progressClass}" style="width: ${Math.min(percentage, 100)}%"></div>
+                        </div>
+                    </td>
+                    <td>Day ${budget.month_start_day}</td>
+                    <td class="${budget.enabled ? 'enabled' : 'disabled'}">${budget.enabled ? 'Enabled' : 'Disabled'}</td>
+                    <td>
+                        <button class="btn-small danger" onclick="deleteProviderBudget('${budget.provider}')">Delete</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            }
+            
+            // Load global budget
+            const globalResp = await fetch('/api/budgets/global');
+            const globalBudget = await globalResp.json();
+            
+            const globalDisplay = document.getElementById('global-budget-display');
+            if (globalBudget) {
+                // Pre-fill the form with existing values
+                document.getElementById('global-budget-amount').value = globalBudget.budget_usd || '';
+                document.getElementById('global-month-start').value = globalBudget.month_start_day || 1;
+                document.getElementById('global-enabled').value = globalBudget.enabled ? 'true' : 'false';
+                
+                // Show global budget display (even if disabled)
+                const spendingResp = await fetch('/api/budgets/spending');
+                const spending = await spendingResp.json();
+                const percentage = globalBudget.budget_usd > 0 ? (spending.spending / globalBudget.budget_usd) * 100 : 0;
+                const progressClass = percentage >= 100 ? 'danger' : percentage >= 80 ? 'warning' : '';
+                
+                globalDisplay.innerHTML = `
+                    <table>
+                        <tr>
+                            <th>Budget</th>
+                            <th>Spending (Period)</th>
+                            <th>Usage</th>
+                            <th>Month Start</th>
+                            <th>Status</th>
+                        </tr>
+                        <tr>
+                            <td>$${globalBudget.budget_usd.toFixed(2)}</td>
+                            <td>$${spending.spending.toFixed(2)}</td>
+                            <td>
+                                ${percentage.toFixed(1)}%
+                                <div class="progress-bar">
+                                    <div class="progress-fill ${progressClass}" style="width: ${Math.min(percentage, 100)}%"></div>
+                                </div>
+                            </td>
+                            <td>Day ${globalBudget.month_start_day}</td>
+                            <td class="${globalBudget.enabled ? 'enabled' : 'disabled'}">${globalBudget.enabled ? 'Enabled' : 'Disabled'}</td>
+                        </tr>
+                    </table>
+                `;
+            } else {
+                // Reset form if no budget exists
+                document.getElementById('global-budget-amount').value = '';
+                document.getElementById('global-month-start').value = 1;
+                document.getElementById('global-enabled').value = 'true';
+                globalDisplay.innerHTML = '<p class="muted">No global budget configured</p>';
+            }
+        }
+        
+        async function addProviderBudget(event) {
+            event.preventDefault();
+            const provider = document.getElementById('provider-select').value;
+            const budgetUSD = parseFloat(document.getElementById('provider-budget-amount').value);
+            const monthStartDay = parseInt(document.getElementById('provider-month-start').value);
+            const enabled = document.getElementById('provider-enabled').value === 'true';
+            
+            const response = await fetch('/api/budgets/providers', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    provider,
+                    budget_usd: budgetUSD,
+                    month_start_day: monthStartDay,
+                    enabled
+                })
+            });
+            
+            if (response.ok) {
+                document.getElementById('provider-budget-form').reset();
+                loadBudgets();
+            } else {
+                alert('Failed to add budget: ' + await response.text());
+            }
+        }
+        
+        async function deleteProviderBudget(provider) {
+            if (!confirm(`Delete budget for ${provider}?`)) return;
+            
+            const response = await fetch(`/api/budgets/providers/${provider}`, {
+                method: 'DELETE'
+            });
+            
+            if (response.ok) {
+                loadBudgets();
+            } else {
+                alert('Failed to delete budget: ' + await response.text());
+            }
+        }
+        
+        async function setGlobalBudget(event) {
+            event.preventDefault();
+            const budgetUSD = parseFloat(document.getElementById('global-budget-amount').value);
+            const monthStartDay = parseInt(document.getElementById('global-month-start').value);
+            const enabled = document.getElementById('global-enabled').value === 'true';
+            
+            const response = await fetch('/api/budgets/global', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    budget_usd: budgetUSD,
+                    month_start_day: monthStartDay,
+                    enabled
+                })
+            });
+            
+            if (response.ok) {
+                document.getElementById('global-budget-form').reset();
+                loadBudgets();
+            } else {
+                alert('Failed to set global budget: ' + await response.text());
+            }
+        }
+        
+        loadBudgets();
+        setInterval(loadBudgets, 30000); // Refresh every 30 seconds
+    </script>
+</body>
+</html>
+

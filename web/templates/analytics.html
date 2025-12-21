@@ -330,6 +330,7 @@
             <button class="nav-tab" onclick="window.location.href='/#routing'">Routing</button>
             <button class="nav-tab active">Analytics</button>
             <button class="nav-tab" onclick="window.location.href='/stats'">Stats</button>
+            <button class="nav-tab" onclick="window.location.href='/budgets'">Budgets</button>
             <button class="nav-tab" onclick="window.location.href='/#system'">System</button>
         </div>
 
@@ -359,8 +360,16 @@
                     </div>
                 </div>
 
+                <!-- Budget Usage Chart -->
+                <div class="chart-card" id="budget-chart-card" style="display: none;">
+                    <div class="chart-title">Budget Usage by Provider</div>
+                    <div class="chart-container">
+                        <canvas id="budgetChart"></canvas>
+                    </div>
+                </div>
+
                 <!-- Hourly Distribution -->
-                <div class="chart-card">
+                <div class="chart-card full-width">
                     <div class="chart-title">Request Volume by Hour (Last 7 Days)</div>
                     <div class="chart-container">
                         <canvas id="hourlyChart"></canvas>
@@ -437,9 +446,12 @@
         let analyticsData = null;
         let statsData = null;
         let volume24hData = null;
+        let budgetData = null;
+        let globalBudgetData = null;
         let costPieChart = null;
         let costByModelChart = null;
         let costByProviderChart = null;
+        let budgetChart = null;
         let hourlyChart = null;
         let volume24hChart = null;
         let volumeChart = null;
@@ -454,14 +466,18 @@
         ];
 
         async function loadAnalytics() {
-            const [analyticsResponse, statsResponse, volume24hResponse] = await Promise.all([
+            const [analyticsResponse, statsResponse, volume24hResponse, budgetResponse, globalBudgetResponse] = await Promise.all([
                 fetch('/api/analytics?range=' + selectedTimeRange),
                 fetch('/api/stats'),
-                fetch('/api/analytics?range=1d')
+                fetch('/api/analytics?range=1d'),
+                fetch('/api/budgets/providers'),
+                fetch('/api/budgets/global')
             ]);
             analyticsData = await analyticsResponse.json();
             statsData = await statsResponse.json();
             volume24hData = await volume24hResponse.json();
+            budgetData = await budgetResponse.json();
+            globalBudgetData = await globalBudgetResponse.json();
             renderCharts();
         }
 
@@ -483,6 +499,7 @@
             renderCostByModelChart();
             renderCostByProviderChart();
             renderCostPieChart();
+            renderBudgetChart();
             renderHourlyChart();
             renderVolume24hChart();
             initMatrixSliders();
@@ -611,13 +628,196 @@
                                     const item = data[context.dataIndex];
                                     const total = data.reduce((sum, d) => sum + d.cost_usd, 0);
                                     const percentage = ((item.cost_usd / total) * 100).toFixed(1);
-                                    return [
+                                    const provider = item.name;
+                                    const stats = providerData[provider];
+                                    const lines = [
                                         'Cost: $' + item.cost_usd.toFixed(4),
                                         'Requests: ' + item.count.toLocaleString(),
                                         'Share: ' + percentage + '%'
                                     ];
+                                    if (stats && stats.budget_usd !== undefined) {
+                                        lines.push('Budget: $' + stats.budget_usd.toFixed(2));
+                                        lines.push('Period Spending: $' + (stats.period_spending || 0).toFixed(2));
+                                        if (stats.budget_percentage !== undefined) {
+                                            lines.push('Budget Usage: ' + stats.budget_percentage.toFixed(1) + '%');
+                                        }
+                                    }
+                                    return lines;
                                 }
                             }
+                        }
+                    }
+                }
+            });
+        }
+
+        async function renderBudgetChart() {
+            const ctx = document.getElementById('budgetChart').getContext('2d');
+            const chartCard = document.getElementById('budget-chart-card');
+            
+            // Fetch spending for each provider budget
+            const budgetItems = [];
+            
+            // Add provider budgets
+            if (budgetData && Array.isArray(budgetData) && budgetData.length > 0) {
+                for (const budget of budgetData) {
+                    if (!budget.enabled) continue;
+                    
+                    try {
+                        const spendingResp = await fetch(`/api/budgets/spending?provider=${budget.provider}`);
+                        const spending = await spendingResp.json();
+                        
+                        const percentage = budget.budget_usd > 0 ? (spending.spending / budget.budget_usd) * 100 : 0;
+                        
+                        budgetItems.push({
+                            label: budget.provider.charAt(0).toUpperCase() + budget.provider.slice(1),
+                            spending: spending.spending,
+                            budget: budget.budget_usd,
+                            percentage: percentage,
+                            isGlobal: false
+                        });
+                    } catch (err) {
+                        console.error('Failed to fetch spending for', budget.provider, err);
+                    }
+                }
+            }
+
+            // Add global budget if it exists and is enabled
+            if (globalBudgetData && globalBudgetData.enabled) {
+                try {
+                    const spendingResp = await fetch('/api/budgets/spending');
+                    const spending = await spendingResp.json();
+                    
+                    const percentage = globalBudgetData.budget_usd > 0 ? (spending.spending / globalBudgetData.budget_usd) * 100 : 0;
+                    
+                    budgetItems.push({
+                        label: 'Global',
+                        spending: spending.spending,
+                        budget: globalBudgetData.budget_usd,
+                        percentage: percentage,
+                        isGlobal: true
+                    });
+                } catch (err) {
+                    console.error('Failed to fetch global spending', err);
+                }
+            }
+
+            if (budgetItems.length === 0) {
+                if (budgetChart) budgetChart.destroy();
+                chartCard.style.display = 'none';
+                return;
+            }
+
+            // Show the chart card since we have budgets to display
+            chartCard.style.display = 'block';
+
+            // Sort by percentage descending
+            budgetItems.sort((a, b) => b.percentage - a.percentage);
+
+            if (budgetChart) budgetChart.destroy();
+
+            budgetChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: budgetItems.map(d => d.label + (d.isGlobal ? ' (Global)' : '')),
+                    datasets: [
+                        {
+                            label: 'Spending',
+                            data: budgetItems.map(d => d.spending),
+                            backgroundColor: budgetItems.map(d => {
+                                if (d.isGlobal) {
+                                    // Global budget uses different colors
+                                    if (d.percentage >= 100) return '#dc2626';
+                                    if (d.percentage >= 80) return '#ea580c';
+                                    return '#059669';
+                                }
+                                if (d.percentage >= 100) return '#ef4444';
+                                if (d.percentage >= 80) return '#f59e0b';
+                                return '#22c55e';
+                            }),
+                            borderColor: budgetItems.map(d => {
+                                if (d.isGlobal) {
+                                    if (d.percentage >= 100) return '#b91c1c';
+                                    if (d.percentage >= 80) return '#c2410c';
+                                    return '#047857';
+                                }
+                                if (d.percentage >= 100) return '#dc2626';
+                                if (d.percentage >= 80) return '#d97706';
+                                return '#16a34a';
+                            }),
+                            borderWidth: d => d.isGlobal ? 2 : 1,
+                            borderRadius: 4
+                        },
+                        {
+                            label: 'Budget',
+                            data: budgetItems.map(d => d.budget),
+                            backgroundColor: budgetItems.map(d => 
+                                d.isGlobal ? 'rgba(5, 150, 105, 0.2)' : 'rgba(99, 102, 241, 0.2)'
+                            ),
+                            borderColor: budgetItems.map(d => 
+                                d.isGlobal ? '#059669' : '#6366f1'
+                            ),
+                            borderWidth: budgetItems.map(d => d.isGlobal ? 3 : 2),
+                            borderDash: [5, 5],
+                            borderRadius: 4
+                        }
+                    ]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top',
+                            labels: {
+                                color: '#888',
+                                padding: 12,
+                                usePointStyle: true
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: '#1a1a2e',
+                            titleColor: '#a5b4fc',
+                            bodyColor: '#e0e0e0',
+                            borderColor: '#2d2d44',
+                            borderWidth: 1,
+                            padding: 12,
+                            callbacks: {
+                                label: function(context) {
+                                    const datasetLabel = context.dataset.label;
+                                    const value = context.parsed.x;
+                                    const item = budgetItems[context.dataIndex];
+                                    
+                                    if (datasetLabel === 'Spending') {
+                                        const lines = [
+                                            'Spending: $' + value.toFixed(2),
+                                            'Budget: $' + item.budget.toFixed(2),
+                                            'Usage: ' + item.percentage.toFixed(1) + '%'
+                                        ];
+                                        if (item.isGlobal) {
+                                            lines.unshift('Global Budget');
+                                        }
+                                        return lines;
+                                    } else {
+                                        return 'Budget: $' + value.toFixed(2);
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: '#2d2d44' },
+                            ticks: {
+                                color: '#888',
+                                callback: function(value) { return '$' + value.toFixed(2); }
+                            }
+                        },
+                        y: {
+                            grid: { color: '#2d2d44' },
+                            ticks: { color: '#888' }
                         }
                     }
                 }

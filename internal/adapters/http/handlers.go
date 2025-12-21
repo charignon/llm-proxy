@@ -39,6 +39,10 @@ type ChatHandler struct {
 	// Used to route ollama vision models to llamacpp based on backend setting.
 	// Returns the override provider and name, or nil/"" to use the default.
 	GetProviderOverride func(provider, model string) (ports.ChatProvider, string)
+
+	// CheckBudget verifies if a request should be allowed based on budget limits.
+	// Returns an error if budget is exceeded, nil otherwise.
+	CheckBudget func(provider string) error
 }
 
 // MetricsRecorder interface for recording request metrics.
@@ -173,6 +177,34 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logEntry.Provider = route.Provider
 	logEntry.Model = route.Model
 
+	// Check budget before processing request
+	if h.CheckBudget != nil {
+		actualProviderName := route.Provider
+		// Check for provider override to get the actual provider name
+		if h.GetProviderOverride != nil {
+			if override, overrideName := h.GetProviderOverride(route.Provider, route.Model); override != nil {
+				actualProviderName = overrideName
+			}
+		}
+		if err := h.CheckBudget(actualProviderName); err != nil {
+			logEntry.Success = false
+			logEntry.Error = err.Error()
+			logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+			h.Logger.LogRequest(logEntry)
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPaymentRequired)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": err.Error(),
+					"type":    "budget_exceeded",
+					"code":    "budget_exceeded",
+				},
+			})
+			return
+		}
+	}
+
 	// Handle streaming requests
 	if req.Stream {
 		h.handleStreaming(w, r, &req, route, body, logEntry, startTime)
@@ -279,6 +311,34 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 	if route.Provider != "openai" {
 		http.Error(w, fmt.Sprintf("Streaming not supported for provider: %s", route.Provider), http.StatusBadRequest)
 		return
+	}
+
+	// Check budget before processing streaming request
+	if h.CheckBudget != nil {
+		actualProviderName := route.Provider
+		// Check for provider override to get the actual provider name
+		if h.GetProviderOverride != nil {
+			if override, overrideName := h.GetProviderOverride(route.Provider, route.Model); override != nil {
+				actualProviderName = overrideName
+			}
+		}
+		if err := h.CheckBudget(actualProviderName); err != nil {
+			logEntry.Success = false
+			logEntry.Error = err.Error()
+			logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+			h.Logger.LogRequest(logEntry)
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPaymentRequired)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": err.Error(),
+					"type":    "budget_exceeded",
+					"code":    "budget_exceeded",
+				},
+			})
+			return
+		}
 	}
 
 	// Check cache first (unless no_cache is set)

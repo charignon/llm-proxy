@@ -16,4 +16,5 @@ const (
 	StatsTemplate      = "templates/stats.html"
 	DashboardTemplate  = "templates/dashboard.html"
 	PlaygroundTemplate = "templates/playground.html"
+	BudgetsTemplate    = "templates/budgets.html"
 )

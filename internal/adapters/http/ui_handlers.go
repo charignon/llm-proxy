@@ -61,6 +61,17 @@ func (h *UIHandler) HandleRequestPage(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/?request="+path, http.StatusFound)
 }
 
+// HandleBudgetsPage serves the budgets management page.
+func (h *UIHandler) HandleBudgetsPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	data, err := web.Templates.ReadFile(web.BudgetsTemplate)
+	if err != nil {
+		http.Error(w, "Failed to load template", http.StatusInternalServerError)
+		return
+	}
+	w.Write(data)
+}
+
 // HandleTestPlayground serves the test playground page.
 func (h *UIHandler) HandleTestPlayground(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")

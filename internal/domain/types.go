@@ -445,3 +445,23 @@ func (req *ChatCompletionRequest) HasImages() bool {
 	}
 	return false
 }
+
+// ProviderBudget represents a budget limit for a specific provider.
+type ProviderBudget struct {
+	Provider      string    `json:"provider"`
+	BudgetUSD     float64   `json:"budget_usd"`
+	MonthStartDay int       `json:"month_start_day"` // Day of month when period starts (1-31)
+	Enabled       bool      `json:"enabled"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// GlobalBudget represents a global budget limit across all providers.
+type GlobalBudget struct {
+	ID           int64     `json:"id"`
+	BudgetUSD    float64   `json:"budget_usd"`
+	MonthStartDay int      `json:"month_start_day"` // Day of month when period starts (1-31)
+	Enabled      bool      `json:"enabled"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}

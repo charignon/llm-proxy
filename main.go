@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"llm-proxy/internal/adapters/budget"
 	"llm-proxy/internal/adapters/cache"
 	httphandlers "llm-proxy/internal/adapters/http"
 	"llm-proxy/internal/adapters/loadmanager"
@@ -188,6 +189,10 @@ var dbMutex sync.Mutex
 
 // Request logger - using the port interface
 var requestLogger ports.RequestLogger
+
+// Budget repository and checker
+var budgetRepository ports.BudgetRepository
+var budgetChecker *budget.BudgetChecker
 
 // Cache - using the port interface
 var requestCache ports.Cache
@@ -513,6 +518,60 @@ func initDB() error {
 			key TEXT PRIMARY KEY NOT NULL,
 			value TEXT NOT NULL
 		)
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Create provider_budgets table for per-provider budget limits
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS provider_budgets (
+			provider TEXT PRIMARY KEY NOT NULL,
+			budget_usd REAL NOT NULL,
+			month_start_day INTEGER DEFAULT 1,
+			enabled INTEGER DEFAULT 1,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Create trigger to automatically update updated_at on provider_budgets
+	_, err = db.Exec(`
+		CREATE TRIGGER IF NOT EXISTS update_provider_budgets_timestamp 
+		AFTER UPDATE ON provider_budgets
+		BEGIN
+			UPDATE provider_budgets SET updated_at = datetime('now') WHERE provider = NEW.provider;
+		END
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Create global_budgets table for global budget limits
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS global_budgets (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			budget_usd REAL NOT NULL,
+			month_start_day INTEGER DEFAULT 1,
+			enabled INTEGER DEFAULT 1,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Create trigger to automatically update updated_at on global_budgets
+	_, err = db.Exec(`
+		CREATE TRIGGER IF NOT EXISTS update_global_budgets_timestamp 
+		AFTER UPDATE ON global_budgets
+		BEGIN
+			UPDATE global_budgets SET updated_at = datetime('now') WHERE id = NEW.id;
+		END
 	`)
 	if err != nil {
 		return err
@@ -2454,6 +2513,10 @@ func main() {
 	// Initialize request logger (uses the database)
 	requestLogger = repository.NewSQLiteLogger(db)
 
+	// Initialize budget repository and checker
+	budgetRepository = repository.NewSQLiteBudgetRepository(db)
+	budgetChecker = budget.NewBudgetChecker(budgetRepository)
+
 	// Initialize router with routing tables
 	router = app.NewRouter(routingTable, visionRoutingTable)
 
@@ -2492,6 +2555,7 @@ func main() {
 		RemovePending:       removePendingRequest,
 		IsModelDisabled:     isModelDisabled,
 		GetProviderOverride: getProviderOverride,
+		CheckBudget:         budgetChecker.CheckBudget,
 	}
 
 	// Initialize Responses API handler (OpenAI's newer API with smart routing)
@@ -2525,19 +2589,50 @@ func main() {
 
 	// Initialize TTS handler (Kokoro TTS + OpenAI TTS)
 	ttsHandler = httphandlers.NewTTSHandler(ttsServerURL, openaiKey, requestLogger)
+	ttsHandler.CheckBudget = budgetChecker.CheckBudget
 
 	// Initialize Web Search handler
 	webSearchHandler = httphandlers.NewWebSearchHandler(anthropicKey, openaiKey, requestLogger)
 
 	// Initialize Image Generation handler
 	imageGenHandler = httphandlers.NewImageGenHandler(openaiKey, requestLogger, router)
+	imageGenHandler.CheckBudget = budgetChecker.CheckBudget
 
 	// Initialize History handler
 	historyHandler = httphandlers.NewHistoryHandler(db, &dbMutex, requestCache)
 	historyHandler.GetPending = getPendingRequests
+	historyHandler.BudgetRepo = budgetRepository
 
 	// Initialize UI handler
 	uiHandler = httphandlers.NewUIHandler()
+
+	// Initialize budget handler
+	budgetHandler := httphandlers.NewBudgetHandler(budgetRepository)
+	
+	// Budget API wrapper functions
+	handleBudgetProviders := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			budgetHandler.HandleGetProviderBudgets(w, r)
+		} else if r.Method == "POST" {
+			budgetHandler.HandleSetProviderBudget(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}
+	
+	handleBudgetProviderDelete := func(w http.ResponseWriter, r *http.Request) {
+		budgetHandler.HandleDeleteProviderBudget(w, r)
+	}
+	
+	handleBudgetGlobal := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			budgetHandler.HandleGetGlobalBudget(w, r)
+		} else if r.Method == "POST" {
+			budgetHandler.HandleSetGlobalBudget(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}
 
 	// Routes
 	http.HandleFunc("/", uiHandler.HandleDashboard)
@@ -2574,7 +2669,14 @@ func main() {
 	http.HandleFunc("/api/llamacpp/metrics", withCORS(handleLlamaCppMetrics))
 	http.HandleFunc("/analytics", uiHandler.HandleAnalyticsPage)
 	http.HandleFunc("/stats", uiHandler.HandleStatsPage)
+	http.HandleFunc("/budgets", uiHandler.HandleBudgetsPage)
 	http.HandleFunc("/test", uiHandler.HandleTestPlayground)
+	
+	// Budget API routes
+	http.HandleFunc("/api/budgets/providers", withCORS(handleBudgetProviders))
+	http.HandleFunc("/api/budgets/providers/", withCORS(handleBudgetProviderDelete))
+	http.HandleFunc("/api/budgets/global", withCORS(handleBudgetGlobal))
+	http.HandleFunc("/api/budgets/spending", withCORS(budgetHandler.HandleGetBudgetSpending))
 	http.HandleFunc("/v1/audio/transcriptions", sttHandler.HandleTranscription)
 	http.HandleFunc("/v1/audio/transcriptions/stream", sttHandler.HandleStream)
 	http.HandleFunc("/v1/audio/speech", ttsHandler.HandleTTS)

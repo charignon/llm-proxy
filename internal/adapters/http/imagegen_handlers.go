@@ -34,9 +34,10 @@ var ImageGenPricing = map[string]map[string]float64{
 
 // ImageGenHandler handles image generation requests.
 type ImageGenHandler struct {
-	OpenAIKey string
-	Logger    ports.RequestLogger
-	Router    *app.Router
+	OpenAIKey  string
+	Logger     ports.RequestLogger
+	Router     *app.Router
+	CheckBudget func(provider string) error
 }
 
 // NewImageGenHandler creates a new image generation handler.
@@ -97,6 +98,22 @@ func (h *ImageGenHandler) HandleImageGeneration(w http.ResponseWriter, r *http.R
 	}
 	if req.N == 0 {
 		req.N = 1 // DALL-E 3 only supports 1
+	}
+
+	// Check budget before processing request
+	if h.CheckBudget != nil {
+		if err := h.CheckBudget(route.Provider); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPaymentRequired)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": err.Error(),
+					"type":    "budget_exceeded",
+					"code":    "budget_exceeded",
+				},
+			})
+			return
+		}
 	}
 
 	// Prepare log entry (metadata only, not base64 response)
