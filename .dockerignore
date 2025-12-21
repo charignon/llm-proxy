@@ -1,0 +1,49 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Build artifacts
+llm-proxy
+*.log
+*.db
+requests.db
+
+# Keep entrypoint script
+!docker-entrypoint.sh
+
+# Data directory
+data/
+*.db-journal
+
+# Documentation
+*.md
+!README.md
+
+# Development files
+.env
+.env.*
+*.key.txt
+*_key.txt
+*_token.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+*_test.go
+test/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+

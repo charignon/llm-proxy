@@ -47,6 +47,10 @@ go build -o llm-proxy .
 
 Open http://localhost:8080 to see the dashboard.
 
+### Docker
+
+See [Docker Instructions](DOCKER.md)
+
 ## Configuration
 
 All configuration is via environment variables:
