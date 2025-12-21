@@ -5,34 +5,35 @@ set -e
 PUID=${PUID:-1000}
 PGID=${PGID:-1000}
 
-# Check if group with GID exists, if not create it
-if ! getent group ${PGID} > /dev/null 2>&1; then
-    # Try to create group with name llmproxy
-    if ! addgroup -g ${PGID} -S llmproxy 2>/dev/null; then
-        # If that fails, create with a numeric name
-        addgroup -g ${PGID} -S "g${PGID}" 2>/dev/null || true
-    fi
+echo "Running as user ${PUID} and group ${PGID}"
+
+# Ensure we're running as root for user/group creation
+if [ "$(id -u)" != "0" ]; then
+    echo "Error: Entrypoint must run as root to create user/group" >&2
+    echo "Do not use --user flag or USER directive. The entrypoint will switch to the non-root user." >&2
+    exit 1
 fi
 
-# Get the group name (might be llmproxy, g${PGID}, or existing group)
-GROUP_NAME=$(getent group ${PGID} | cut -d: -f1)
-
-# Check if user with UID exists, if not create it
-if ! getent passwd ${PUID} > /dev/null 2>&1; then
-    # Try to create user with name llmproxy
-    if ! adduser -u ${PUID} -G ${GROUP_NAME} -S -D -h /app llmproxy 2>/dev/null; then
-        # If that fails, create with a numeric name
-        adduser -u ${PUID} -G ${GROUP_NAME} -S -D -h /app "u${PUID}" 2>/dev/null || true
-    fi
+# Create group "llm" if it doesn't exist
+if ! getent group llm > /dev/null 2>&1; then
+    addgroup -g ${PGID} -S llm
 fi
 
-# Get the username (might be llmproxy, u${PUID}, or existing user)
-USER_NAME=$(getent passwd ${PUID} | cut -d: -f1)
+# Create user "llm" if it doesn't exist
+if ! getent passwd llm > /dev/null 2>&1; then
+    adduser -u ${PUID} -G llm -S -D -h /app llm
+fi
 
 # Ensure data directory exists and has correct permissions
 mkdir -p /app/data
 chown -R ${PUID}:${PGID} /app/data 2>/dev/null || true
 
-# Switch to the user and execute the application
-exec su-exec ${USER_NAME} "$@"
+# Ensure we have a command to execute
+if [ $# -eq 0 ]; then
+    # Default to running llm-proxy if no command provided
+    set -- /app/llm-proxy
+fi
 
+# Switch to the user and execute the application
+# su-exec syntax: su-exec user command [args...]
+exec su-exec llm "$@"
