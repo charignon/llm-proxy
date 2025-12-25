@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"llm-proxy/internal/domain"
@@ -22,12 +23,51 @@ func NewLlamaCppProvider(host string) *LlamaCppProvider {
 	return &LlamaCppProvider{Host: host}
 }
 
+// isThinkingModel returns true if the model supports thinking mode.
+// These models are trained to use <think>...</think> tags for reasoning.
+func isThinkingModel(model string) bool {
+	// Qwen3-VL thinking variants (not instruct)
+	if strings.Contains(strings.ToLower(model), "qwen3-vl") && !strings.Contains(strings.ToLower(model), "instruct") {
+		return true
+	}
+	// DeepSeek-R1 models
+	if strings.Contains(strings.ToLower(model), "deepseek-r1") {
+		return true
+	}
+	return false
+}
+
+// injectThinkingPrefix adds an assistant message with "<think>\n" to prompt the model
+// to use its thinking capability. This mimics what Ollama's qwen3-vl-thinking renderer does.
+func injectThinkingPrefix(messages []domain.Message) []domain.Message {
+	// Create a copy to avoid modifying the original
+	result := make([]domain.Message, len(messages), len(messages)+1)
+	copy(result, messages)
+
+	// Add an assistant message that starts the thinking block
+	// The model will continue from here, think, close with </think>, then answer
+	result = append(result, domain.Message{
+		Role:    "assistant",
+		Content: "<think>\n",
+	})
+
+	return result
+}
+
 // Chat implements ChatProvider.Chat for llama.cpp server.
 // llama-server provides an OpenAI-compatible /v1/chat/completions endpoint.
 func (p *LlamaCppProvider) Chat(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+	messages := req.Messages
+
+	// For thinking models, inject the <think> prefix to trigger reasoning
+	if isThinkingModel(model) {
+		messages = injectThinkingPrefix(messages)
+		log.Printf("[LlamaCpp] Injecting thinking prefix for model %s", model)
+	}
+
 	llamaReq := map[string]interface{}{
 		"model":    model,
-		"messages": req.Messages,
+		"messages": messages,
 		"stream":   false,
 	}
 
