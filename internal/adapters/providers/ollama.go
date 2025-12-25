@@ -30,6 +30,13 @@ type ollamaRequest struct {
 	Stream     bool            `json:"stream"`
 	Tools      []domain.Tool   `json:"tools,omitempty"`
 	ToolChoice interface{}     `json:"tool_choice,omitempty"`
+	KeepAlive  string          `json:"keep_alive,omitempty"`
+	Options    *ollamaOptions  `json:"options,omitempty"`
+}
+
+type ollamaOptions struct {
+	Temperature float64 `json:"temperature,omitempty"`
+	NumCtx      int     `json:"num_ctx,omitempty"`
 }
 
 type ollamaMessage struct {
@@ -100,6 +107,11 @@ func (p *OllamaProvider) Chat(req *domain.ChatCompletionRequest, model string) (
 		Stream:     false,
 		Tools:      req.Tools,
 		ToolChoice: req.ToolChoice,
+		KeepAlive:  "-1", // Keep model loaded indefinitely
+		Options: &ollamaOptions{
+			Temperature: 0.3,  // Low temperature for consistent detection
+			NumCtx:      8192, // Larger context for vision tasks
+		},
 	}
 
 	body, _ := json.Marshal(ollamaReq)
