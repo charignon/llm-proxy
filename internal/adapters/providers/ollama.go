@@ -107,7 +107,7 @@ func (p *OllamaProvider) Chat(req *domain.ChatCompletionRequest, model string) (
 		Stream:     false,
 		Tools:      req.Tools,
 		ToolChoice: req.ToolChoice,
-		KeepAlive:  "-1", // Keep model loaded indefinitely
+		KeepAlive:  "30m", // Keep model loaded for 30 min of inactivity
 		Options: &ollamaOptions{
 			Temperature: 0.3,  // Low temperature for consistent detection
 			NumCtx:      8192, // Larger context for vision tasks
