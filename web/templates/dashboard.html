@@ -588,6 +588,27 @@
                 <div id="cpu-cores-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px;"></div>
             </div>
 
+            <div class="section">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <div>
+                        <h2 class="section-title" style="margin: 0;">Configuration</h2>
+                        <p style="color: #888; font-size: 12px; margin-top: 4px;">Application configuration values</p>
+                    </div>
+                </div>
+                <div style="padding: 16px; background: #1e1e2e; border-radius: 8px; border: 1px solid #374151; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">OLLAMA_HOST</div>
+                        <div style="color: #888; font-size: 12px;">The host and port where the Ollama server is running</div>
+                        <div id="ollama-host-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                    </div>
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">WHISPER_SERVER_URL</div>
+                        <div style="color: #888; font-size: 12px;">The URL where the Whisper STT server is running</div>
+                        <div id="whisper-server-url-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                    </div>
+                </div>
+            </div>
+
             <!-- llama.cpp Backend Section -->
             <div class="section" id="llamacpp-section" style="display: none;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
@@ -1649,6 +1670,7 @@
             if (tabName === 'system') {
                 loadSystemMetrics();
                 loadBackendInfo();
+                loadServerConfig();
                 // Auto-refresh every 2 seconds
                 if (systemMetricsInterval) clearInterval(systemMetricsInterval);
                 systemMetricsInterval = setInterval(() => {
@@ -1759,6 +1781,40 @@
                 }
             } catch (err) {
                 console.error('Failed to load backend info:', err);
+            }
+        }
+
+        async function loadServerConfig() {
+            try {
+                const resp = await fetch('/api/settings/server-config');
+                const data = await resp.json();
+                
+                // Update Ollama host
+                const hostElement = document.getElementById('ollama-host-value');
+                if (hostElement) {
+                    hostElement.textContent = data.ollama_host || '-';
+                }
+                
+                // Update Whisper server URL
+                const urlElement = document.getElementById('whisper-server-url-value');
+                if (urlElement) {
+                    urlElement.textContent = data.whisper_server_url || '-';
+                }
+            } catch (err) {
+                console.error('Failed to load server config:', err);
+                
+                // Set error state for both elements
+                const hostElement = document.getElementById('ollama-host-value');
+                if (hostElement) {
+                    hostElement.textContent = 'Error loading';
+                    hostElement.style.color = '#ef4444';
+                }
+                
+                const urlElement = document.getElementById('whisper-server-url-value');
+                if (urlElement) {
+                    urlElement.textContent = 'Error loading';
+                    urlElement.style.color = '#ef4444';
+                }
             }
         }
 

@@ -88,19 +88,27 @@ var modelPricing = map[string][2]float64{
 	"claude-sonnet-4-5-20250929": {3.00, 15.00},
 	"claude-haiku-4-5-20251001":  {1.00, 5.00},
 	// Ollama (free)
-	"qwen3-vl:30b":       {0, 0},
-	"qwen3-vl:235b":      {0, 0},
-	"llama3.3:70b":       {0, 0},
-	"llama3.1-large":     {0, 0},
-	"llama4:scout":       {0, 0},
-	"mistral:7b":         {0, 0},
-	"devstral:24b":       {0, 0},
-	"deepseek-r1:70b":    {0, 0},
-	"qwen3-coder:30b":    {0, 0},
-	"deepseek-coder:33b": {0, 0},
-	"phi4:14b":           {0, 0},
-	"codestral:latest":   {0, 0},
-	"granite3.1-moe:3b":  {0, 0},
+	"codegemma:7b":         {0, 0},
+	"codestral:latest":     {0, 0},
+	"cogito:14b":           {0, 0},
+	"cogito:32b":           {0, 0},
+	"cogito:70b":           {0, 0},
+	"cogito:8b":            {0, 0},
+	"deepseek-coder:33b":   {0, 0},
+	"deepseek-r1:70b":      {0, 0},
+	"devstral-small-2:24b": {0, 0},
+	"devstral:24b":         {0, 0},
+	"granite3.1-moe:3b":    {0, 0},
+	"llama3.1-large":       {0, 0},
+	"llama3.1:8b":          {0, 0},
+	"llama3.3:70b":         {0, 0},
+	"llama4:scout":         {0, 0},
+	"mistral:7b":           {0, 0},
+	"phi4:14b":             {0, 0},
+	"qwen3-coder:30b":      {0, 0},
+	"qwen3-vl:235b":        {0, 0},
+	"qwen3-vl:30b":         {0, 0},
+	"qwen3-vl:8b":          {0, 0},
 	// Google Gemini models
 	"gemini-3.0-pro":                {2.50, 15.00},
 	"gemini-3.0-flash":              {0.25, 1.00},
@@ -1503,6 +1511,21 @@ func handleBackend(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
+// handleServerConfig returns server configuration values.
+// GET: returns {"ollama_host": string, "whisper_server_url": string}
+func handleServerConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ollama_host":        ollamaHost,
+		"whisper_server_url": whisperServerURL,
+	})
+}
+
 // handleLlamaCppInfo returns llama.cpp server info (model, slots, status).
 func handleLlamaCppInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -2665,6 +2688,7 @@ func main() {
 	http.HandleFunc("/api/system/truncate-logs", withCORS(handleTruncateLogs))
 	http.HandleFunc("/api/system/db-stats", withCORS(handleDbStats))
 	http.HandleFunc("/api/backend", withCORS(handleBackend))
+	http.HandleFunc("/api/settings/server-config", withCORS(handleServerConfig))
 	http.HandleFunc("/api/llamacpp/info", withCORS(handleLlamaCppInfo))
 	http.HandleFunc("/api/llamacpp/metrics", withCORS(handleLlamaCppMetrics))
 	http.HandleFunc("/analytics", uiHandler.HandleAnalyticsPage)
