@@ -131,14 +131,14 @@ var routingTable = map[string]map[string]*RouteConfig{
 		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-5-20250929"},
 		"high":      {Provider: "openai", Model: "gpt-4o"},
 		"medium":    {Provider: "openai", Model: "gpt-4o-mini"},
-		"low":       {Provider: "ollama", Model: "mistral:7b"},
+		"low":       {Provider: "ollama", Model: "qwen2.5:1.5b"},
 	},
 	// sensitive: true (text only, local)
 	"true": {
 		"very_high": nil, // Not available - Claude requires cloud
 		"high":      {Provider: "ollama", Model: "llama3.3:70b"},
 		"medium":    {Provider: "ollama", Model: "qwen3-vl:30b"},
-		"low":       {Provider: "ollama", Model: "mistral:7b"},
+		"low":       {Provider: "ollama", Model: "qwen2.5:1.5b"},
 	},
 }
 
