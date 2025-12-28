@@ -91,6 +91,7 @@ var ModelPricing = map[string][2]float64{
 	"phi4:14b":           {0, 0},
 	"codestral:latest":   {0, 0},
 	"granite3.1-moe:3b":  {0, 0},
+	"qwen2.5:1.5b":       {0, 0},
 	// Google Gemini models
 	"gemini-3.0-pro":                {2.50, 15.00},
 	"gemini-3.0-flash":              {0.25, 1.00},
@@ -125,14 +126,14 @@ func DefaultTextRoutes() map[string]map[string]*domain.RouteConfig {
 			"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-5-20250929"},
 			"high":      {Provider: "openai", Model: "gpt-4o"},
 			"medium":    {Provider: "openai", Model: "gpt-4o-mini"},
-			"low":       {Provider: "ollama", Model: "mistral:7b"},
+			"low":       {Provider: "ollama", Model: "qwen2.5:1.5b"},
 		},
 		// sensitive: true (local only)
 		"true": {
 			"very_high": nil, // Not available - Claude requires cloud
 			"high":      {Provider: "ollama", Model: "llama3.3:70b"},
 			"medium":    {Provider: "ollama", Model: "qwen3-vl:30b"},
-			"low":       {Provider: "ollama", Model: "mistral:7b"},
+			"low":       {Provider: "ollama", Model: "qwen2.5:1.5b"},
 		},
 	}
 }
