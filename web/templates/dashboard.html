@@ -609,7 +609,7 @@
                     <div style="display: flex; flex-direction: column; gap: 8px;">
                         <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">OLLAMA_CHAT_TIMEOUT</div>
                         <div style="color: #888; font-size: 12px;">Timeout in seconds for Ollama chat API requests</div>
-                        <div id="ollama-chat-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        <div id="chat-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
                     </div>
                 </div>
             </div>
@@ -1807,9 +1807,9 @@
                 }
                 
                 // Update Ollama chat timeout
-                const timeoutElement = document.getElementById('ollama-chat-timeout-value');
+                const timeoutElement = document.getElementById('chat-timeout-value');
                 if (timeoutElement) {
-                    timeoutElement.textContent = (data.ollama_chat_timeout || '-') + 's';
+                    timeoutElement.textContent = (data.chat_timeout || '-') + 's';
                 }
             } catch (err) {
                 console.error('Failed to load server config:', err);
@@ -1827,7 +1827,7 @@
                     urlElement.style.color = '#ef4444';
                 }
                 
-                const timeoutElement = document.getElementById('ollama-chat-timeout-value');
+                const timeoutElement = document.getElementById('chat-timeout-value');
                 if (timeoutElement) {
                     timeoutElement.textContent = 'Error loading';
                     timeoutElement.style.color = '#ef4444';

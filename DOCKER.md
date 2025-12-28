@@ -28,6 +28,7 @@ docker run -d \
 - `DATA_DIR`: Data directory (default: /app/data)
 - `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`: API keys
 - `OLLAMA_HOST`: Ollama server (default: localhost:11434)
+- `CHAT_TIMEOUT`: Chat timeout in seconds (default: 240)
 
 ## Docker Compose
 
