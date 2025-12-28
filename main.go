@@ -49,8 +49,9 @@ var (
 	llamacppHost     = getEnv("LLAMACPP_HOST", "") // Optional: llama.cpp server for load balancing (e.g., "studio.lan:8081")
 	dataDir          = getEnv("DATA_DIR", "./data")
 	cacheTTLHours    = 24 * 7                                                // 1 week cache
-	whisperServerURL = getEnv("WHISPER_SERVER_URL", "http://localhost:8890") // Local whisper server
-	ttsServerURL     = getEnv("TTS_SERVER_URL", "http://localhost:7788")     // Local TTS server (Kokoro)
+	whisperServerURL     = getEnv("WHISPER_SERVER_URL", "http://localhost:8890") // Local whisper server
+	ttsServerURL         = getEnv("TTS_SERVER_URL", "http://localhost:7788")     // Local TTS server (Kokoro)
+	ollamaChatTimeout    = getEnvInt("OLLAMA_CHAT_TIMEOUT", 240)                 // Ollama chat timeout in seconds
 )
 
 // Model pricing per 1M tokens (input, output)
@@ -437,6 +438,15 @@ type RequestLog = domain.RequestLog
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func getEnvInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			return parsed
+		}
 	}
 	return fallback
 }
@@ -843,7 +853,7 @@ var ollamaProvider *providers.OllamaProvider
 var llamacppProvider *providers.LlamaCppProvider
 
 func initChatProviders() {
-	ollamaProvider = providers.NewOllamaProvider(ollamaHost)
+	ollamaProvider = providers.NewOllamaProvider(ollamaHost, ollamaChatTimeout)
 	chatProviders = map[string]ChatProvider{
 		"openai":    providers.NewOpenAIProvider(openaiKey),
 		"anthropic": providers.NewAnthropicProvider(anthropicKey),
@@ -1512,7 +1522,7 @@ func handleBackend(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleServerConfig returns server configuration values.
-// GET: returns {"ollama_host": string, "whisper_server_url": string}
+// GET: returns {"ollama_host": string, "whisper_server_url": string, "ollama_chat_timeout": int}
 func handleServerConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1521,8 +1531,9 @@ func handleServerConfig(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"ollama_host":        ollamaHost,
-		"whisper_server_url": whisperServerURL,
+		"ollama_host":         ollamaHost,
+		"whisper_server_url":  whisperServerURL,
+		"ollama_chat_timeout": ollamaChatTimeout,
 	})
 }
 

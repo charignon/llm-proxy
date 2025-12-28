@@ -595,7 +595,7 @@
                         <p style="color: #888; font-size: 12px; margin-top: 4px;">Application configuration values</p>
                     </div>
                 </div>
-                <div style="padding: 16px; background: #1e1e2e; border-radius: 8px; border: 1px solid #374151; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                <div style="padding: 16px; background: #1e1e2e; border-radius: 8px; border: 1px solid #374151; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px;">
                     <div style="display: flex; flex-direction: column; gap: 8px;">
                         <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">OLLAMA_HOST</div>
                         <div style="color: #888; font-size: 12px;">The host and port where the Ollama server is running</div>
@@ -605,6 +605,11 @@
                         <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">WHISPER_SERVER_URL</div>
                         <div style="color: #888; font-size: 12px;">The URL where the Whisper STT server is running</div>
                         <div id="whisper-server-url-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                    </div>
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">OLLAMA_CHAT_TIMEOUT</div>
+                        <div style="color: #888; font-size: 12px;">Timeout in seconds for Ollama chat API requests</div>
+                        <div id="ollama-chat-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
                     </div>
                 </div>
             </div>
@@ -1800,10 +1805,16 @@
                 if (urlElement) {
                     urlElement.textContent = data.whisper_server_url || '-';
                 }
+                
+                // Update Ollama chat timeout
+                const timeoutElement = document.getElementById('ollama-chat-timeout-value');
+                if (timeoutElement) {
+                    timeoutElement.textContent = (data.ollama_chat_timeout || '-') + 's';
+                }
             } catch (err) {
                 console.error('Failed to load server config:', err);
                 
-                // Set error state for both elements
+                // Set error state for all elements
                 const hostElement = document.getElementById('ollama-host-value');
                 if (hostElement) {
                     hostElement.textContent = 'Error loading';
@@ -1814,6 +1825,12 @@
                 if (urlElement) {
                     urlElement.textContent = 'Error loading';
                     urlElement.style.color = '#ef4444';
+                }
+                
+                const timeoutElement = document.getElementById('ollama-chat-timeout-value');
+                if (timeoutElement) {
+                    timeoutElement.textContent = 'Error loading';
+                    timeoutElement.style.color = '#ef4444';
                 }
             }
         }

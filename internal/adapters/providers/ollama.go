@@ -15,12 +15,16 @@ import (
 
 // OllamaProvider implements ChatProvider for local Ollama instances.
 type OllamaProvider struct {
-	Host string // e.g., "localhost:11434"
+	Host    string // e.g., "localhost:11434"
+	Timeout int    // Chat timeout in seconds
 }
 
 // NewOllamaProvider creates a new Ollama provider adapter.
-func NewOllamaProvider(host string) *OllamaProvider {
-	return &OllamaProvider{Host: host}
+func NewOllamaProvider(host string, timeout int) *OllamaProvider {
+	return &OllamaProvider{
+		Host:    host,
+		Timeout: timeout,
+	}
 }
 
 // Ollama-specific types for API communication
@@ -120,7 +124,7 @@ func (p *OllamaProvider) Chat(req *domain.ChatCompletionRequest, model string) (
 	httpReq, _ := http.NewRequest("POST", "http://"+p.Host+"/api/chat", bytes.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 240 * time.Second}
+	client := &http.Client{Timeout: time.Duration(p.Timeout) * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err
