@@ -380,11 +380,21 @@
 
             <div class="form-group">
                 <label>Or Record Audio</label>
-                <div style="display: flex; gap: 12px; align-items: center;">
+                <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
                     <button class="submit-btn" id="record-btn" onclick="toggleRecording()" style="margin-top:0; background:#ef4444;">
                         🎤 Start Recording
                     </button>
+                    <button class="submit-btn" id="playback-btn" onclick="playbackRecording()" style="margin-top:0; background:#6366f1; display:none;">
+                        ▶️ Playback
+                    </button>
                     <span id="recording-status" style="color:#888;"></span>
+                </div>
+                <div id="audio-level-indicator" style="display:none; margin-top:12px; height:40px; background:#1e1e2e; border-radius:8px; padding:8px; border:1px solid #374151;">
+                    <div style="display:flex; align-items:flex-end; justify-content:center; height:100%; gap:2px;">
+                        <div id="audio-bars" style="display:flex; align-items:flex-end; justify-content:center; gap:2px; flex:1; height:100%;">
+                            <!-- Audio level bars will be generated here -->
+                        </div>
+                    </div>
                 </div>
                 <p id="https-warning" style="display:none; color:#f59e0b; font-size:12px; margin-top:8px;">
                     ⚠️ Microphone requires HTTPS. Use file upload instead.
@@ -762,6 +772,13 @@
         let mediaRecorder = null;
         let audioChunks = [];
         let isRecording = false;
+        let audioContext = null;
+        let analyser = null;
+        let microphone = null;
+        let dataArray = null;
+        let animationFrameId = null;
+        let audioBars = [];
+        let currentPlaybackAudio = null;
 
         function handleAudioSelect(e) {
             const file = e.target.files[0];
@@ -800,22 +817,133 @@
 
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    mediaRecorder = new MediaRecorder(stream);
                     audioChunks = [];
 
-                    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
-                    mediaRecorder.onstop = () => {
-                        const blob = new Blob(audioChunks, { type: 'audio/webm' });
-                        selectedAudioFile = new File([blob], 'recording.webm', { type: 'audio/webm' });
+                    // Setup audio level visualization
+                    try {
+                        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                        
+                        // Resume audio context if suspended (required by some browsers)
+                        if (audioContext.state === 'suspended') {
+                            await audioContext.resume();
+                        }
+                        
+                        analyser = audioContext.createAnalyser();
+                        microphone = audioContext.createMediaStreamSource(stream);
+                        microphone.connect(analyser);
+                        analyser.fftSize = 256;
+                        analyser.smoothingTimeConstant = 0.2; // Less smoothing for more responsive bars
+                        analyser.minDecibels = -90;
+                        analyser.maxDecibels = -10;
+                        dataArray = new Uint8Array(analyser.frequencyBinCount);
+                        
+                        // Create audio level bars
+                        const indicator = document.getElementById('audio-level-indicator');
+                        const barsContainer = document.getElementById('audio-bars');
+                        barsContainer.innerHTML = '';
+                        audioBars = [];
+                        for (let i = 0; i < 20; i++) {
+                            const bar = document.createElement('div');
+                            bar.style.width = '4px';
+                            bar.style.minHeight = '4px';
+                            bar.style.height = '4px';
+                            bar.style.maxHeight = '32px';
+                            bar.style.background = '#374151';
+                            bar.style.borderRadius = '2px';
+                            bar.style.transition = 'height 0.1s ease-out, background 0.1s ease-out';
+                            bar.style.display = 'block';
+                            bar.style.alignSelf = 'flex-end';
+                            barsContainer.appendChild(bar);
+                            audioBars.push(bar);
+                        }
+                        indicator.style.display = 'block';
+                    } catch (err) {
+                        console.error('Error setting up audio visualization:', err);
+                        // Continue without visualization if it fails
+                    }
+
+                    // Try to get a supported audio format (prefer wav, then webm, then default)
+                    const options = {};
+                    const preferredTypes = [
+                        'audio/webm;codecs=opus',
+                        'audio/webm',
+                        'audio/ogg;codecs=opus',
+                        'audio/mp4'
+                    ];
+                    
+                    for (const mimeType of preferredTypes) {
+                        if (MediaRecorder.isTypeSupported(mimeType)) {
+                            options.mimeType = mimeType;
+                            break;
+                        }
+                    }
+
+                    mediaRecorder = new MediaRecorder(stream, options);
+                    
+                    mediaRecorder.ondataavailable = (e) => {
+                        if (e.data && e.data.size > 0) {
+                            audioChunks.push(e.data);
+                        }
+                    };
+                    
+                    mediaRecorder.onstop = async () => {
+                        const mimeType = mediaRecorder.mimeType || 'audio/webm';
+                        const blob = new Blob(audioChunks, { type: mimeType });
+                        
+                        if (blob.size === 0) {
+                            alert('Recording is empty. Please try again.');
+                            audioChunks = [];
+                            return;
+                        }
+                        
+                        // Convert to WAV format for better compatibility with whisper servers
+                        try {
+                            const wavBlob = await convertToWav(blob);
+                            selectedAudioFile = new File([wavBlob], 'recording.wav', { type: 'audio/wav' });
+                        } catch (err) {
+                            console.warn('WAV conversion failed, using original format:', err);
+                            // Fallback to original format
+                            let extension = 'webm';
+                            if (mimeType.includes('ogg')) extension = 'ogg';
+                            else if (mimeType.includes('mp4')) extension = 'm4a';
+                            selectedAudioFile = new File([blob], `recording.${extension}`, { type: mimeType });
+                        }
+                        
                         document.getElementById('audio-placeholder').style.display = 'none';
                         document.getElementById('audio-filename').textContent = '🎤 Recording (' + (blob.size / 1024).toFixed(1) + ' KB)';
                         document.getElementById('audio-filename').style.display = 'block';
                         document.getElementById('audio-drop').classList.add('has-image');
+                        
+                        // Show playback button
+                        document.getElementById('playback-btn').style.display = 'inline-block';
+                        
+                        // Stop audio visualization
+                        if (animationFrameId) {
+                            cancelAnimationFrame(animationFrameId);
+                            animationFrameId = null;
+                        }
+                        if (audioContext) {
+                            audioContext.close();
+                            audioContext = null;
+                        }
+                        document.getElementById('audio-level-indicator').style.display = 'none';
                         stream.getTracks().forEach(track => track.stop());
                     };
+                    
+                    mediaRecorder.onerror = (e) => {
+                        console.error('MediaRecorder error:', e);
+                        alert('Recording error occurred. Please try again.');
+                    };
 
-                    mediaRecorder.start();
+                    // Start recording with timeslice to ensure data is collected
+                    mediaRecorder.start(100); // Collect data every 100ms
                     isRecording = true;
+                    
+                    // Start audio level animation now that isRecording is true
+                    if (audioBars.length > 0 && analyser) {
+                        updateAudioLevels();
+                    }
+                    
                     btn.innerHTML = '⏹ Stop Recording';
                     btn.style.background = '#22c55e';
                     status.textContent = 'Recording...';
@@ -831,12 +959,187 @@
                     alert('Could not access microphone: ' + err.message);
                 }
             } else {
-                mediaRecorder.stop();
+                if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                    // Request final data before stopping
+                    mediaRecorder.requestData();
+                    mediaRecorder.stop();
+                }
                 isRecording = false;
                 btn.innerHTML = '🎤 Start Recording';
                 btn.style.background = '#ef4444';
-                status.textContent = 'Recording saved';
+                status.textContent = 'Processing recording...';
+                
+                // Stop audio visualization
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
             }
+        }
+
+        function updateAudioLevels() {
+            if (!analyser || !isRecording || !audioBars || audioBars.length === 0) {
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
+                return;
+            }
+
+            try {
+                analyser.getByteTimeDomainData(dataArray);
+                
+                // Calculate volume level from time domain data (waveform)
+                let sum = 0;
+                for (let i = 0; i < dataArray.length; i++) {
+                    const normalized = (dataArray[i] - 128) / 128;
+                    sum += normalized * normalized;
+                }
+                const rms = Math.sqrt(sum / dataArray.length);
+                // More sensitive: scale by 15 and ensure minimum visibility when there's any sound
+                const volume = Math.min(Math.max(rms * 15, rms > 0.005 ? 0.2 : 0), 1);
+                
+                // Update all bars based on volume with wave pattern
+                // Always show at least 2-3 bars when there's any sound
+                const activeBars = Math.max(rms > 0.005 ? 3 : 0, Math.min(Math.floor(volume * audioBars.length * 1.5), audioBars.length));
+                for (let i = 0; i < audioBars.length; i++) {
+                    const bar = audioBars[i];
+                    if (!bar) continue;
+                    
+                    const isActive = i < activeBars;
+                    // Create wave pattern for visual interest
+                    const time = Date.now() / 200;
+                    const waveFactor = Math.sin((i / audioBars.length) * Math.PI * 4 + time) * 0.15 + 0.85;
+                    const barLevel = isActive ? ((i + 1) / audioBars.length) * waveFactor * volume : 0;
+                    // Ensure minimum height for active bars (6px minimum, up to 32px)
+                    const height = isActive ? Math.max(6, 6 + (barLevel * 26)) : 4;
+                    
+                    bar.style.height = height + 'px';
+                    bar.style.minHeight = '4px';
+                    bar.style.maxHeight = '32px';
+                    bar.style.display = 'block';
+                    bar.style.visibility = 'visible';
+                    bar.style.opacity = isActive ? '1' : '0.5';
+                    
+                    // Color gradient: green -> yellow -> red based on position and level
+                    const position = i / audioBars.length;
+                    const intensity = barLevel;
+                    if (intensity < 0.3 || position < 0.4) {
+                        bar.style.background = '#22c55e';
+                    } else if (intensity < 0.7 || position < 0.75) {
+                        bar.style.background = '#f59e0b';
+                    } else {
+                        bar.style.background = '#ef4444';
+                    }
+                }
+            } catch (err) {
+                console.error('Error getting audio data:', err);
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
+                return;
+            }
+
+            animationFrameId = requestAnimationFrame(updateAudioLevels);
+        }
+
+        async function convertToWav(blob) {
+            // Create a new audio context for conversion
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const arrayBuffer = await blob.arrayBuffer();
+            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            
+            // Get audio data
+            const sampleRate = audioBuffer.sampleRate;
+            const numberOfChannels = audioBuffer.numberOfChannels;
+            const length = audioBuffer.length;
+            const samples = [];
+            
+            // Interleave channels
+            for (let i = 0; i < length; i++) {
+                for (let channel = 0; channel < numberOfChannels; channel++) {
+                    const sample = Math.max(-1, Math.min(1, audioBuffer.getChannelData(channel)[i]));
+                    samples.push(sample < 0 ? sample * 0x8000 : sample * 0x7FFF);
+                }
+            }
+            
+            // Create WAV file
+            const buffer = new ArrayBuffer(44 + samples.length * 2);
+            const view = new DataView(buffer);
+            
+            // WAV header
+            const writeString = (offset, string) => {
+                for (let i = 0; i < string.length; i++) {
+                    view.setUint8(offset + i, string.charCodeAt(i));
+                }
+            };
+            
+            writeString(0, 'RIFF');
+            view.setUint32(4, 36 + samples.length * 2, true);
+            writeString(8, 'WAVE');
+            writeString(12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, numberOfChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * numberOfChannels * 2, true);
+            view.setUint16(32, numberOfChannels * 2, true);
+            view.setUint16(34, 16, true);
+            writeString(36, 'data');
+            view.setUint32(40, samples.length * 2, true);
+            
+            // Write samples
+            let offset = 44;
+            for (let i = 0; i < samples.length; i++) {
+                view.setInt16(offset, samples[i], true);
+                offset += 2;
+            }
+            
+            audioContext.close();
+            return new Blob([buffer], { type: 'audio/wav' });
+        }
+
+        function playbackRecording() {
+            if (!selectedAudioFile) {
+                alert('No recording available to play');
+                return;
+            }
+
+            const btn = document.getElementById('playback-btn');
+            
+            // If audio is currently playing, stop it
+            if (currentPlaybackAudio && !currentPlaybackAudio.paused) {
+                currentPlaybackAudio.pause();
+                currentPlaybackAudio.currentTime = 0;
+                currentPlaybackAudio = null;
+                btn.innerHTML = '▶️ Playback';
+                return;
+            }
+
+            // Start new playback
+            const audio = new Audio();
+            const url = URL.createObjectURL(selectedAudioFile);
+            audio.src = url;
+            currentPlaybackAudio = audio;
+            
+            const originalText = '▶️ Playback';
+            
+            audio.play();
+            btn.innerHTML = '⏸️ Stop';
+            
+            audio.onended = () => {
+                btn.innerHTML = originalText;
+                currentPlaybackAudio = null;
+                URL.revokeObjectURL(url);
+            };
+            
+            audio.onerror = () => {
+                alert('Error playing audio');
+                btn.innerHTML = originalText;
+                currentPlaybackAudio = null;
+                URL.revokeObjectURL(url);
+            };
         }
 
         async function submitWhisper() {
@@ -868,7 +1171,7 @@
             resultContent.textContent = '';
 
             const formData = new FormData();
-            formData.append('file', selectedAudioFile);
+            formData.append('file', selectedAudioFile, selectedAudioFile.name);
             if (model) formData.append('model', model);
             if (language) formData.append('language', language);
             formData.append('sensitive', sensitive);
