@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"llm-proxy/internal/adapters/audiocache"
 	"llm-proxy/internal/adapters/budget"
 	"llm-proxy/internal/adapters/cache"
 	httphandlers "llm-proxy/internal/adapters/http"
@@ -49,9 +50,12 @@ var (
 	llamacppHost     = getEnv("LLAMACPP_HOST", "") // Optional: llama.cpp server for load balancing (e.g., "studio.lan:8081")
 	dataDir          = getEnv("DATA_DIR", "./data")
 	cacheTTLHours    = 24 * 7                                                // 1 week cache
-	whisperServerURL     = getEnv("WHISPER_SERVER_URL", "http://localhost:8890") // Local whisper server
-	ttsServerURL         = getEnv("TTS_SERVER_URL", "http://localhost:7788")     // Local TTS server (Kokoro)
-	chatTimeout    = getEnvInt("CHAT_TIMEOUT", 240)                 // Chat timeout in seconds
+	whisperServerURL = getEnv("WHISPER_SERVER_URL", "http://localhost:8890") // Local whisper server
+	ttsServerURL     = getEnv("TTS_SERVER_URL", "http://localhost:7788")     // Local TTS server (Kokoro)
+	ttsCacheDir      = getEnv("TTS_CACHE_DIR", "")                           // TTS audio cache directory (default: DATA_DIR/tts-cache)
+	ttsCacheMaxSize  = getEnvInt("TTS_CACHE_MAX_SIZE_MB", 1024)              // TTS cache max size in MB (default: 1GB)
+	ttsCacheTTLDays  = getEnvInt("TTS_CACHE_TTL_DAYS", 7)                    // TTS cache TTL in days (default: 7 days)
+	chatTimeout      = getEnvInt("CHAT_TIMEOUT", 240)                        // Chat timeout in seconds
 )
 
 // Model pricing per 1M tokens (input, output)
@@ -180,6 +184,7 @@ var responsesHandler *httphandlers.ResponsesHandler
 // Audio and search handlers (extracted adapters)
 var sttHandler *httphandlers.STTHandler
 var ttsHandler *httphandlers.TTSHandler
+var ttsAudioCache *audiocache.FileAudioCache
 var webSearchHandler *httphandlers.WebSearchHandler
 var imageGenHandler *httphandlers.ImageGenHandler
 
@@ -444,8 +449,8 @@ func getEnv(key, fallback string) string {
 
 func getEnvInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil {
-			return parsed
+		if i, err := strconv.Atoi(v); err == nil {
+			return i
 		}
 	}
 	return fallback
@@ -1629,6 +1634,72 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "service": "llm-proxy"})
 }
 
+// handleTTSCacheStats returns TTS audio cache statistics
+func handleTTSCacheStats(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if ttsAudioCache == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"enabled":    false,
+			"hits":       0,
+			"misses":     0,
+			"hit_rate":   0.0,
+			"size_bytes": 0,
+			"size_mb":    0.0,
+		})
+		return
+	}
+
+	hits, misses, sizeBytes := ttsAudioCache.Stats()
+	hitRate := 0.0
+	if hits+misses > 0 {
+		hitRate = float64(hits) / float64(hits+misses)
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"enabled":    true,
+		"hits":       hits,
+		"misses":     misses,
+		"hit_rate":   hitRate,
+		"size_bytes": sizeBytes,
+		"size_mb":    float64(sizeBytes) / (1024 * 1024),
+		"max_size_mb": ttsCacheMaxSize,
+		"ttl_days":   ttsCacheTTLDays,
+	})
+}
+
+// handleTTSCacheClear clears the TTS audio cache
+func handleTTSCacheClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" && r.Method != "DELETE" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if ttsAudioCache == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "TTS cache not enabled",
+		})
+		return
+	}
+
+	if err := ttsAudioCache.Clear(); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	log.Printf("TTS audio cache cleared")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "TTS cache cleared",
+	})
+}
+
 // handleSystemMetrics returns CPU, memory, and system info
 func handleSystemMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -2621,9 +2692,28 @@ func main() {
 	sttHandler = httphandlers.NewSTTHandler(whisperServerURL, openaiKey, requestLogger)
 	sttHandler.ConcurrencyMgr = sttConcurrencyMgr
 
+	// Initialize TTS audio cache
+	cacheDir := ttsCacheDir
+	if cacheDir == "" {
+		cacheDir = filepath.Join(dataDir, "tts-cache")
+	}
+	var err error
+	ttsAudioCache, err = audiocache.NewFileAudioCache(
+		cacheDir,
+		int64(ttsCacheMaxSize)*1024*1024, // Convert MB to bytes
+		time.Duration(ttsCacheTTLDays)*24*time.Hour,
+	)
+	if err != nil {
+		log.Printf("WARNING: Failed to initialize TTS audio cache: %v", err)
+	}
+
 	// Initialize TTS handler (Kokoro TTS + OpenAI TTS)
 	ttsHandler = httphandlers.NewTTSHandler(ttsServerURL, openaiKey, requestLogger)
 	ttsHandler.CheckBudget = budgetChecker.CheckBudget
+	if ttsAudioCache != nil {
+		ttsHandler.AudioCache = ttsAudioCache
+		ttsHandler.CacheTTL = time.Duration(ttsCacheTTLDays) * 24 * time.Hour
+	}
 
 	// Initialize Web Search handler
 	webSearchHandler = httphandlers.NewWebSearchHandler(anthropicKey, openaiKey, requestLogger)
@@ -2693,6 +2783,8 @@ func main() {
 	http.HandleFunc("/api/cache/clear", withCORS(historyHandler.HandleClearCache))
 	http.HandleFunc("/api/pending", withCORS(historyHandler.HandlePendingRequests))
 	http.HandleFunc("/api/tts-history", withCORS(historyHandler.HandleTTSHistory))
+	http.HandleFunc("/api/tts-cache-stats", withCORS(handleTTSCacheStats))
+	http.HandleFunc("/api/tts-cache/clear", withCORS(handleTTSCacheClear))
 	http.HandleFunc("/api/stt-history", withCORS(historyHandler.HandleSTTHistory))
 	http.HandleFunc("/api/analytics", withCORS(historyHandler.HandleAnalytics))
 	http.HandleFunc("/api/system-metrics", withCORS(handleSystemMetrics))

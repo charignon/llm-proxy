@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"llm-proxy/internal/adapters/audiocache"
 	"llm-proxy/internal/domain"
 	"llm-proxy/internal/ports"
 )
@@ -32,6 +33,8 @@ type TTSHandler struct {
 	OpenAIAPIKey string
 	Logger       ports.RequestLogger
 	CheckBudget  func(provider string) error
+	AudioCache   ports.AudioCache
+	CacheTTL     time.Duration
 }
 
 // NewTTSHandler creates a new TTS handler.
@@ -40,6 +43,7 @@ func NewTTSHandler(ttsServerURL string, openaiAPIKey string, logger ports.Reques
 		TTSServerURL: ttsServerURL,
 		OpenAIAPIKey: openaiAPIKey,
 		Logger:       logger,
+		CacheTTL:     7 * 24 * time.Hour, // Default 7 day TTL
 	}
 }
 
@@ -81,18 +85,57 @@ func (h *TTSHandler) HandleTTS(w http.ResponseWriter, r *http.Request) {
 		req.Speed = 1.0
 	}
 
+	// For Kokoro (non-OpenAI), map the voice first for cache key
+	effectiveVoice := req.Voice
+	if !strings.HasPrefix(req.Model, "tts-1") {
+		if mappedVoice, ok := TTSVoiceMap[req.Voice]; ok {
+			effectiveVoice = mappedVoice
+		}
+	}
+
+	// Generate cache key and check cache
+	cacheKey := audiocache.GenerateCacheKey(req.Input, effectiveVoice, req.Speed, req.ResponseFormat)
+
+	if h.AudioCache != nil {
+		if audio, contentType, found := h.AudioCache.Get(cacheKey); found {
+			// Log cache hit
+			logEntry := &domain.RequestLog{
+				Timestamp:   startTime,
+				RequestType: "tts",
+				Provider:    "cache",
+				Model:       "tts-cache",
+				Voice:       effectiveVoice,
+				InputChars:  len(req.Input),
+				Cached:      true,
+				Success:     true,
+				LatencyMs:   time.Since(startTime).Milliseconds(),
+				ClientIP:    getClientIP(r),
+			}
+			h.Logger.LogRequest(logEntry)
+
+			log.Printf("TTS cache HIT (%dms): voice=%s, len=%d chars, key=%s",
+				time.Since(startTime).Milliseconds(), effectiveVoice, len(req.Input), cacheKey[:16])
+
+			w.Header().Set("Content-Type", contentType)
+			w.Header().Set("X-Cache", "HIT")
+			w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=\"speech.%s\"", req.ResponseFormat))
+			w.Write(audio)
+			return
+		}
+	}
+
 	// Check if this should go to OpenAI TTS
 	if strings.HasPrefix(req.Model, "tts-1") {
-		h.handleOpenAITTS(w, r, req, body, startTime)
+		h.handleOpenAITTS(w, r, req, body, startTime, cacheKey)
 		return
 	}
 
 	// Use Kokoro for everything else
-	h.handleKokoroTTS(w, r, req, body, startTime)
+	h.handleKokoroTTS(w, r, req, body, startTime, cacheKey)
 }
 
 // handleOpenAITTS forwards the request to OpenAI's TTS API.
-func (h *TTSHandler) handleOpenAITTS(w http.ResponseWriter, r *http.Request, req domain.TTSRequest, body []byte, startTime time.Time) {
+func (h *TTSHandler) handleOpenAITTS(w http.ResponseWriter, r *http.Request, req domain.TTSRequest, body []byte, startTime time.Time, cacheKey string) {
 	// Check budget before processing request
 	if h.CheckBudget != nil {
 		if err := h.CheckBudget("openai"); err != nil {
@@ -188,7 +231,15 @@ func (h *TTSHandler) handleOpenAITTS(w http.ResponseWriter, r *http.Request, req
 
 	log.Printf("OpenAI TTS complete (%dms): model=%s voice=%s, len=%d chars", latencyMs, req.Model, req.Voice, len(req.Input))
 
-	// Stream audio response back to client
+	// Read audio response into buffer for caching
+	audioBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Failed to read OpenAI TTS response: %v", err)
+		http.Error(w, "Failed to read audio response", http.StatusInternalServerError)
+		return
+	}
+
+	// Determine content type
 	contentType := "audio/mpeg"
 	if req.ResponseFormat == "wav" {
 		contentType = "audio/wav"
@@ -200,13 +251,23 @@ func (h *TTSHandler) handleOpenAITTS(w http.ResponseWriter, r *http.Request, req
 		contentType = "audio/flac"
 	}
 
+	// Store in cache
+	if h.AudioCache != nil && cacheKey != "" {
+		if err := h.AudioCache.Set(cacheKey, audioBytes, contentType, h.CacheTTL); err != nil {
+			log.Printf("Failed to cache TTS audio: %v", err)
+		} else {
+			log.Printf("TTS audio cached: key=%s, size=%d bytes", cacheKey[:16], len(audioBytes))
+		}
+	}
+
 	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Cache", "MISS")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=\"speech.%s\"", req.ResponseFormat))
-	io.Copy(w, resp.Body)
+	w.Write(audioBytes)
 }
 
 // handleKokoroTTS forwards the request to local Kokoro TTS.
-func (h *TTSHandler) handleKokoroTTS(w http.ResponseWriter, r *http.Request, req domain.TTSRequest, body []byte, startTime time.Time) {
+func (h *TTSHandler) handleKokoroTTS(w http.ResponseWriter, r *http.Request, req domain.TTSRequest, body []byte, startTime time.Time, cacheKey string) {
 	// Map OpenAI voice to Kokoro voice
 	kokoroVoice, ok := TTSVoiceMap[req.Voice]
 	if !ok {
@@ -269,15 +330,33 @@ func (h *TTSHandler) handleKokoroTTS(w http.ResponseWriter, r *http.Request, req
 
 	log.Printf("Kokoro TTS complete (%dms): voice=%s, len=%d chars", latencyMs, kokoroVoice, len(req.Input))
 
-	// Stream audio response back to client
+	// Read audio response into buffer for caching
+	audioBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Failed to read Kokoro TTS response: %v", err)
+		http.Error(w, "Failed to read audio response", http.StatusInternalServerError)
+		return
+	}
+
+	// Determine content type
 	contentType := "audio/mpeg"
 	if req.ResponseFormat == "wav" {
 		contentType = "audio/wav"
 	}
 
+	// Store in cache
+	if h.AudioCache != nil && cacheKey != "" {
+		if err := h.AudioCache.Set(cacheKey, audioBytes, contentType, h.CacheTTL); err != nil {
+			log.Printf("Failed to cache TTS audio: %v", err)
+		} else {
+			log.Printf("TTS audio cached: key=%s, size=%d bytes", cacheKey[:16], len(audioBytes))
+		}
+	}
+
 	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Cache", "MISS")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=\"speech.%s\"", req.ResponseFormat))
-	io.Copy(w, resp.Body)
+	w.Write(audioBytes)
 }
 
 // TTSCompatRequest is the voice_cloning format (different from OpenAI's TTSRequest).
@@ -322,6 +401,36 @@ func (h *TTSHandler) HandleTTSCompat(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Speed == 0 {
 		req.Speed = 1.0
+	}
+
+	// Generate cache key and check cache (mp3 is the default format for compat)
+	cacheKey := audiocache.GenerateCacheKey(req.Text, req.Voice, req.Speed, "mp3")
+
+	if h.AudioCache != nil {
+		if audio, contentType, found := h.AudioCache.Get(cacheKey); found {
+			// Log cache hit
+			logEntry := &domain.RequestLog{
+				Timestamp:   startTime,
+				RequestType: "tts",
+				Provider:    "cache",
+				Model:       "tts-cache",
+				Voice:       req.Voice,
+				InputChars:  len(req.Text),
+				Cached:      true,
+				Success:     true,
+				LatencyMs:   time.Since(startTime).Milliseconds(),
+				ClientIP:    getClientIP(r),
+			}
+			h.Logger.LogRequest(logEntry)
+
+			log.Printf("TTS compat cache HIT (%dms): voice=%s, len=%d chars, key=%s",
+				time.Since(startTime).Milliseconds(), req.Voice, len(req.Text), cacheKey[:16])
+
+			w.Header().Set("Content-Type", contentType)
+			w.Header().Set("X-Cache", "HIT")
+			w.Write(audio)
+			return
+		}
 	}
 
 	// Build Kokoro TTS server URL with query params (mp3 is default format)
@@ -378,7 +487,24 @@ func (h *TTSHandler) HandleTTSCompat(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("TTS compat complete (%dms): voice=%s, len=%d chars", latencyMs, req.Voice, len(req.Text))
 
-	// Stream audio response back to client
+	// Read audio response into buffer for caching
+	audioBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Failed to read TTS compat response: %v", err)
+		http.Error(w, "Failed to read audio response", http.StatusInternalServerError)
+		return
+	}
+
+	// Store in cache
+	if h.AudioCache != nil && cacheKey != "" {
+		if err := h.AudioCache.Set(cacheKey, audioBytes, "audio/mpeg", h.CacheTTL); err != nil {
+			log.Printf("Failed to cache TTS compat audio: %v", err)
+		} else {
+			log.Printf("TTS compat audio cached: key=%s, size=%d bytes", cacheKey[:16], len(audioBytes))
+		}
+	}
+
 	w.Header().Set("Content-Type", "audio/mpeg")
-	io.Copy(w, resp.Body)
+	w.Header().Set("X-Cache", "MISS")
+	w.Write(audioBytes)
 }
