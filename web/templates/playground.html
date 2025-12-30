@@ -550,6 +550,19 @@
             return div.innerHTML;
         }
 
+        function formatLatency(ms) {
+            const minutes = Math.floor(ms / 60000);
+            const seconds = Math.floor((ms % 60000) / 1000);
+            
+            // Always show milliseconds as main text
+            const mainText = ms + 'ms';
+            
+            // Always show minutes + seconds in muted text below
+            const mutedText = minutes + 'm ' + seconds + 's';
+            
+            return mainText + '<div style="font-size: 11px; color: #888; margin-top: 2px;">' + mutedText + '</div>';
+        }
+
         // Parse <think> tags from response and render properly
         function renderResponseWithThinking(content, resultContent) {
             const thinkMatch = content.match(/^<think>([\s\S]*?)<\/think>([\s\S]*)$/);
@@ -667,7 +680,7 @@
                         '<div class="result-meta"><span>Provider:</span> <span class="badge ' + provider + '">' + provider + '</span></div>' +
                         '<div class="result-meta"><span>Model:</span> <strong>' + model + '</strong></div>' +
                         '<div class="result-meta"><span>Routing:</span> <span class="badge ' + (isOverride ? 'override' : 'routed') + '">' + (isOverride ? 'override' : 'auto-routed') + '</span></div>' +
-                        '<div class="result-meta"><span>Latency:</span> <strong>' + latency + 'ms</strong></div>' +
+                        '<div class="result-meta"><span>Latency:</span> <strong>' + formatLatency(latency) + '</strong></div>' +
                         '<div class="result-meta"><span>Cost:</span> <strong>$' + parseFloat(cost).toFixed(6) + '</strong></div>' +
                         (data.usage ? '<div class="result-meta"><span>Tokens:</span> <strong>' + data.usage.total_tokens + '</strong></div>' : '');
 
@@ -745,7 +758,7 @@
                         '<div class="result-meta"><span>Provider:</span> <span class="badge ' + provider + '">' + provider + '</span></div>' +
                         '<div class="result-meta"><span>Model:</span> <strong>' + model + '</strong></div>' +
                         '<div class="result-meta"><span>Routing:</span> <span class="badge ' + (isOverride ? 'override' : 'routed') + '">' + (isOverride ? 'override' : 'auto-routed') + '</span></div>' +
-                        '<div class="result-meta"><span>Latency:</span> <strong>' + latency + 'ms</strong></div>' +
+                        '<div class="result-meta"><span>Latency:</span> <strong>' + formatLatency(latency) + '</strong></div>' +
                         '<div class="result-meta"><span>Cost:</span> <strong>$' + parseFloat(cost).toFixed(6) + '</strong></div>' +
                         (data.usage ? '<div class="result-meta"><span>Tokens:</span> <strong>' + data.usage.total_tokens + '</strong></div>' : '');
 
@@ -1231,7 +1244,7 @@
                     resultHeader.innerHTML =
                         '<div class="result-meta"><span>Mode:</span> <span class="badge ollama">streaming</span></div>' +
                         '<div class="result-meta"><span>Provider:</span> <span class="badge ollama">local</span></div>' +
-                        '<div class="result-meta"><span>Latency:</span> <strong>' + latency + 'ms</strong></div>';
+                        '<div class="result-meta"><span>Latency:</span> <strong>' + formatLatency(latency) + '</strong></div>';
 
                 } else {
                     // Single-shot mode
@@ -1249,7 +1262,7 @@
                         resultHeader.innerHTML =
                             '<div class="result-meta"><span>Mode:</span> <span class="badge routed">single-shot</span></div>' +
                             '<div class="result-meta"><span>Provider:</span> <span class="badge ' + (provider === 'openai' ? 'openai' : 'ollama') + '">' + provider + '</span></div>' +
-                            '<div class="result-meta"><span>Latency:</span> <strong>' + serverLatency + 'ms</strong></div>';
+                            '<div class="result-meta"><span>Latency:</span> <strong>' + formatLatency(parseInt(serverLatency)) + '</strong></div>';
                         resultContent.textContent = data.text || '(empty transcription)';
                     } else {
                         const errorText = await resp.text();
@@ -1327,7 +1340,7 @@
                     resultHeader.innerHTML =
                         '<div class="result-meta"><span>Voice:</span> <span class="badge ollama">' + voice + '</span></div>' +
                         '<div class="result-meta"><span>Speed:</span> <strong>' + speed + 'x</strong></div>' +
-                        '<div class="result-meta"><span>Latency:</span> <strong>' + latency + 'ms</strong></div>';
+                        '<div class="result-meta"><span>Latency:</span> <strong>' + formatLatency(latency) + '</strong></div>';
 
                     audioContainer.innerHTML = '<audio controls autoplay src="' + url + '" style="width:100%; margin-top:12px;"></audio>';
                 } else {
@@ -1396,7 +1409,7 @@
                         '<div class="result-meta"><span>Provider:</span> <span class="badge ' + providerBadge + '">' + provider + '</span></div>' +
                         '<div class="result-meta"><span>Model:</span> <strong>' + (data.model || model) + '</strong></div>' +
                         '<div class="result-meta"><span>Searches:</span> <strong>' + (data.search_count || 0) + '</strong></div>' +
-                        '<div class="result-meta"><span>Latency:</span> <strong>' + latency + 'ms</strong></div>' +
+                        '<div class="result-meta"><span>Latency:</span> <strong>' + formatLatency(latency) + '</strong></div>' +
                         (data.cost_usd ? '<div class="result-meta"><span>Cost:</span> <strong>$' + data.cost_usd.toFixed(6) + '</strong></div>' : '');
 
                     // Display sources/citations

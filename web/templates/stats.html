@@ -339,10 +339,16 @@
         }
 
         function formatLatency(ms) {
-            if (ms >= 1000) {
-                return (ms / 1000).toFixed(1) + 's';
-            }
-            return Math.round(ms) + 'ms';
+            const minutes = Math.floor(ms / 60000);
+            const seconds = Math.floor((ms % 60000) / 1000);
+            
+            // Always show milliseconds as main text
+            const mainText = Math.round(ms) + 'ms';
+            
+            // Always show minutes + seconds in muted text below
+            const mutedText = minutes + 'm ' + seconds + 's';
+            
+            return mainText + '<div style="font-size: 11px; color: #888; margin-top: 2px;">' + mutedText + '</div>';
         }
 
         function formatCost(usd) {

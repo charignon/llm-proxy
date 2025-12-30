@@ -936,7 +936,7 @@
             html += compareRow('Model', req1.model, req2.model);
             html += compareRow('Provider', req1.provider, req2.provider);
             html += compareRow('Usecase', req1.usecase, req2.usecase);
-            html += compareRow('Latency', req1.latency_ms + 'ms', req2.latency_ms + 'ms');
+            html += compareRow('Latency', formatLatency(req1.latency_ms), formatLatency(req2.latency_ms));
             html += compareRow('Input Tokens', req1.input_tokens, req2.input_tokens);
             html += compareRow('Output Tokens', req1.output_tokens, req2.output_tokens);
             html += compareRow('Cost', '$' + req1.cost_usd.toFixed(6), '$' + req2.cost_usd.toFixed(6));
@@ -1151,7 +1151,7 @@
                 }
                 tr.innerHTML = '<td><span class="badge ' + provider + '">' + provider + '</span></td>' +
                     '<td>' + data.count + '</td>' +
-                    '<td>' + Math.round(data.avg_latency_ms) + 'ms</td>' +
+                    '<td>' + formatLatency(Math.round(data.avg_latency_ms)) + '</td>' +
                     '<td>' + costCell + '</td>';
                 providerBody.appendChild(tr);
             }
@@ -1266,7 +1266,7 @@
                     '<td>' + req.model + ' ' + hasImages + ' ' + webSearchBadge + '</td>' +
                     '<td>' + usecase + '</td>' +
                     '<td>' + info + '</td>' +
-                    '<td>' + req.latency_ms + 'ms</td>' +
+                    '<td>' + formatLatency(req.latency_ms) + '</td>' +
                     '<td>$' + req.cost_usd.toFixed(6) + '</td>' +
                     '<td>' + status + '</td>';
                 recentBody.appendChild(tr);
@@ -2037,7 +2037,7 @@
                         '</div>' +
                         '<div style="font-size: 14px; font-weight: 600; color: #fff; min-width: 50px; text-align: right;">' + m.count.toLocaleString() + '</div>' +
                     '</div>' +
-                    '<div style="font-size: 11px; color: #888; margin-top: 4px;">' + Math.round(m.avg_latency_ms) + 'ms avg | ' + costStr + '</div>';
+                    '<div style="font-size: 11px; color: #888; margin-top: 4px;">' + formatLatency(Math.round(m.avg_latency_ms)) + ' avg | ' + costStr + '</div>';
 
                 grid.appendChild(card);
             }
@@ -2159,7 +2159,7 @@
             html += '</div></div>';
 
             html += '<div class="modal-section"><h3>Performance</h3><div class="detail-grid">';
-            html += '<div class="detail-item"><div class="detail-label">Latency</div><div class="detail-value">' + data.latency_ms + ' ms</div></div>';
+            html += '<div class="detail-item"><div class="detail-label">Latency</div><div class="detail-value">' + formatLatency(data.latency_ms) + '</div></div>';
             html += '<div class="detail-item"><div class="detail-label">Input Tokens</div><div class="detail-value">' + data.input_tokens + '</div></div>';
             html += '<div class="detail-item"><div class="detail-label">Output Tokens</div><div class="detail-value">' + data.output_tokens + '</div></div>';
             html += '<div class="detail-item"><div class="detail-label">Cost</div><div class="detail-value" style="color:#22c55e">$' + data.cost_usd.toFixed(6) + '</div></div>';
@@ -2708,6 +2708,19 @@
             if (ms < 1000) return ms + 'ms';
             if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
             return Math.floor(ms / 60000) + 'm ' + Math.floor((ms % 60000) / 1000) + 's';
+        }
+
+        function formatLatency(ms) {
+            const minutes = Math.floor(ms / 60000);
+            const seconds = Math.floor((ms % 60000) / 1000);
+            
+            // Always show milliseconds as main text
+            const mainText = ms + 'ms';
+            
+            // Always show minutes + seconds in muted text below
+            const mutedText = minutes + 'm ' + seconds + 's';
+            
+            return mainText + '<div style="font-size: 11px; color: #888; margin-top: 2px;">' + mutedText + '</div>';
         }
 
         async function refresh() {

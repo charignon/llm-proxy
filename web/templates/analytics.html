@@ -465,6 +465,19 @@
             '#f97316', '#a855f7', '#eab308', '#10b981', '#0ea5e9'
         ];
 
+        function formatLatency(ms) {
+            const minutes = Math.floor(ms / 60000);
+            const seconds = Math.floor((ms % 60000) / 1000);
+            
+            // Always show milliseconds as main text
+            const mainText = Math.round(ms) + 'ms';
+            
+            // Always show minutes + seconds in muted text below
+            const mutedText = minutes + 'm ' + seconds + 's';
+            
+            return mainText + '<div style="font-size: 11px; color: #888; margin-top: 2px;">' + mutedText + '</div>';
+        }
+
         async function loadAnalytics() {
             const [analyticsResponse, statsResponse, volume24hResponse, budgetResponse, globalBudgetResponse] = await Promise.all([
                 fetch('/api/analytics?range=' + selectedTimeRange),
@@ -1340,9 +1353,9 @@
             document.getElementById('modelStatsRow').innerHTML =
                 '<div class="stat-box"><div class="stat-box-label">Total Requests</div><div class="stat-box-value">' + (summary.total_count || 0).toLocaleString() + '</div></div>' +
                 '<div class="stat-box"><div class="stat-box-label">Total Cost</div><div class="stat-box-value cost">$' + (summary.total_cost || 0).toFixed(4) + '</div></div>' +
-                '<div class="stat-box"><div class="stat-box-label">Avg Latency</div><div class="stat-box-value latency">' + Math.round(summary.avg_latency || 0).toLocaleString() + 'ms</div></div>' +
-                '<div class="stat-box"><div class="stat-box-label">Min Latency</div><div class="stat-box-value latency">' + (summary.min_latency || 0).toLocaleString() + 'ms</div></div>' +
-                '<div class="stat-box"><div class="stat-box-label">Max Latency</div><div class="stat-box-value latency">' + (summary.max_latency || 0).toLocaleString() + 'ms</div></div>';
+                '<div class="stat-box"><div class="stat-box-label">Avg Latency</div><div class="stat-box-value latency">' + formatLatency(Math.round(summary.avg_latency || 0)) + '</div></div>' +
+                '<div class="stat-box"><div class="stat-box-label">Min Latency</div><div class="stat-box-value latency">' + formatLatency(summary.min_latency || 0) + '</div></div>' +
+                '<div class="stat-box"><div class="stat-box-label">Max Latency</div><div class="stat-box-value latency">' + formatLatency(summary.max_latency || 0) + '</div></div>';
 
             // Render chart
             const ctx = document.getElementById('modelDetailChart').getContext('2d');
