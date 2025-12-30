@@ -25,6 +25,8 @@ type STTHandler struct {
 	ConcurrencyMgr    *loadmanager.ConcurrencyManager
 	Timeout           int // Speech timeout in seconds
 	StreamingTimeout  int // Speech streaming timeout in seconds
+	AddPending        func(provider, model string, sensitive bool, startTime time.Time) string
+	RemovePending     func(id string)
 }
 
 // NewSTTHandler creates a new STT handler.
@@ -92,6 +94,32 @@ func (h *STTHandler) HandleTranscription(w http.ResponseWriter, r *http.Request)
 	// Route based on sensitive flag
 	sensitive := isSensitiveRequest(r)
 
+	// Determine provider and model before making the request
+	var provider string
+	var modelName string
+	if sensitive {
+		provider = "local"
+		modelName = "whisper-large-v3" // Local server uses whisper-large-v3
+	} else {
+		provider = "openai"
+		if model == "" {
+			modelName = "whisper-1"
+		} else {
+			modelName = model
+		}
+	}
+
+	// Add pending request tracking
+	var pendingID string
+	if h.AddPending != nil {
+		pendingID = h.AddPending(provider, modelName, sensitive, startTime)
+		defer func() {
+			if h.RemovePending != nil && pendingID != "" {
+				h.RemovePending(pendingID)
+			}
+		}()
+	}
+
 	// Prepare log entry
 	logEntry := &domain.RequestLog{
 		Timestamp:   startTime,
@@ -99,23 +127,18 @@ func (h *STTHandler) HandleTranscription(w http.ResponseWriter, r *http.Request)
 		Sensitive:   sensitive,
 		InputChars:  len(fileContent), // Store file size in InputChars field
 		ClientIP:    getClientIP(r),
+		Provider:    provider,
+		Model:       modelName,
 	}
 
 	var resp *domain.WhisperTranscriptionResponse
-	var provider string
 
 	if sensitive {
 		// Use local whisper server
 		resp, err = h.callLocalWhisper(fileContent, header.Filename, model, language, prompt)
-		provider = "local"
-		logEntry.Provider = "local"
-		logEntry.Model = "whisper-large-v3" // Local server uses whisper-large-v3
 	} else {
 		// Use OpenAI Whisper API
 		resp, err = h.callOpenAIWhisper(fileContent, header.Filename, model, language, prompt)
-		provider = "openai"
-		logEntry.Provider = "openai"
-		logEntry.Model = "whisper-1"
 	}
 
 	latencyMs := time.Since(startTime).Milliseconds()
@@ -202,12 +225,29 @@ func (h *STTHandler) HandleStream(w http.ResponseWriter, r *http.Request) {
 	model := r.FormValue("model")
 	language := r.FormValue("language")
 
+	// Determine model name
+	modelName := "whisper-local-stream"
+	if model != "" {
+		modelName = model
+	}
+
+	// Add pending request tracking
+	var pendingID string
+	if h.AddPending != nil {
+		pendingID = h.AddPending("local", modelName, true, startTime)
+		defer func() {
+			if h.RemovePending != nil && pendingID != "" {
+				h.RemovePending(pendingID)
+			}
+		}()
+	}
+
 	// Prepare log entry
 	logEntry := &domain.RequestLog{
 		Timestamp:   startTime,
 		RequestType: "stt",
 		Provider:    "local",
-		Model:       "whisper-local-stream",
+		Model:       modelName,
 		Sensitive:   true, // Streaming is always local/sensitive
 		InputChars:  len(fileContent),
 		ClientIP:    getClientIP(r),

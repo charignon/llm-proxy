@@ -835,6 +835,29 @@ func addPendingRequest(req *ChatCompletionRequest, route *RouteConfig, startTime
 	return id
 }
 
+// addPendingSTTRequest adds a pending STT request to the tracking map.
+func addPendingSTTRequest(provider, model string, sensitive bool, startTime time.Time) string {
+	pendingMutex.Lock()
+	defer pendingMutex.Unlock()
+
+	pendingCounter++
+	id := fmt.Sprintf("stt-%d", pendingCounter)
+
+	pendingRequests[id] = &PendingRequest{
+		ID:        id,
+		StartTime: startTime,
+		Provider:  provider,
+		Model:     model,
+		HasImages: false,
+		Sensitive: sensitive,
+		Precision: "",
+		Usecase:   "",
+		Preview:   "STT transcription",
+	}
+
+	return id
+}
+
 func removePendingRequest(id string) {
 	pendingMutex.Lock()
 	defer pendingMutex.Unlock()
@@ -2716,6 +2739,8 @@ func main() {
 	// Initialize STT handler (Whisper transcription)
 	sttHandler = httphandlers.NewSTTHandler(whisperServerURL, openaiKey, requestLogger, speechTimeout, speechStreamingTimeout)
 	sttHandler.ConcurrencyMgr = sttConcurrencyMgr
+	sttHandler.AddPending = addPendingSTTRequest
+	sttHandler.RemovePending = removePendingRequest
 
 	// Initialize TTS audio cache
 	cacheDir := ttsCacheDir
