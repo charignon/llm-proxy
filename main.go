@@ -58,6 +58,16 @@ var (
 	chatTimeout           = getEnvInt("CHAT_TIMEOUT", 240)                 // Chat timeout in seconds
 	speechTimeout         = getEnvInt("SPEECH_TIMEOUT", 240)               // Speech transcription timeout in seconds
 	speechStreamingTimeout = getEnvInt("SPEECH_STREAMING_TIMEOUT", 240)    // Speech streaming transcription timeout in seconds
+	aidaTimeout           = getEnvInt("AIDA_TIMEOUT", 300)                 // AIDA proxy timeout in seconds
+	geminiTimeout         = getEnvInt("GEMINI_TIMEOUT", 300)               // Gemini proxy and provider timeout in seconds
+	openaiTimeout         = getEnvInt("OPENAI_TIMEOUT", 240)               // OpenAI provider timeout in seconds
+	openaiStreamingTimeout = getEnvInt("OPENAI_STREAMING_TIMEOUT", 300)    // OpenAI streaming timeout in seconds
+	anthropicTimeout      = getEnvInt("ANTHROPIC_TIMEOUT", 240)            // Anthropic provider timeout in seconds
+	imageGenTimeout       = getEnvInt("IMAGE_GEN_TIMEOUT", 120)           // Image generation timeout in seconds
+	ttsTimeout            = getEnvInt("TTS_TIMEOUT", 120)                 // TTS timeout in seconds (OpenAI)
+	ttsKokoroTimeout      = getEnvInt("TTS_KOKORO_TIMEOUT", 60)           // TTS Kokoro timeout in seconds
+	webSearchTimeout      = getEnvInt("WEB_SEARCH_TIMEOUT", 120)          // Web search timeout in seconds
+	llamacppTimeout       = getEnvInt("LLAMACPP_TIMEOUT", 300)             // llama.cpp vision timeout in seconds
 )
 
 // Model pricing per 1M tokens (input, output)
@@ -862,15 +872,15 @@ var llamacppProvider *providers.LlamaCppProvider
 func initChatProviders() {
 	ollamaProvider = providers.NewOllamaProvider(ollamaHost, chatTimeout)
 	chatProviders = map[string]ChatProvider{
-		"openai":    providers.NewOpenAIProvider(openaiKey),
-		"anthropic": providers.NewAnthropicProvider(anthropicKey),
+		"openai":    providers.NewOpenAIProvider(openaiKey, openaiTimeout, openaiStreamingTimeout),
+		"anthropic": providers.NewAnthropicProvider(anthropicKey, anthropicTimeout),
 		"ollama":    ollamaProvider,
-		"gemini":    providers.NewGeminiProvider(geminiKey),
+		"gemini":    providers.NewGeminiProvider(geminiKey, geminiTimeout),
 	}
 
 	// If llama.cpp host is configured, add it as a provider
 	if llamacppHost != "" {
-		llamacppProvider = providers.NewLlamaCppProvider(llamacppHost)
+		llamacppProvider = providers.NewLlamaCppProvider(llamacppHost, llamacppTimeout)
 		chatProviders["llamacpp"] = llamacppProvider
 		log.Printf("llama.cpp provider configured at %s", llamacppHost)
 	}
@@ -1529,7 +1539,7 @@ func handleBackend(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleServerConfig returns server configuration values.
-// GET: returns {"ollama_host": string, "whisper_server_url": string, "chat_timeout": int, "speech_timeout": int, "speech_streaming_timeout": int}
+// GET: returns all timeout and configuration values
 func handleServerConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1543,6 +1553,16 @@ func handleServerConfig(w http.ResponseWriter, r *http.Request) {
 		"chat_timeout":             chatTimeout,
 		"speech_timeout":           speechTimeout,
 		"speech_streaming_timeout": speechStreamingTimeout,
+		"aida_timeout":             aidaTimeout,
+		"gemini_timeout":           geminiTimeout,
+		"openai_timeout":           openaiTimeout,
+		"openai_streaming_timeout": openaiStreamingTimeout,
+		"anthropic_timeout":        anthropicTimeout,
+		"image_gen_timeout":        imageGenTimeout,
+		"tts_timeout":              ttsTimeout,
+		"tts_kokoro_timeout":       ttsKokoroTimeout,
+		"web_search_timeout":       webSearchTimeout,
+		"llamacpp_timeout":         llamacppTimeout,
 	})
 }
 
@@ -2432,7 +2452,7 @@ func handleAIDAProxy(w http.ResponseWriter, r *http.Request) {
 	// Set our stored AIDA token
 	proxyReq.Header.Set("Authorization", "Bearer "+aidaToken)
 
-	client := &http.Client{Timeout: 300 * time.Second}
+	client := &http.Client{Timeout: time.Duration(aidaTimeout) * time.Second}
 	resp, err := client.Do(proxyReq)
 	if err != nil {
 		log.Printf("[AIDA] Proxy error: %v", err)
@@ -2518,7 +2538,7 @@ func handleGeminiProxy(w http.ResponseWriter, r *http.Request) {
 	// Set our stored Gemini API key
 	proxyReq.Header.Set("Authorization", "Bearer "+geminiKey)
 
-	client := &http.Client{Timeout: 300 * time.Second}
+	client := &http.Client{Timeout: time.Duration(geminiTimeout) * time.Second}
 	resp, err := client.Do(proxyReq)
 	if err != nil {
 		log.Printf("[Gemini] Proxy error: %v", err)
@@ -2653,18 +2673,19 @@ func main() {
 
 	// Initialize chat handler (primary adapter)
 	chatHandler = &httphandlers.ChatHandler{
-		Router:              router,
-		Providers:           chatProviders,
-		Cache:               requestCache,
-		Logger:              requestLogger,
-		Metrics:             metrics,
-		GenerateKey:         generateCacheKey,
-		CalculateCost:       calculateCost,
-		AddPending:          addPendingRequest,
-		RemovePending:       removePendingRequest,
-		IsModelDisabled:     isModelDisabled,
-		GetProviderOverride: getProviderOverride,
-		CheckBudget:         budgetChecker.CheckBudget,
+		Router:                  router,
+		Providers:               chatProviders,
+		Cache:                   requestCache,
+		Logger:                  requestLogger,
+		Metrics:                 metrics,
+		GenerateKey:             generateCacheKey,
+		CalculateCost:           calculateCost,
+		AddPending:              addPendingRequest,
+		RemovePending:           removePendingRequest,
+		IsModelDisabled:         isModelDisabled,
+		GetProviderOverride:     getProviderOverride,
+		CheckBudget:             budgetChecker.CheckBudget,
+		OpenAIStreamingTimeout:  openaiStreamingTimeout,
 	}
 
 	// Initialize Responses API handler (OpenAI's newer API with smart routing)
@@ -2712,7 +2733,7 @@ func main() {
 	}
 
 	// Initialize TTS handler (Kokoro TTS + OpenAI TTS)
-	ttsHandler = httphandlers.NewTTSHandler(ttsServerURL, openaiKey, requestLogger)
+	ttsHandler = httphandlers.NewTTSHandler(ttsServerURL, openaiKey, requestLogger, ttsTimeout, ttsKokoroTimeout)
 	ttsHandler.CheckBudget = budgetChecker.CheckBudget
 	if ttsAudioCache != nil {
 		ttsHandler.AudioCache = ttsAudioCache
@@ -2720,10 +2741,10 @@ func main() {
 	}
 
 	// Initialize Web Search handler
-	webSearchHandler = httphandlers.NewWebSearchHandler(anthropicKey, openaiKey, requestLogger)
+	webSearchHandler = httphandlers.NewWebSearchHandler(anthropicKey, openaiKey, requestLogger, webSearchTimeout)
 
 	// Initialize Image Generation handler
-	imageGenHandler = httphandlers.NewImageGenHandler(openaiKey, requestLogger, router)
+	imageGenHandler = httphandlers.NewImageGenHandler(openaiKey, requestLogger, router, imageGenTimeout)
 	imageGenHandler.CheckBudget = budgetChecker.CheckBudget
 
 	// Initialize History handler

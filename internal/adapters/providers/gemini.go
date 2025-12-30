@@ -17,12 +17,16 @@ import (
 // GeminiProvider implements ChatProvider for Google's Gemini API using
 // the OpenAI-compatible endpoint.
 type GeminiProvider struct {
-	APIKey string
+	APIKey  string
+	Timeout int // Timeout in seconds
 }
 
 // NewGeminiProvider creates a new Gemini provider adapter.
-func NewGeminiProvider(apiKey string) *GeminiProvider {
-	return &GeminiProvider{APIKey: apiKey}
+func NewGeminiProvider(apiKey string, timeout int) *GeminiProvider {
+	return &GeminiProvider{
+		APIKey:  apiKey,
+		Timeout: timeout,
+	}
 }
 
 // GetAPIKey returns the API key for streaming support.
@@ -74,7 +78,7 @@ func (p *GeminiProvider) Chat(req *domain.ChatCompletionRequest, model string) (
 	httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 240 * time.Second}
+	client := &http.Client{Timeout: time.Duration(p.Timeout) * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err
@@ -207,7 +211,7 @@ func (p *GeminiProvider) ChatNative(req *domain.ChatCompletionRequest, model str
 	httpReq, _ := http.NewRequest("POST", endpoint, bytes.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 240 * time.Second}
+	client := &http.Client{Timeout: time.Duration(p.Timeout) * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err

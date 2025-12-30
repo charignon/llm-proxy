@@ -15,12 +15,16 @@ import (
 
 // LlamaCppProvider implements ChatProvider for llama.cpp server's OpenAI-compatible API.
 type LlamaCppProvider struct {
-	Host string // e.g., "studio.lan:8081"
+	Host    string // e.g., "studio.lan:8081"
+	Timeout int    // Timeout in seconds for vision requests
 }
 
 // NewLlamaCppProvider creates a new llama.cpp server provider adapter.
-func NewLlamaCppProvider(host string) *LlamaCppProvider {
-	return &LlamaCppProvider{Host: host}
+func NewLlamaCppProvider(host string, timeout int) *LlamaCppProvider {
+	return &LlamaCppProvider{
+		Host:    host,
+		Timeout: timeout,
+	}
 }
 
 // isThinkingModel returns true if the model supports thinking mode.
@@ -92,7 +96,7 @@ func (p *LlamaCppProvider) Chat(req *domain.ChatCompletionRequest, model string)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 300 * time.Second} // 5 min timeout for vision
+	client := &http.Client{Timeout: time.Duration(p.Timeout) * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("llama.cpp request failed: %v", err)

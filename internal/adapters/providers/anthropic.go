@@ -14,12 +14,16 @@ import (
 
 // AnthropicProvider implements ChatProvider for Anthropic's Claude API.
 type AnthropicProvider struct {
-	APIKey string
+	APIKey  string
+	Timeout int // Timeout in seconds
 }
 
 // NewAnthropicProvider creates a new Anthropic provider adapter.
-func NewAnthropicProvider(apiKey string) *AnthropicProvider {
-	return &AnthropicProvider{APIKey: apiKey}
+func NewAnthropicProvider(apiKey string, timeout int) *AnthropicProvider {
+	return &AnthropicProvider{
+		APIKey:  apiKey,
+		Timeout: timeout,
+	}
 }
 
 // Anthropic-specific types for API communication
@@ -218,7 +222,7 @@ func (p *AnthropicProvider) Chat(req *domain.ChatCompletionRequest, model string
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 240 * time.Second}
+	client := &http.Client{Timeout: time.Duration(p.Timeout) * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err

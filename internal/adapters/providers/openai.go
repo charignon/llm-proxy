@@ -16,12 +16,18 @@ import (
 
 // OpenAIProvider implements ChatProvider for OpenAI's API.
 type OpenAIProvider struct {
-	APIKey string
+	APIKey           string
+	Timeout          int // Timeout in seconds for regular requests
+	StreamingTimeout int // Timeout in seconds for streaming requests
 }
 
 // NewOpenAIProvider creates a new OpenAI provider adapter.
-func NewOpenAIProvider(apiKey string) *OpenAIProvider {
-	return &OpenAIProvider{APIKey: apiKey}
+func NewOpenAIProvider(apiKey string, timeout, streamingTimeout int) *OpenAIProvider {
+	return &OpenAIProvider{
+		APIKey:           apiKey,
+		Timeout:          timeout,
+		StreamingTimeout: streamingTimeout,
+	}
 }
 
 // GetAPIKey returns the API key for streaming support.
@@ -105,7 +111,7 @@ func (p *OpenAIProvider) chatWithCompletions(req *domain.ChatCompletionRequest, 
 	httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 240 * time.Second}
+	client := &http.Client{Timeout: time.Duration(p.Timeout) * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err

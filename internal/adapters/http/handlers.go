@@ -43,6 +43,9 @@ type ChatHandler struct {
 	// CheckBudget verifies if a request should be allowed based on budget limits.
 	// Returns an error if budget is exceeded, nil otherwise.
 	CheckBudget func(provider string) error
+
+	// Timeouts
+	OpenAIStreamingTimeout int // Timeout in seconds for OpenAI streaming requests
 }
 
 // MetricsRecorder interface for recording request metrics.
@@ -409,7 +412,7 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	client := &http.Client{Timeout: 300 * time.Second}
+	client := &http.Client{Timeout: time.Duration(h.OpenAIStreamingTimeout) * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		logEntry.Success = false
@@ -739,7 +742,7 @@ func (h *ResponsesHandler) forwardToOpenAI(w http.ResponseWriter, r *http.Reques
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+h.OpenAIKey)
 
-	client := &http.Client{Timeout: 300 * time.Second}
+	client := &http.Client{Timeout: time.Duration(h.ChatHandler.OpenAIStreamingTimeout) * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		h.jsonError(w, http.StatusBadGateway, "openai_request_failed", err.Error())

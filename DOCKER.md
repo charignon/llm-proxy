@@ -31,6 +31,16 @@ docker run -d \
 - `CHAT_TIMEOUT`: Chat timeout in seconds (default: 240)
 - `SPEECH_TIMEOUT`: Speech transcription timeout in seconds (default: 240)
 - `SPEECH_STREAMING_TIMEOUT`: Speech streaming transcription timeout in seconds (default: 240)
+- `AIDA_TIMEOUT`: AIDA proxy timeout in seconds (default: 300)
+- `GEMINI_TIMEOUT`: Gemini proxy and provider timeout in seconds (default: 300)
+- `OPENAI_TIMEOUT`: OpenAI provider timeout in seconds (default: 240)
+- `OPENAI_STREAMING_TIMEOUT`: OpenAI streaming timeout in seconds (default: 300)
+- `ANTHROPIC_TIMEOUT`: Anthropic provider timeout in seconds (default: 240)
+- `IMAGE_GEN_TIMEOUT`: Image generation timeout in seconds (default: 120)
+- `TTS_TIMEOUT`: TTS OpenAI timeout in seconds (default: 120)
+- `TTS_KOKORO_TIMEOUT`: TTS Kokoro timeout in seconds (default: 60)
+- `WEB_SEARCH_TIMEOUT`: Web search timeout in seconds (default: 120)
+- `LLAMACPP_TIMEOUT`: llama.cpp vision timeout in seconds (default: 300)
 
 ## Docker Compose
 

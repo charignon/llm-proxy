@@ -38,14 +38,16 @@ type ImageGenHandler struct {
 	Logger     ports.RequestLogger
 	Router     *app.Router
 	CheckBudget func(provider string) error
+	Timeout    int // Timeout in seconds
 }
 
 // NewImageGenHandler creates a new image generation handler.
-func NewImageGenHandler(openAIKey string, logger ports.RequestLogger, router *app.Router) *ImageGenHandler {
+func NewImageGenHandler(openAIKey string, logger ports.RequestLogger, router *app.Router, timeout int) *ImageGenHandler {
 	return &ImageGenHandler{
 		OpenAIKey: openAIKey,
 		Logger:    logger,
 		Router:    router,
+		Timeout:   timeout,
 	}
 }
 
@@ -157,7 +159,7 @@ func (h *ImageGenHandler) HandleImageGeneration(w http.ResponseWriter, r *http.R
 	httpReq.Header.Set("Authorization", "Bearer "+h.OpenAIKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{Timeout: time.Duration(h.Timeout) * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		logEntry.LatencyMs = time.Since(startTime).Milliseconds()

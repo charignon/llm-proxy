@@ -54,14 +54,16 @@ type WebSearchHandler struct {
 	AnthropicKey string
 	OpenAIKey    string
 	Logger       ports.RequestLogger
+	Timeout      int // Timeout in seconds
 }
 
 // NewWebSearchHandler creates a new web search handler.
-func NewWebSearchHandler(anthropicKey, openaiKey string, logger ports.RequestLogger) *WebSearchHandler {
+func NewWebSearchHandler(anthropicKey, openaiKey string, logger ports.RequestLogger, timeout int) *WebSearchHandler {
 	return &WebSearchHandler{
 		AnthropicKey: anthropicKey,
 		OpenAIKey:    openaiKey,
 		Logger:       logger,
+		Timeout:      timeout,
 	}
 }
 
@@ -198,7 +200,7 @@ func (h *WebSearchHandler) doAnthropicWebSearch(req WebSearchRequest) WebSearchR
 	httpReq.Header.Set("x-api-key", h.AnthropicKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{Timeout: time.Duration(h.Timeout) * time.Second}
 	httpResp, err := client.Do(httpReq)
 	if err != nil {
 		return WebSearchResponse{Error: "Request failed: " + err.Error()}
@@ -339,7 +341,7 @@ func (h *WebSearchHandler) doOpenAIWebSearch(req WebSearchRequest) WebSearchResp
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+h.OpenAIKey)
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{Timeout: time.Duration(h.Timeout) * time.Second}
 	httpResp, err := client.Do(httpReq)
 	if err != nil {
 		return WebSearchResponse{Error: "Request failed: " + err.Error()}
