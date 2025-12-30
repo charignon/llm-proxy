@@ -23,14 +23,18 @@ type STTHandler struct {
 	OpenAIKey         string
 	Logger            ports.RequestLogger
 	ConcurrencyMgr    *loadmanager.ConcurrencyManager
+	Timeout           int // Speech timeout in seconds
+	StreamingTimeout  int // Speech streaming timeout in seconds
 }
 
 // NewSTTHandler creates a new STT handler.
-func NewSTTHandler(whisperServerURL, openaiKey string, logger ports.RequestLogger) *STTHandler {
+func NewSTTHandler(whisperServerURL, openaiKey string, logger ports.RequestLogger, timeout, streamingTimeout int) *STTHandler {
 	return &STTHandler{
 		WhisperServerURL: whisperServerURL,
 		OpenAIKey:        openaiKey,
 		Logger:           logger,
+		Timeout:          timeout,
+		StreamingTimeout: streamingTimeout,
 	}
 }
 
@@ -41,8 +45,8 @@ func (h *STTHandler) HandleTranscription(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Acquire concurrency slot with 120s timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	// Acquire concurrency slot with configured timeout
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(h.Timeout)*time.Second)
 	defer cancel()
 
 	if err := h.ConcurrencyMgr.AcquireSlot(ctx); err != nil {
@@ -149,8 +153,8 @@ func (h *STTHandler) HandleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Acquire concurrency slot with 300s timeout (longer for streaming)
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	// Acquire concurrency slot with configured streaming timeout
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(h.StreamingTimeout)*time.Second)
 	defer cancel()
 
 	if err := h.ConcurrencyMgr.AcquireSlot(ctx); err != nil {
@@ -271,7 +275,7 @@ func (h *STTHandler) HandleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	client := &http.Client{Timeout: 300 * time.Second} // Longer timeout for streaming
+	client := &http.Client{Timeout: time.Duration(h.StreamingTimeout) * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
@@ -357,7 +361,7 @@ func (h *STTHandler) callLocalWhisper(fileContent []byte, filename, model, langu
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{Timeout: time.Duration(h.Timeout) * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("local whisper request failed: %w", err)
@@ -425,7 +429,7 @@ func (h *STTHandler) callOpenAIWhisper(fileContent []byte, filename, model, lang
 	req.Header.Set("Authorization", "Bearer "+h.OpenAIKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{Timeout: time.Duration(h.Timeout) * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("OpenAI whisper request failed: %w", err)

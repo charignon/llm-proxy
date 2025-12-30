@@ -55,7 +55,9 @@ var (
 	ttsCacheDir      = getEnv("TTS_CACHE_DIR", "")                           // TTS audio cache directory (default: DATA_DIR/tts-cache)
 	ttsCacheMaxSize  = getEnvInt("TTS_CACHE_MAX_SIZE_MB", 1024)              // TTS cache max size in MB (default: 1GB)
 	ttsCacheTTLDays  = getEnvInt("TTS_CACHE_TTL_DAYS", 7)                    // TTS cache TTL in days (default: 7 days)
-	chatTimeout      = getEnvInt("CHAT_TIMEOUT", 240)                        // Chat timeout in seconds
+	chatTimeout           = getEnvInt("CHAT_TIMEOUT", 240)                 // Chat timeout in seconds
+	speechTimeout         = getEnvInt("SPEECH_TIMEOUT", 240)               // Speech transcription timeout in seconds
+	speechStreamingTimeout = getEnvInt("SPEECH_STREAMING_TIMEOUT", 240)    // Speech streaming transcription timeout in seconds
 )
 
 // Model pricing per 1M tokens (input, output)
@@ -1527,7 +1529,7 @@ func handleBackend(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleServerConfig returns server configuration values.
-// GET: returns {"ollama_host": string, "whisper_server_url": string, "chat_timeout": int}
+// GET: returns {"ollama_host": string, "whisper_server_url": string, "chat_timeout": int, "speech_timeout": int, "speech_streaming_timeout": int}
 func handleServerConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1536,9 +1538,11 @@ func handleServerConfig(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"ollama_host":         ollamaHost,
-		"whisper_server_url":  whisperServerURL,
-		"chat_timeout":        chatTimeout,
+		"ollama_host":              ollamaHost,
+		"whisper_server_url":       whisperServerURL,
+		"chat_timeout":             chatTimeout,
+		"speech_timeout":           speechTimeout,
+		"speech_streaming_timeout": speechStreamingTimeout,
 	})
 }
 
@@ -2689,7 +2693,7 @@ func main() {
 	log.Printf("STT concurrency manager initialized: max 5 concurrent, queue 200")
 
 	// Initialize STT handler (Whisper transcription)
-	sttHandler = httphandlers.NewSTTHandler(whisperServerURL, openaiKey, requestLogger)
+	sttHandler = httphandlers.NewSTTHandler(whisperServerURL, openaiKey, requestLogger, speechTimeout, speechStreamingTimeout)
 	sttHandler.ConcurrencyMgr = sttConcurrencyMgr
 
 	// Initialize TTS audio cache
