@@ -29,7 +29,6 @@ var TTSVoiceMap = map[string]string{
 
 // TTSHandler handles text-to-speech requests.
 type TTSHandler struct {
-<<<<<<< HED
 	TTSServerURL string
 	OpenAIAPIKey string
 	Logger       ports.RequestLogger
