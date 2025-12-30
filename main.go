@@ -2850,6 +2850,22 @@ func main() {
 	log.Printf("Gemini key: %v", geminiKey != "")
 	log.Printf("AIDA token: %v", aidaToken != "")
 	log.Printf("Ollama host: %s", ollamaHost)
+	timeouts := map[string]int{
+		"chat":             chatTimeout,
+		"speech":           speechTimeout,
+		"speech_streaming": speechStreamingTimeout,
+		"aida":             aidaTimeout,
+		"gemini":           geminiTimeout,
+		"openai":           openaiTimeout,
+		"openai_streaming": openaiStreamingTimeout,
+		"anthropic":        anthropicTimeout,
+		"image_gen":        imageGenTimeout,
+		"tts":              ttsTimeout,
+		"tts_kokoro":       ttsKokoroTimeout,
+		"web_search":       webSearchTimeout,
+		"llamacpp":         llamacppTimeout,
+	}
+	log.Printf("Timeouts: %v", timeouts)
 	if llamacppHost != "" {
 		log.Printf("llama.cpp host: %s (backend: %s)", llamacppHost, getLocalVisionBackend())
 	}

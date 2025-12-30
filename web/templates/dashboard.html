@@ -595,31 +595,107 @@
                         <p style="color: #888; font-size: 12px; margin-top: 4px;">Application configuration values</p>
                     </div>
                 </div>
-                <div style="padding: 16px; background: #1e1e2e; border-radius: 8px; border: 1px solid #374151; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr; gap: 16px;">
-                    <div style="display: flex; flex-direction: column; gap: 8px;">
-                        <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">OLLAMA_HOST</div>
-                        <div style="color: #888; font-size: 12px;">The host and port where the Ollama server is running</div>
-                        <div id="ollama-host-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                
+                <!-- Server URLs -->
+                <div style="margin-bottom: 20px;">
+                    <h3 style="color: #a5b4fc; font-size: 14px; font-weight: 600; margin-bottom: 12px;">Server URLs</h3>
+                    <div style="padding: 16px; background: #1e1e2e; border-radius: 8px; border: 1px solid #374151; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">OLLAMA_HOST</div>
+                            <div style="color: #888; font-size: 12px;">The host and port where the Ollama server is running</div>
+                            <div id="ollama-host-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">WHISPER_SERVER_URL</div>
+                            <div style="color: #888; font-size: 12px;">The URL where the Whisper STT server is running</div>
+                            <div id="whisper-server-url-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        </div>
                     </div>
-                    <div style="display: flex; flex-direction: column; gap: 8px;">
-                        <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">WHISPER_SERVER_URL</div>
-                        <div style="color: #888; font-size: 12px;">The URL where the Whisper STT server is running</div>
-                        <div id="whisper-server-url-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                </div>
+
+                <!-- Chat/LLM Timeouts -->
+                <div style="margin-bottom: 20px;">
+                    <h3 style="color: #a5b4fc; font-size: 14px; font-weight: 600; margin-bottom: 12px;">Chat/LLM Timeouts (seconds)</h3>
+                    <div style="padding: 16px; background: #1e1e2e; border-radius: 8px; border: 1px solid #374151; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">CHAT_TIMEOUT</div>
+                            <div style="color: #888; font-size: 12px;">Ollama chat API</div>
+                            <div id="chat-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">OPENAI_TIMEOUT</div>
+                            <div style="color: #888; font-size: 12px;">OpenAI regular requests</div>
+                            <div id="openai-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">OPENAI_STREAMING_TIMEOUT</div>
+                            <div style="color: #888; font-size: 12px;">OpenAI streaming requests</div>
+                            <div id="openai-streaming-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">ANTHROPIC_TIMEOUT</div>
+                            <div style="color: #888; font-size: 12px;">Anthropic API requests</div>
+                            <div id="anthropic-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">GEMINI_TIMEOUT</div>
+                            <div style="color: #888; font-size: 12px;">Gemini API requests</div>
+                            <div id="gemini-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">AIDA_TIMEOUT</div>
+                            <div style="color: #888; font-size: 12px;">AIDA proxy requests</div>
+                            <div id="aida-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">LLAMACPP_TIMEOUT</div>
+                            <div style="color: #888; font-size: 12px;">llama.cpp vision requests</div>
+                            <div id="llamacpp-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        </div>
                     </div>
-                    <div style="display: flex; flex-direction: column; gap: 8px;">
-                        <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">CHAT_TIMEOUT</div>
-                        <div style="color: #888; font-size: 12px;">Timeout in seconds for Ollama chat API requests</div>
-                        <div id="chat-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                </div>
+
+                <!-- Speech Timeouts -->
+                <div style="margin-bottom: 20px;">
+                    <h3 style="color: #a5b4fc; font-size: 14px; font-weight: 600; margin-bottom: 12px;">Speech Transcription Timeouts (seconds)</h3>
+                    <div style="padding: 16px; background: #1e1e2e; border-radius: 8px; border: 1px solid #374151; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">SPEECH_TIMEOUT</div>
+                            <div style="color: #888; font-size: 12px;">Regular transcription</div>
+                            <div id="speech-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">SPEECH_STREAMING_TIMEOUT</div>
+                            <div style="color: #888; font-size: 12px;">Streaming transcription</div>
+                            <div id="speech-streaming-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        </div>
                     </div>
-                    <div style="display: flex; flex-direction: column; gap: 8px;">
-                        <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">SPEECH_TIMEOUT</div>
-                        <div style="color: #888; font-size: 12px;">Timeout in seconds for speech transcription API requests</div>
-                        <div id="speech-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
-                    </div>
-                    <div style="display: flex; flex-direction: column; gap: 8px;">
-                        <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">SPEECH_STREAMING_TIMEOUT</div>
-                        <div style="color: #888; font-size: 12px;">Timeout in seconds for speech streaming transcription API requests</div>
-                        <div id="speech-streaming-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                </div>
+
+                <!-- Other Service Timeouts -->
+                <div style="margin-bottom: 20px;">
+                    <h3 style="color: #a5b4fc; font-size: 14px; font-weight: 600; margin-bottom: 12px;">Other Service Timeouts (seconds)</h3>
+                    <div style="padding: 16px; background: #1e1e2e; border-radius: 8px; border: 1px solid #374151; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">TTS_TIMEOUT</div>
+                            <div style="color: #888; font-size: 12px;">OpenAI TTS</div>
+                            <div id="tts-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">TTS_KOKORO_TIMEOUT</div>
+                            <div style="color: #888; font-size: 12px;">Kokoro TTS</div>
+                            <div id="tts-kokoro-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">IMAGE_GEN_TIMEOUT</div>
+                            <div style="color: #888; font-size: 12px;">Image generation</div>
+                            <div id="image-gen-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a5b4fc; font-size: 14px; font-weight: 600;">WEB_SEARCH_TIMEOUT</div>
+                            <div style="color: #888; font-size: 12px;">Web search</div>
+                            <div id="web-search-timeout-value" style="color: #fff; font-size: 14px; font-family: monospace; padding: 8px 12px; background: #0f172a; border-radius: 6px; border: 1px solid #374151; margin-top: 4px;">-</div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1804,68 +1880,58 @@
                 const resp = await fetch('/api/settings/server-config');
                 const data = await resp.json();
                 
-                // Update Ollama host
-                const hostElement = document.getElementById('ollama-host-value');
-                if (hostElement) {
-                    hostElement.textContent = data.ollama_host || '-';
-                }
+                // Mapping of element IDs to data keys
+                const configMap = {
+                    // Server URLs
+                    'ollama-host-value': { key: 'ollama_host', suffix: '' },
+                    'whisper-server-url-value': { key: 'whisper_server_url', suffix: '' },
+                    // Chat/LLM Timeouts
+                    'chat-timeout-value': { key: 'chat_timeout', suffix: 's' },
+                    'openai-timeout-value': { key: 'openai_timeout', suffix: 's' },
+                    'openai-streaming-timeout-value': { key: 'openai_streaming_timeout', suffix: 's' },
+                    'anthropic-timeout-value': { key: 'anthropic_timeout', suffix: 's' },
+                    'gemini-timeout-value': { key: 'gemini_timeout', suffix: 's' },
+                    'aida-timeout-value': { key: 'aida_timeout', suffix: 's' },
+                    'llamacpp-timeout-value': { key: 'llamacpp_timeout', suffix: 's' },
+                    // Speech Timeouts
+                    'speech-timeout-value': { key: 'speech_timeout', suffix: 's' },
+                    'speech-streaming-timeout-value': { key: 'speech_streaming_timeout', suffix: 's' },
+                    // Other Service Timeouts
+                    'tts-timeout-value': { key: 'tts_timeout', suffix: 's' },
+                    'tts-kokoro-timeout-value': { key: 'tts_kokoro_timeout', suffix: 's' },
+                    'image-gen-timeout-value': { key: 'image_gen_timeout', suffix: 's' },
+                    'web-search-timeout-value': { key: 'web_search_timeout', suffix: 's' }
+                };
                 
-                // Update Whisper server URL
-                const urlElement = document.getElementById('whisper-server-url-value');
-                if (urlElement) {
-                    urlElement.textContent = data.whisper_server_url || '-';
-                }
-                
-                // Update Ollama chat timeout
-                const timeoutElement = document.getElementById('chat-timeout-value');
-                if (timeoutElement) {
-                    timeoutElement.textContent = (data.chat_timeout || '-') + 's';
-                }
-                
-                // Update speech timeout
-                const speechTimeoutElement = document.getElementById('speech-timeout-value');
-                if (speechTimeoutElement) {
-                    speechTimeoutElement.textContent = (data.speech_timeout || '-') + 's';
-                }
-                
-                // Update speech streaming timeout
-                const speechStreamingTimeoutElement = document.getElementById('speech-streaming-timeout-value');
-                if (speechStreamingTimeoutElement) {
-                    speechStreamingTimeoutElement.textContent = (data.speech_streaming_timeout || '-') + 's';
+                // Update all configuration values
+                for (const [elementId, config] of Object.entries(configMap)) {
+                    const element = document.getElementById(elementId);
+                    if (element) {
+                        const value = data[config.key];
+                        element.textContent = (value !== undefined && value !== null ? value : '-') + config.suffix;
+                        element.style.color = '#fff'; // Reset color in case of previous error
+                    }
                 }
             } catch (err) {
                 console.error('Failed to load server config:', err);
                 
                 // Set error state for all elements
-                const hostElement = document.getElementById('ollama-host-value');
-                if (hostElement) {
-                    hostElement.textContent = 'Error loading';
-                    hostElement.style.color = '#ef4444';
-                }
+                const allElementIds = [
+                    'ollama-host-value', 'whisper-server-url-value',
+                    'chat-timeout-value', 'openai-timeout-value', 'openai-streaming-timeout-value',
+                    'anthropic-timeout-value', 'gemini-timeout-value', 'aida-timeout-value',
+                    'llamacpp-timeout-value', 'speech-timeout-value', 'speech-streaming-timeout-value',
+                    'tts-timeout-value', 'tts-kokoro-timeout-value', 'image-gen-timeout-value',
+                    'web-search-timeout-value'
+                ];
                 
-                const urlElement = document.getElementById('whisper-server-url-value');
-                if (urlElement) {
-                    urlElement.textContent = 'Error loading';
-                    urlElement.style.color = '#ef4444';
-                }
-                
-                const timeoutElement = document.getElementById('chat-timeout-value');
-                if (timeoutElement) {
-                    timeoutElement.textContent = 'Error loading';
-                    timeoutElement.style.color = '#ef4444';
-                }
-                
-                const speechTimeoutElement = document.getElementById('speech-timeout-value');
-                if (speechTimeoutElement) {
-                    speechTimeoutElement.textContent = 'Error loading';
-                    speechTimeoutElement.style.color = '#ef4444';
-                }
-                
-                const speechStreamingTimeoutElement = document.getElementById('speech-streaming-timeout-value');
-                if (speechStreamingTimeoutElement) {
-                    speechStreamingTimeoutElement.textContent = 'Error loading';
-                    speechStreamingTimeoutElement.style.color = '#ef4444';
-                }
+                allElementIds.forEach(elementId => {
+                    const element = document.getElementById(elementId);
+                    if (element) {
+                        element.textContent = 'Error loading';
+                        element.style.color = '#ef4444';
+                    }
+                });
             }
         }
 
