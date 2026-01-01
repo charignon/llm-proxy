@@ -872,6 +872,10 @@ func getPendingRequests() []*PendingRequest {
 	for _, req := range pendingRequests {
 		result = append(result, req)
 	}
+	// Sort by StartTime ascending (oldest first) for stable display order
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].StartTime.Before(result[j].StartTime)
+	})
 	return result
 }
 
