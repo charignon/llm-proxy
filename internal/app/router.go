@@ -100,6 +100,8 @@ func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 		model = strings.TrimPrefix(model, "ollama/")
 	} else if strings.HasPrefix(model, "claude") {
 		provider = "anthropic"
+	} else if strings.HasPrefix(model, "gemini") {
+		provider = "gemini"
 	} else if strings.Contains(model, ":") || model == "llama3" || model == "llava" || strings.HasPrefix(model, "qwen") {
 		provider = "ollama"
 	}

@@ -978,7 +978,7 @@ func isModelLocal(model string) bool {
 	if strings.HasPrefix(model, "ollama/") {
 		return true
 	}
-	if strings.HasPrefix(model, "claude") {
+	if strings.HasPrefix(model, "claude") || strings.HasPrefix(model, "gemini") {
 		return false
 	}
 	if strings.Contains(model, ":") || model == "llama3" || model == "llava" || strings.HasPrefix(model, "qwen") {
