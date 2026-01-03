@@ -46,6 +46,18 @@ func getEnv(key, fallback string) string {
 
 // ModelPricing maps model names to pricing per 1M tokens [input, output].
 var ModelPricing = map[string][2]float64{
+	// OpenAI GPT-5 series
+	"gpt-5":         {2.50, 10.00},
+	"gpt-5-mini":    {0.50, 2.00},
+	"gpt-5.1":       {2.50, 10.00},
+	"gpt-5.2":       {3.00, 12.00},
+	"gpt-5.2-mini":  {0.60, 2.40},
+	// OpenAI Codex models (agentic coding)
+	"gpt-5-codex":       {2.50, 10.00},
+	"gpt-5.1-codex":     {2.50, 10.00},
+	"gpt-5.2-codex":     {3.00, 12.00},
+	"gpt-5.2-codex-max": {5.00, 20.00},
+	"codex-mini":        {0.25, 2.00},
 	// OpenAI GPT-4o series
 	"gpt-4o":      {2.50, 10.00},
 	"gpt-4o-mini": {0.15, 0.60},
@@ -55,13 +67,12 @@ var ModelPricing = map[string][2]float64{
 	// OpenAI GPT-3.5
 	"gpt-3.5-turbo": {0.50, 1.50},
 	// OpenAI reasoning models (o-series)
-	"o1":         {15.00, 60.00},
-	"o1-mini":    {1.10, 4.40},
-	"o3-mini":    {1.10, 4.40},
-	"o1-pro":     {150.00, 600.00},
-	"o3":         {10.00, 40.00},
-	"o4-mini":    {1.10, 4.40},
-	"codex-mini": {0.25, 2.00},
+	"o1":      {15.00, 60.00},
+	"o1-mini": {1.10, 4.40},
+	"o1-pro":  {150.00, 600.00},
+	"o3":      {10.00, 40.00},
+	"o3-mini": {1.10, 4.40},
+	"o4-mini": {1.10, 4.40},
 	// Anthropic - Claude 4.5 models only
 	"claude-opus-4-5-20251101":   {5.00, 25.00},
 	"claude-sonnet-4-5-20250929": {3.00, 15.00},
@@ -82,6 +93,7 @@ var ModelPricing = map[string][2]float64{
 	"granite3.1-moe:3b":  {0, 0},
 	"qwen2.5:1.5b":       {0, 0},
 	// Google Gemini models (real Google API model names)
+	"gemini-3-flash-preview":         {0.30, 1.20},
 	"gemini-2.5-pro-preview-06-05":   {1.25, 10.00},
 	"gemini-2.5-flash-preview-05-20": {0.15, 0.60},
 	"gemini-2.0-flash":               {0.10, 0.40},
