@@ -92,19 +92,18 @@ var ModelPricing = map[string][2]float64{
 	"codestral:latest":   {0, 0},
 	"granite3.1-moe:3b":  {0, 0},
 	"qwen2.5:1.5b":       {0, 0},
-	// Google Gemini models
-	"gemini-3.0-pro":                {2.50, 15.00},
-	"gemini-3.0-flash":              {0.25, 1.00},
-	"gemini-2.5-pro":                {1.25, 10.00},
-	"gemini-2.5-flash":              {0.15, 0.60},
-	"gemini-2.5-flash-lite":         {0.02, 0.10},
-	"gemini-2.0-flash":              {0.10, 0.40},
-	"gemini-2.0-flash-lite":         {0.02, 0.08},
-	"gemini-1.5-pro":                {1.25, 5.00},
-	"gemini-1.5-flash":              {0.075, 0.30},
-	"gemini-1.5-flash-8b":           {0.0375, 0.15},
-	"gemini-exp-1206":               {0, 0}, // Free experimental
-	"gemini-2.0-flash-thinking-exp": {0, 0}, // Free experimental
+	// Google Gemini models (actual available model names)
+	"gemini-3-pro-preview":   {2.50, 15.00},  // Preview
+	"gemini-3-flash-preview": {0.25, 1.00},   // Preview
+	"gemini-2.5-pro":         {1.25, 10.00},
+	"gemini-2.5-flash":       {0.15, 0.60},
+	"gemini-2.5-flash-lite":  {0.02, 0.10},
+	"gemini-2.0-flash":       {0.10, 0.40},
+	"gemini-2.0-flash-lite":  {0.02, 0.08},
+	"gemini-1.5-pro":         {1.25, 5.00},
+	"gemini-1.5-flash":       {0.075, 0.30},
+	"gemini-1.5-flash-8b":    {0.0375, 0.15},
+	"gemini-exp-1206":        {0, 0}, // Free experimental
 }
 
 // CalculateCost computes the cost for a request based on token counts.
