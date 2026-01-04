@@ -49,6 +49,7 @@ var (
 	ollamaHost       = getEnv("OLLAMA_HOST", "localhost:11434")
 	llamacppHost     = getEnv("LLAMACPP_HOST", "") // Optional: llama.cpp server for load balancing (e.g., "studio.lan:8081")
 	dataDir          = getEnv("DATA_DIR", "./data")
+	postgresConnStr  = getEnv("POSTGRES_CONN_STR", "") // PostgreSQL connection string for analytics (optional)
 	cacheTTLHours    = 24 * 7                                                // 1 week cache
 	whisperServerURL = getEnv("WHISPER_SERVER_URL", "http://localhost:8890") // Local whisper server
 	ttsServerURL     = getEnv("TTS_SERVER_URL", "http://localhost:7788")     // Local TTS server (Kokoro)
@@ -2689,7 +2690,21 @@ func main() {
 	}
 
 	// Initialize request logger (uses the database)
-	requestLogger = repository.NewSQLiteLogger(db)
+	sqliteLogger := repository.NewSQLiteLogger(db)
+
+	// If PostgreSQL is configured, use multi-logger to write to both
+	if postgresConnStr != "" {
+		pgLogger, err := repository.NewPostgresLogger(postgresConnStr)
+		if err != nil {
+			log.Printf("Warning: Failed to connect to PostgreSQL, using SQLite only: %v", err)
+			requestLogger = sqliteLogger
+		} else {
+			log.Printf("PostgreSQL logging enabled")
+			requestLogger = repository.NewMultiLogger(sqliteLogger, pgLogger)
+		}
+	} else {
+		requestLogger = sqliteLogger
+	}
 
 	// Initialize budget repository and checker
 	budgetRepository = repository.NewSQLiteBudgetRepository(db)
