@@ -68,6 +68,8 @@ var (
 	ttsKokoroTimeout      = getEnvInt("TTS_KOKORO_TIMEOUT", 60)           // TTS Kokoro timeout in seconds
 	webSearchTimeout      = getEnvInt("WEB_SEARCH_TIMEOUT", 120)          // Web search timeout in seconds
 	llamacppTimeout       = getEnvInt("LLAMACPP_TIMEOUT", 300)             // llama.cpp vision timeout in seconds
+	togetherKey           = getEnv("TOGETHER_API_KEY", "")                 // Together.ai API key
+	togetherTimeout       = getEnvInt("TOGETHER_TIMEOUT", 240)             // Together.ai provider timeout in seconds
 )
 
 // Model pricing per 1M tokens (input, output)
@@ -131,6 +133,27 @@ var modelPricing = map[string][2]float64{
 	"gemini-1.5-flash-8b":            {0.0375, 0.15},
 	"gemini-exp-1206":                {0, 0}, // Free experimental
 	"gemini-2.0-flash-thinking-exp":  {0, 0}, // Free experimental
+	// Together.ai models (top 20 largest/most capable)
+	"meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8": {0.27, 0.85},  // 1024K ctx, 128-expert MoE
+	"meta-llama/Llama-4-Scout-17B-16E-Instruct":         {0.18, 0.59},  // 1024K ctx, 16-expert MoE
+	"Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8":           {2.00, 2.00},  // 256K ctx, 480B params
+	"moonshotai/Kimi-K2-Thinking":                       {1.20, 4.00},  // 256K ctx, 1T params
+	"moonshotai/Kimi-K2-Instruct-0905":                  {1.00, 3.00},  // 256K ctx, 1T params
+	"Qwen/Qwen3-235B-A22B-Thinking-2507":                {0.65, 3.00},  // 256K ctx, thinking model
+	"Qwen/Qwen3-VL-32B-Instruct":                        {0.50, 1.50},  // 256K ctx, vision
+	"Qwen/Qwen3-235B-A22B-Instruct-2507-tput":           {0.20, 0.60},  // 256K ctx, throughput
+	"Qwen/Qwen3-Next-80B-A3B-Thinking":                  {0.15, 1.50},  // 256K ctx, thinking
+	"Qwen/Qwen3-Next-80B-A3B-Instruct":                  {0.15, 1.50},  // 256K ctx
+	"zai-org/GLM-4.6":                                   {0.60, 2.20},  // 198K ctx, 357B params
+	"deepseek-ai/DeepSeek-R1":                           {3.00, 7.00},  // 160K ctx, reasoning
+	"deepcogito/cogito-v2-1-671b":                       {1.25, 1.25},  // 160K ctx, 671B MoE
+	"deepseek-ai/DeepSeek-R1-0528-tput":                 {0.55, 2.19},  // 160K ctx, throughput
+	"deepseek-ai/DeepSeek-V3":                           {1.25, 1.25},  // 128K ctx
+	"deepseek-ai/DeepSeek-V3.1":                         {0.60, 1.70},  // 128K ctx
+	"Qwen/Qwen2.5-72B-Instruct-Turbo":                   {1.20, 1.20},  // 128K ctx
+	"meta-llama/Llama-3.3-70B-Instruct-Turbo":           {0.88, 0.88},  // 128K ctx
+	"meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo":     {3.50, 3.50},  // 128K ctx, 405B params
+	"meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo":      {0.88, 0.88},  // 128K ctx
 }
 
 // RouteConfig is an alias to the domain type for routing decisions.
@@ -902,6 +925,12 @@ func initChatProviders() {
 		llamacppProvider = providers.NewLlamaCppProvider(llamacppHost, llamacppTimeout)
 		chatProviders["llamacpp"] = llamacppProvider
 		log.Printf("llama.cpp provider configured at %s", llamacppHost)
+	}
+
+	// If Together.ai key is configured, add it as a provider
+	if togetherKey != "" {
+		chatProviders["together"] = providers.NewTogetherProvider(togetherKey, togetherTimeout)
+		log.Printf("Together.ai provider configured")
 	}
 }
 
