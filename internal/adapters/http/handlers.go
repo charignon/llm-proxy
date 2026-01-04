@@ -718,6 +718,8 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Build Ollama streaming request
+	// Don't set num_ctx - let Ollama use whatever context the model was loaded with
+	// Setting a larger context than loaded causes Ollama to hang while reallocating
 	ollamaReq := ollamaStreamRequest{
 		Model:      route.Model,
 		Messages:   messages,
@@ -727,7 +729,6 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 		KeepAlive:  "30m",
 		Options: &ollamaStreamOptions{
 			Temperature: 0.3,
-			NumCtx:      32768, // Use large context for thinking models
 		},
 	}
 
