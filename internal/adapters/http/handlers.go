@@ -745,8 +745,10 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 
 	// Use a long timeout for streaming (10 minutes)
 	client := &http.Client{Timeout: 10 * time.Minute}
+	log.Printf("Ollama streaming: making request to http://%s/api/chat", ollamaHost)
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		log.Printf("Ollama streaming: request failed: %v", err)
 		logEntry.Success = false
 		logEntry.Error = err.Error()
 		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
@@ -756,8 +758,11 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 	}
 	defer resp.Body.Close()
 
+	log.Printf("Ollama streaming: got response status %d", resp.StatusCode)
+
 	if resp.StatusCode != 200 {
 		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("Ollama streaming: error response: %s", string(respBody))
 		logEntry.Success = false
 		logEntry.Error = fmt.Sprintf("Ollama error %d: %s", resp.StatusCode, string(respBody))
 		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
@@ -788,10 +793,16 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 
 	responseID := fmt.Sprintf("ollama-%d", time.Now().UnixNano())
 
+	log.Printf("Ollama streaming: starting to read NDJSON stream")
+	chunkCount := 0
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
 			continue
+		}
+		chunkCount++
+		if chunkCount <= 3 {
+			log.Printf("Ollama streaming: chunk %d (first 100 chars): %.100s", chunkCount, line)
 		}
 
 		var chunk ollamaStreamChunk
