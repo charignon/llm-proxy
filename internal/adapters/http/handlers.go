@@ -308,10 +308,10 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// handleStreaming handles streaming chat completion requests by forwarding to OpenAI with stream=true.
+// handleStreaming handles streaming chat completion requests by forwarding to OpenAI/Together with stream=true.
 func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, req *domain.ChatCompletionRequest, route *domain.RouteConfig, body []byte, logEntry *domain.RequestLog, startTime time.Time) {
-	// Only OpenAI streaming is supported for now
-	if route.Provider != "openai" {
+	// Only OpenAI and Together streaming is supported for now
+	if route.Provider != "openai" && route.Provider != "together" {
 		http.Error(w, fmt.Sprintf("Streaming not supported for provider: %s", route.Provider), http.StatusBadRequest)
 		return
 	}
@@ -357,10 +357,10 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 		}
 	}
 
-	// Get OpenAI provider to access API key
+	// Get provider to access API key
 	provider, ok := h.Providers[route.Provider]
 	if !ok {
-		http.Error(w, "OpenAI provider not configured", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("%s provider not configured", route.Provider), http.StatusInternalServerError)
 		return
 	}
 	openaiProvider, ok := provider.(interface{ GetAPIKey() string })
@@ -406,8 +406,14 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 
 	reqBody, _ := json.Marshal(openaiReq)
 
-	// Make streaming request to OpenAI
-	httpReq, _ := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", strings.NewReader(string(reqBody)))
+	// Choose endpoint based on provider
+	endpoint := "https://api.openai.com/v1/chat/completions"
+	if route.Provider == "together" {
+		endpoint = "https://api.together.xyz/v1/chat/completions"
+	}
+
+	// Make streaming request
+	httpReq, _ := http.NewRequest("POST", endpoint, strings.NewReader(string(reqBody)))
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
@@ -419,7 +425,7 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 		logEntry.Error = err.Error()
 		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
 		h.Logger.LogRequest(logEntry)
-		http.Error(w, "OpenAI request failed: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, fmt.Sprintf("%s request failed: %s", route.Provider, err.Error()), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
@@ -427,7 +433,7 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 	if resp.StatusCode != 200 {
 		respBody, _ := io.ReadAll(resp.Body)
 		logEntry.Success = false
-		logEntry.Error = fmt.Sprintf("OpenAI error %d: %s", resp.StatusCode, string(respBody))
+		logEntry.Error = fmt.Sprintf("%s error %d: %s", route.Provider, resp.StatusCode, string(respBody))
 		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
 		h.Logger.LogRequest(logEntry)
 		http.Error(w, string(respBody), resp.StatusCode)
