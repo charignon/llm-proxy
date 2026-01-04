@@ -102,10 +102,34 @@ func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 		provider = "anthropic"
 	} else if strings.HasPrefix(model, "gemini") {
 		provider = "gemini"
+	} else if isTogetherModel(model) {
+		provider = "together"
 	} else if strings.Contains(model, ":") || model == "llama3" || model == "llava" || strings.HasPrefix(model, "qwen") {
 		provider = "ollama"
 	}
 	return &domain.RouteConfig{Provider: provider, Model: model}
+}
+
+// isTogetherModel checks if the model ID is a Together.ai model.
+// Together.ai models use org/model format like "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
+func isTogetherModel(model string) bool {
+	// Together.ai model prefixes (organization names)
+	togetherPrefixes := []string{
+		"meta-llama/",      // Llama models
+		"Qwen/",            // Qwen models (capital Q = Together, lowercase = Ollama)
+		"moonshotai/",      // Kimi K2
+		"deepseek-ai/",     // DeepSeek models
+		"deepcogito/",      // Cogito models
+		"zai-org/",         // GLM models
+		"mistralai/",       // Mistral models on Together
+		"togethercomputer/", // Together's own models
+	}
+	for _, prefix := range togetherPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func forceNVRProxyModel(model, usecase string) string {
