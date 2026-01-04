@@ -105,8 +105,6 @@ func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 	} else if strings.Contains(model, ":") || model == "llama3" || model == "llava" || strings.HasPrefix(model, "qwen") {
 		provider = "ollama"
 	}
-	// Codex models are OpenAI (already default, but explicit for clarity)
-	// gpt-5-codex, gpt-5.1-codex, gpt-5.1-codex-max, gpt-5.1-codex-mini, etc.
 	return &domain.RouteConfig{Provider: provider, Model: model}
 }
 

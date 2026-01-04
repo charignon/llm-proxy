@@ -73,18 +73,11 @@ var (
 // Model pricing per 1M tokens (input, output)
 var modelPricing = map[string][2]float64{
 	// OpenAI GPT-5 series
-	"gpt-5":         {2.50, 10.00},
-	"gpt-5-mini":    {0.50, 2.00},
-	"gpt-5.1":       {2.50, 10.00},
-	"gpt-5.2":       {3.00, 12.00},
-	"gpt-5.2-mini":  {0.60, 2.40},
-	// OpenAI Codex models (agentic coding)
-	"gpt-5-codex":        {2.50, 10.00},
-	"gpt-5.1-codex":      {2.50, 10.00},
-	"gpt-5.2-codex":      {3.00, 12.00},
-	"gpt-5.2-codex-max":  {5.00, 20.00},
-	"gpt-5.2-codex-mini": {0.60, 2.40},
-	"codex-mini":         {0.25, 2.00},
+	"gpt-5":        {2.50, 10.00},
+	"gpt-5-mini":   {0.50, 2.00},
+	"gpt-5.1":      {2.50, 10.00},
+	"gpt-5.2":      {3.00, 12.00},
+	"gpt-5.2-mini": {0.60, 2.40},
 	// OpenAI GPT-4o series
 	"gpt-4o":      {2.50, 10.00},
 	"gpt-4o-mini": {0.15, 0.60},
