@@ -746,9 +746,9 @@ func logRequest(entry *RequestLog) int64 {
 func calculateCost(model string, inputTokens, outputTokens int) float64 {
 	pricing, ok := modelPricing[model]
 	if !ok {
-		// Try prefix match
+		// Try case-insensitive match for models that might have different casing
 		for m, p := range modelPricing {
-			if strings.HasPrefix(model, m) {
+			if strings.EqualFold(model, m) {
 				pricing = p
 				ok = true
 				break
