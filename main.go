@@ -79,11 +79,12 @@ var modelPricing = map[string][2]float64{
 	"gpt-5.2":       {3.00, 12.00},
 	"gpt-5.2-mini":  {0.60, 2.40},
 	// OpenAI Codex models (agentic coding)
-	"gpt-5-codex":       {2.50, 10.00},
-	"gpt-5.1-codex":     {2.50, 10.00},
-	"gpt-5.2-codex":     {3.00, 12.00},
-	"gpt-5.2-codex-max": {5.00, 20.00},
-	"codex-mini":        {0.25, 2.00},
+	"gpt-5-codex":        {2.50, 10.00},
+	"gpt-5.1-codex":      {2.50, 10.00},
+	"gpt-5.2-codex":      {3.00, 12.00},
+	"gpt-5.2-codex-max":  {5.00, 20.00},
+	"gpt-5.2-codex-mini": {0.60, 2.40},
+	"codex-mini":         {0.25, 2.00},
 	// OpenAI GPT-4o series
 	"gpt-4o":      {2.50, 10.00},
 	"gpt-4o-mini": {0.15, 0.60},
@@ -126,6 +127,7 @@ var modelPricing = map[string][2]float64{
 	"qwen3-vl:30b":         {0, 0},
 	"qwen3-vl:8b":          {0, 0},
 	// Google Gemini models (real Google API model names)
+	"gemini-3-pro-preview":           {2.50, 15.00},
 	"gemini-3-flash-preview":         {0.30, 1.20},
 	"gemini-2.5-pro-preview-06-05":   {1.25, 10.00},
 	"gemini-2.5-flash-preview-05-20": {0.15, 0.60},
