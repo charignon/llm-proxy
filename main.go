@@ -2750,6 +2750,7 @@ func main() {
 		GetProviderOverride:     getProviderOverride,
 		CheckBudget:             budgetChecker.CheckBudget,
 		OpenAIStreamingTimeout:  openaiStreamingTimeout,
+		OllamaHost:              ollamaHost,
 	}
 
 	// Initialize Responses API handler (OpenAI's newer API with smart routing)

@@ -46,6 +46,9 @@ type ChatHandler struct {
 
 	// Timeouts
 	OpenAIStreamingTimeout int // Timeout in seconds for OpenAI streaming requests
+
+	// OllamaHost for streaming requests (e.g., "localhost:11434")
+	OllamaHost string
 }
 
 // MetricsRecorder interface for recording request metrics.
@@ -308,11 +311,17 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// handleStreaming handles streaming chat completion requests by forwarding to OpenAI/Together with stream=true.
+// handleStreaming handles streaming chat completion requests by forwarding to OpenAI/Together/Ollama with stream=true.
 func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, req *domain.ChatCompletionRequest, route *domain.RouteConfig, body []byte, logEntry *domain.RequestLog, startTime time.Time) {
-	// Only OpenAI and Together streaming is supported for now
-	if route.Provider != "openai" && route.Provider != "together" {
+	// Check if provider supports streaming
+	if route.Provider != "openai" && route.Provider != "together" && route.Provider != "ollama" {
 		http.Error(w, fmt.Sprintf("Streaming not supported for provider: %s", route.Provider), http.StatusBadRequest)
+		return
+	}
+
+	// Handle Ollama streaming separately (uses NDJSON, not SSE)
+	if route.Provider == "ollama" {
+		h.handleOllamaStreaming(w, r, req, route, logEntry, startTime)
 		return
 	}
 
@@ -605,6 +614,279 @@ func (h *ChatHandler) fakeStreamCachedResponse(w http.ResponseWriter, cached []b
 	logEntry.OutputTokens = outputTokens
 	h.Logger.LogRequest(logEntry)
 	h.Metrics.RecordRequest(route.Provider, route.Model, "success", logEntry.LatencyMs, 0, 0, 0, true)
+}
+
+// ============================================================================
+// Ollama Streaming Handler
+// ============================================================================
+
+// ollamaStreamRequest matches Ollama's /api/chat request format.
+type ollamaStreamRequest struct {
+	Model      string                 `json:"model"`
+	Messages   []ollamaStreamMessage  `json:"messages"`
+	Stream     bool                   `json:"stream"`
+	Tools      []domain.Tool          `json:"tools,omitempty"`
+	ToolChoice interface{}            `json:"tool_choice,omitempty"`
+	KeepAlive  string                 `json:"keep_alive,omitempty"`
+	Options    *ollamaStreamOptions   `json:"options,omitempty"`
+}
+
+type ollamaStreamMessage struct {
+	Role    string   `json:"role"`
+	Content string   `json:"content"`
+	Images  []string `json:"images,omitempty"`
+}
+
+type ollamaStreamOptions struct {
+	Temperature float64 `json:"temperature,omitempty"`
+	NumCtx      int     `json:"num_ctx,omitempty"`
+}
+
+// ollamaStreamChunk is a single chunk from Ollama's NDJSON streaming response.
+type ollamaStreamChunk struct {
+	Model   string `json:"model"`
+	Message struct {
+		Role      string `json:"role"`
+		Content   string `json:"content"`
+		Thinking  string `json:"thinking,omitempty"`
+	} `json:"message"`
+	Done               bool `json:"done"`
+	PromptEvalCount    int  `json:"prompt_eval_count,omitempty"`
+	EvalCount          int  `json:"eval_count,omitempty"`
+}
+
+// handleOllamaStreaming handles streaming requests to Ollama.
+// Ollama uses NDJSON streaming, which we convert to OpenAI-compatible SSE format.
+func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Request, req *domain.ChatCompletionRequest, route *domain.RouteConfig, logEntry *domain.RequestLog, startTime time.Time) {
+	// Check budget before processing
+	if h.CheckBudget != nil {
+		if err := h.CheckBudget("ollama"); err != nil {
+			logEntry.Success = false
+			logEntry.Error = err.Error()
+			logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+			h.Logger.LogRequest(logEntry)
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPaymentRequired)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": err.Error(),
+					"type":    "budget_exceeded",
+					"code":    "budget_exceeded",
+				},
+			})
+			return
+		}
+	}
+
+	// Convert messages to Ollama format
+	var messages []ollamaStreamMessage
+	for _, msg := range req.Messages {
+		ollamaMsg := ollamaStreamMessage{Role: msg.Role}
+
+		switch c := msg.Content.(type) {
+		case string:
+			ollamaMsg.Content = c
+		case []interface{}:
+			// Handle multimodal content
+			var textParts []string
+			for _, part := range c {
+				if m, ok := part.(map[string]interface{}); ok {
+					if m["type"] == "text" {
+						if text, ok := m["text"].(string); ok {
+							textParts = append(textParts, text)
+						}
+					} else if m["type"] == "image_url" {
+						if imgURL, ok := m["image_url"].(map[string]interface{}); ok {
+							if url, ok := imgURL["url"].(string); ok {
+								// Extract base64 from data URL
+								if strings.HasPrefix(url, "data:") {
+									parts := strings.SplitN(url, ",", 2)
+									if len(parts) == 2 {
+										ollamaMsg.Images = append(ollamaMsg.Images, parts[1])
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			ollamaMsg.Content = strings.Join(textParts, "\n")
+		}
+
+		messages = append(messages, ollamaMsg)
+	}
+
+	// Build Ollama streaming request
+	ollamaReq := ollamaStreamRequest{
+		Model:      route.Model,
+		Messages:   messages,
+		Stream:     true, // Enable streaming
+		Tools:      req.Tools,
+		ToolChoice: req.ToolChoice,
+		KeepAlive:  "30m",
+		Options: &ollamaStreamOptions{
+			Temperature: 0.3,
+			NumCtx:      32768, // Use large context for thinking models
+		},
+	}
+
+	reqBody, _ := json.Marshal(ollamaReq)
+	log.Printf("Ollama streaming request to model: %s", route.Model)
+
+	// Make streaming request to Ollama
+	ollamaHost := h.OllamaHost
+	if ollamaHost == "" {
+		ollamaHost = "localhost:11434"
+	}
+
+	httpReq, _ := http.NewRequest("POST", "http://"+ollamaHost+"/api/chat", bytes.NewReader(reqBody))
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	// Use a long timeout for streaming (10 minutes)
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		logEntry.Success = false
+		logEntry.Error = err.Error()
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		h.Logger.LogRequest(logEntry)
+		http.Error(w, fmt.Sprintf("Ollama request failed: %s", err.Error()), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		logEntry.Success = false
+		logEntry.Error = fmt.Sprintf("Ollama error %d: %s", resp.StatusCode, string(respBody))
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		h.Logger.LogRequest(logEntry)
+		http.Error(w, string(respBody), resp.StatusCode)
+		return
+	}
+
+	// Set up SSE response (convert Ollama NDJSON to OpenAI SSE)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-LLM-Proxy-Provider", "ollama")
+	w.Header().Set("X-LLM-Proxy-Model", route.Model)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Read Ollama NDJSON stream and convert to SSE
+	var responseContent strings.Builder
+	var thinkingContent strings.Builder
+	var inputTokens, outputTokens int
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	responseID := fmt.Sprintf("ollama-%d", time.Now().UnixNano())
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		var chunk ollamaStreamChunk
+		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
+			log.Printf("Failed to parse Ollama chunk: %v", err)
+			continue
+		}
+
+		// Convert to OpenAI SSE format
+		sseChunk := map[string]interface{}{
+			"id":      responseID,
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   chunk.Model,
+			"choices": []map[string]interface{}{
+				{
+					"index": 0,
+					"delta": map[string]interface{}{
+						"content": chunk.Message.Content,
+					},
+				},
+			},
+		}
+
+		// Accumulate content
+		if chunk.Message.Content != "" {
+			responseContent.WriteString(chunk.Message.Content)
+		}
+		if chunk.Message.Thinking != "" {
+			thinkingContent.WriteString(chunk.Message.Thinking)
+		}
+
+		// Send SSE chunk
+		chunkJSON, _ := json.Marshal(sseChunk)
+		fmt.Fprintf(w, "data: %s\n\n", chunkJSON)
+		flusher.Flush()
+
+		// Capture token counts from final chunk
+		if chunk.Done {
+			inputTokens = chunk.PromptEvalCount
+			outputTokens = chunk.EvalCount
+
+			// Send final chunk with finish_reason
+			finalChunk := map[string]interface{}{
+				"id":      responseID,
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   chunk.Model,
+				"choices": []map[string]interface{}{
+					{
+						"index":         0,
+						"delta":         map[string]interface{}{},
+						"finish_reason": "stop",
+					},
+				},
+				"usage": map[string]int{
+					"prompt_tokens":     inputTokens,
+					"completion_tokens": outputTokens,
+				},
+			}
+			finalJSON, _ := json.Marshal(finalChunk)
+			fmt.Fprintf(w, "data: %s\n\n", finalJSON)
+			flusher.Flush()
+		}
+	}
+
+	// Send [DONE] marker
+	fmt.Fprintln(w, "data: [DONE]")
+	flusher.Flush()
+
+	// Prepend thinking content if present
+	fullContent := responseContent.String()
+	if thinkingContent.Len() > 0 {
+		fullContent = "<think>" + thinkingContent.String() + "</think>" + fullContent
+	}
+
+	// Build synthetic response for logging
+	syntheticResp := map[string]interface{}{
+		"choices": []map[string]interface{}{
+			{"message": map[string]string{"role": "assistant", "content": fullContent}},
+		},
+		"usage": map[string]int{"prompt_tokens": inputTokens, "completion_tokens": outputTokens},
+	}
+	respBytes, _ := json.Marshal(syntheticResp)
+
+	// Log success
+	logEntry.Success = true
+	logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+	logEntry.RequestType = "stream"
+	logEntry.ResponseBody = respBytes
+	logEntry.InputTokens = inputTokens
+	logEntry.OutputTokens = outputTokens
+	logEntry.CostUSD = 0 // Ollama is free
+	h.Logger.LogRequest(logEntry)
+	h.Metrics.RecordRequest("ollama", route.Model, "success", logEntry.LatencyMs, inputTokens, outputTokens, 0, false)
 }
 
 // ============================================================================
