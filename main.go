@@ -138,6 +138,7 @@ var modelPricing = map[string][2]float64{
 	"meta-llama/Llama-4-Scout-17B-16E-Instruct":         {0.18, 0.59},  // 1024K ctx, 16-expert MoE
 	"Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8":           {2.00, 2.00},  // 256K ctx, 480B params
 	"moonshotai/Kimi-K2-Thinking":                       {1.20, 4.00},  // 256K ctx, 1T params
+	"moonshotai/Kimi-K2-Instruct":                       {1.00, 3.00},  // 256K ctx, 1T params
 	"moonshotai/Kimi-K2-Instruct-0905":                  {1.00, 3.00},  // 256K ctx, 1T params
 	"Qwen/Qwen3-235B-A22B-Thinking-2507":                {0.65, 3.00},  // 256K ctx, thinking model
 	"Qwen/Qwen3-VL-32B-Instruct":                        {0.50, 1.50},  // 256K ctx, vision
