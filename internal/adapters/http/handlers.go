@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"llm-proxy/internal/adapters/providers"
 	"llm-proxy/internal/app"
 	"llm-proxy/internal/domain"
 	"llm-proxy/internal/ports"
@@ -314,13 +315,13 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // handleStreaming handles streaming chat completion requests by forwarding to OpenAI/Together/Ollama with stream=true.
 func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, req *domain.ChatCompletionRequest, route *domain.RouteConfig, body []byte, logEntry *domain.RequestLog, startTime time.Time) {
 	// Check if provider supports streaming
-	if route.Provider != "openai" && route.Provider != "together" && route.Provider != "ollama" {
+	if route.Provider != "openai" && route.Provider != "together" && route.Provider != "ollama" && route.Provider != "ollama-cloud" {
 		http.Error(w, fmt.Sprintf("Streaming not supported for provider: %s", route.Provider), http.StatusBadRequest)
 		return
 	}
 
 	// Handle Ollama streaming separately (uses NDJSON, not SSE)
-	if route.Provider == "ollama" {
+	if route.Provider == "ollama" || route.Provider == "ollama-cloud" {
 		h.handleOllamaStreaming(w, r, req, route, logEntry, startTime)
 		return
 	}
@@ -622,13 +623,13 @@ func (h *ChatHandler) fakeStreamCachedResponse(w http.ResponseWriter, cached []b
 
 // ollamaStreamRequest matches Ollama's /api/chat request format.
 type ollamaStreamRequest struct {
-	Model      string                 `json:"model"`
-	Messages   []ollamaStreamMessage  `json:"messages"`
-	Stream     bool                   `json:"stream"`
-	Tools      []domain.Tool          `json:"tools,omitempty"`
-	ToolChoice interface{}            `json:"tool_choice,omitempty"`
-	KeepAlive  string                 `json:"keep_alive,omitempty"`
-	Options    *ollamaStreamOptions   `json:"options,omitempty"`
+	Model      string                `json:"model"`
+	Messages   []ollamaStreamMessage `json:"messages"`
+	Stream     bool                  `json:"stream"`
+	Tools      []domain.Tool         `json:"tools,omitempty"`
+	ToolChoice interface{}           `json:"tool_choice,omitempty"`
+	KeepAlive  string                `json:"keep_alive,omitempty"`
+	Options    *ollamaStreamOptions  `json:"options,omitempty"`
 }
 
 type ollamaStreamMessage struct {
@@ -646,21 +647,31 @@ type ollamaStreamOptions struct {
 type ollamaStreamChunk struct {
 	Model   string `json:"model"`
 	Message struct {
-		Role      string `json:"role"`
-		Content   string `json:"content"`
-		Thinking  string `json:"thinking,omitempty"`
+		Role     string `json:"role"`
+		Content  string `json:"content"`
+		Thinking string `json:"thinking,omitempty"`
 	} `json:"message"`
-	Done               bool `json:"done"`
-	PromptEvalCount    int  `json:"prompt_eval_count,omitempty"`
-	EvalCount          int  `json:"eval_count,omitempty"`
+	Done            bool `json:"done"`
+	PromptEvalCount int  `json:"prompt_eval_count,omitempty"`
+	EvalCount       int  `json:"eval_count,omitempty"`
 }
 
 // handleOllamaStreaming handles streaming requests to Ollama.
 // Ollama uses NDJSON streaming, which we convert to OpenAI-compatible SSE format.
 func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Request, req *domain.ChatCompletionRequest, route *domain.RouteConfig, logEntry *domain.RequestLog, startTime time.Time) {
+	if route.Provider == "ollama" && providers.IsOllamaCloudModel(route.Model) {
+		err := fmt.Errorf("cloud model %q must use ollama-cloud provider", route.Model)
+		logEntry.Success = false
+		logEntry.Error = err.Error()
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		h.Logger.LogRequest(logEntry)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// Check budget before processing
 	if h.CheckBudget != nil {
-		if err := h.CheckBudget("ollama"); err != nil {
+		if err := h.CheckBudget(route.Provider); err != nil {
 			logEntry.Success = false
 			logEntry.Error = err.Error()
 			logEntry.LatencyMs = time.Since(startTime).Milliseconds()
@@ -776,7 +787,7 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-LLM-Proxy-Provider", "ollama")
+	w.Header().Set("X-LLM-Proxy-Provider", route.Provider)
 	w.Header().Set("X-LLM-Proxy-Model", route.Model)
 
 	flusher, ok := w.(http.Flusher)
@@ -792,7 +803,7 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
-	responseID := fmt.Sprintf("ollama-%d", time.Now().UnixNano())
+	responseID := fmt.Sprintf("%s-%d", route.Provider, time.Now().UnixNano())
 
 	log.Printf("Ollama streaming: starting to read NDJSON stream")
 	chunkCount := 0
@@ -896,9 +907,9 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 	logEntry.ResponseBody = respBytes
 	logEntry.InputTokens = inputTokens
 	logEntry.OutputTokens = outputTokens
-	logEntry.CostUSD = 0 // Ollama is free
+	logEntry.CostUSD = h.CalculateCost(route.Model, inputTokens, outputTokens)
 	h.Logger.LogRequest(logEntry)
-	h.Metrics.RecordRequest("ollama", route.Model, "success", logEntry.LatencyMs, inputTokens, outputTokens, 0, false)
+	h.Metrics.RecordRequest(route.Provider, route.Model, "success", logEntry.LatencyMs, inputTokens, outputTokens, logEntry.CostUSD, false)
 }
 
 // ============================================================================

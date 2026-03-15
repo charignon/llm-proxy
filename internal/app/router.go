@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"llm-proxy/internal/adapters/providers"
 	"llm-proxy/internal/domain"
 )
 
@@ -95,9 +96,14 @@ func (r *Router) ResolveRoute(req *domain.ChatCompletionRequest) (*domain.RouteC
 // resolveExplicitModel determines the provider for an explicitly specified model.
 func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 	provider := "openai"
-	if strings.HasPrefix(model, "ollama/") {
+	if strings.HasPrefix(model, "ollama-cloud/") {
+		provider = "ollama-cloud"
+		model = strings.TrimPrefix(model, "ollama-cloud/")
+	} else if strings.HasPrefix(model, "ollama/") {
 		provider = "ollama"
 		model = strings.TrimPrefix(model, "ollama/")
+	} else if providers.IsOllamaCloudModel(model) {
+		provider = "ollama-cloud"
 	} else if strings.HasPrefix(model, "claude") {
 		provider = "anthropic"
 	} else if strings.HasPrefix(model, "gemini") {
@@ -115,13 +121,13 @@ func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 func isTogetherModel(model string) bool {
 	// Together.ai model prefixes (organization names)
 	togetherPrefixes := []string{
-		"meta-llama/",      // Llama models
-		"Qwen/",            // Qwen models (capital Q = Together, lowercase = Ollama)
-		"moonshotai/",      // Kimi K2
-		"deepseek-ai/",     // DeepSeek models
-		"deepcogito/",      // Cogito models
-		"zai-org/",         // GLM models
-		"mistralai/",       // Mistral models on Together
+		"meta-llama/",       // Llama models
+		"Qwen/",             // Qwen models (capital Q = Together, lowercase = Ollama)
+		"moonshotai/",       // Kimi K2
+		"deepseek-ai/",      // DeepSeek models
+		"deepcogito/",       // Cogito models
+		"zai-org/",          // GLM models
+		"mistralai/",        // Mistral models on Together
 		"togethercomputer/", // Together's own models
 	}
 	for _, prefix := range togetherPrefixes {

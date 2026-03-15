@@ -694,6 +694,12 @@ func loadRouteOverrides() {
 }
 
 func saveRouteOverride(usecase, routeType string, sensitive bool, precision, provider, model string) error {
+	if sensitive {
+		if err := validateSensitiveRouteConfig(&RouteConfig{Provider: provider, Model: model}); err != nil {
+			return fmt.Errorf("invalid sensitive route override: %w", err)
+		}
+	}
+
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
@@ -910,16 +916,21 @@ var chatProviders map[string]ChatProvider
 // ollamaProvider is stored separately for model discovery functions.
 var ollamaProvider *providers.OllamaProvider
 
+// ollamaCloudProvider is a virtual provider backed by the local Ollama daemon.
+var ollamaCloudProvider *providers.OllamaCloudProvider
+
 // llamacppProvider is stored separately for health checks and backend switching.
 var llamacppProvider *providers.LlamaCppProvider
 
 func initChatProviders() {
 	ollamaProvider = providers.NewOllamaProvider(ollamaHost, chatTimeout)
+	ollamaCloudProvider = providers.NewOllamaCloudProvider(ollamaHost, chatTimeout)
 	chatProviders = map[string]ChatProvider{
-		"openai":    providers.NewOpenAIProvider(openaiKey, openaiTimeout, openaiStreamingTimeout),
-		"anthropic": providers.NewAnthropicProvider(anthropicKey, anthropicTimeout),
-		"ollama":    ollamaProvider,
-		"gemini":    providers.NewGeminiProvider(geminiKey, geminiTimeout),
+		"openai":       providers.NewOpenAIProvider(openaiKey, openaiTimeout, openaiStreamingTimeout),
+		"anthropic":    providers.NewAnthropicProvider(anthropicKey, anthropicTimeout),
+		"ollama":       ollamaProvider,
+		"ollama-cloud": ollamaCloudProvider,
+		"gemini":       providers.NewGeminiProvider(geminiKey, geminiTimeout),
 	}
 
 	// If llama.cpp host is configured, add it as a provider
@@ -998,6 +1009,9 @@ func getClientIP(r *http.Request) string {
 }
 
 func isModelLocal(model string) bool {
+	if strings.HasPrefix(model, "ollama-cloud/") || providers.IsOllamaCloudModel(model) {
+		return false
+	}
 	if strings.HasPrefix(model, "ollama/") {
 		return true
 	}
@@ -1045,6 +1059,18 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 				"object":   "model",
 				"owned_by": "llm-proxy",
 				"local":    isModelLocal(model),
+			})
+			seen[model] = true
+		}
+	}
+
+	for _, model := range ollamaCloudProvider.GetModels() {
+		if !seen[model] {
+			models = append(models, map[string]interface{}{
+				"id":       model,
+				"object":   "model",
+				"owned_by": "llm-proxy",
+				"local":    false,
 			})
 			seen[model] = true
 		}
@@ -1438,7 +1464,8 @@ func handleAvailableModels(w http.ResponseWriter, r *http.Request) {
 			"o1-mini",
 			"o3-mini",
 		},
-		"ollama": ollamaProvider.GetModels(), // Fetch dynamically from Ollama
+		"ollama":       ollamaProvider.GetModels(),
+		"ollama-cloud": ollamaCloudProvider.GetModels(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1495,6 +1522,15 @@ func handleModelsConfig(w http.ResponseWriter, r *http.Request) {
 		for _, m := range ollamaModels {
 			configs = append(configs, ModelConfig{
 				Provider: "ollama",
+				Model:    m,
+				Enabled:  !isModelDisabled(m),
+			})
+		}
+
+		ollamaCloudModels := ollamaCloudProvider.GetModels()
+		for _, m := range ollamaCloudModels {
+			configs = append(configs, ModelConfig{
+				Provider: "ollama-cloud",
 				Model:    m,
 				Enabled:  !isModelDisabled(m),
 			})
@@ -2411,6 +2447,19 @@ func isLocalProvider(provider string) bool {
 	}
 }
 
+func validateSensitiveRouteConfig(config *RouteConfig) error {
+	if config == nil {
+		return nil
+	}
+	if !isLocalProvider(config.Provider) {
+		return fmt.Errorf("%s/%s must use a local provider", config.Provider, config.Model)
+	}
+	if config.Provider == "ollama" && providers.IsOllamaCloudModel(config.Model) {
+		return fmt.Errorf("%s/%s is a cloud model and must use ollama-cloud", config.Provider, config.Model)
+	}
+	return nil
+}
+
 // validateRoutingTableSecurity ensures sensitive data never goes to cloud providers
 // This is a critical security check that runs on startup
 func validateRoutingTableSecurity() {
@@ -2420,10 +2469,9 @@ func validateRoutingTableSecurity() {
 	for sensitive, precisions := range routingTable {
 		if sensitive == "true" {
 			for precision, config := range precisions {
-				if config != nil && !isLocalProvider(config.Provider) {
+				if err := validateSensitiveRouteConfig(config); err != nil {
 					violations = append(violations,
-						fmt.Sprintf("TEXT sensitive=true precision=%s routes to %s/%s (must be local provider)",
-							precision, config.Provider, config.Model))
+						fmt.Sprintf("TEXT sensitive=true precision=%s routes to %v", precision, err))
 				}
 			}
 		}
@@ -2433,10 +2481,28 @@ func validateRoutingTableSecurity() {
 	for sensitive, precisions := range visionRoutingTable {
 		if sensitive == "true" {
 			for precision, config := range precisions {
-				if config != nil && !isLocalProvider(config.Provider) {
+				if err := validateSensitiveRouteConfig(config); err != nil {
 					violations = append(violations,
-						fmt.Sprintf("VISION sensitive=true precision=%s routes to %s/%s (must be local provider)",
-							precision, config.Provider, config.Model))
+						fmt.Sprintf("VISION sensitive=true precision=%s routes to %v", precision, err))
+				}
+			}
+		}
+	}
+
+	if router != nil {
+		for usecase, routeTypes := range router.GetAllUsecaseRoutes() {
+			for routeType, sensitivities := range routeTypes {
+				for sensitive, precisions := range sensitivities {
+					if sensitive != "true" {
+						continue
+					}
+					for precision, config := range precisions {
+						if err := validateSensitiveRouteConfig(config); err != nil {
+							violations = append(violations,
+								fmt.Sprintf("OVERRIDE usecase=%s type=%s precision=%s routes to %v",
+									usecase, routeType, precision, err))
+						}
+					}
 				}
 			}
 		}

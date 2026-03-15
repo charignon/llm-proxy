@@ -70,6 +70,14 @@ type ollamaToolCall struct {
 
 // Chat implements ChatProvider.Chat for Ollama.
 func (p *OllamaProvider) Chat(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+	return p.chat(req, model, "ollama", false)
+}
+
+func (p *OllamaProvider) chat(req *domain.ChatCompletionRequest, model, providerName string, allowCloud bool) (*domain.ChatCompletionResponse, error) {
+	if !allowCloud && IsOllamaCloudModel(model) {
+		return nil, fmt.Errorf("cloud model %q must use ollama-cloud provider", model)
+	}
+
 	// Convert messages to Ollama format
 	var messages []ollamaMessage
 	for _, msg := range req.Messages {
@@ -185,11 +193,11 @@ func (p *OllamaProvider) Chat(req *domain.ChatCompletionRequest, model string) (
 	}
 
 	return &domain.ChatCompletionResponse{
-		ID:       fmt.Sprintf("ollama-%d", time.Now().UnixNano()),
+		ID:       fmt.Sprintf("%s-%d", providerName, time.Now().UnixNano()),
 		Object:   "chat.completion",
 		Created:  time.Now().Unix(),
 		Model:    ollamaResp.Model,
-		Provider: "ollama",
+		Provider: providerName,
 		Choices: []domain.Choice{{
 			Index:        0,
 			Message:      respMsg,
@@ -220,26 +228,35 @@ type OllamaModelDetails struct {
 
 // GetModels fetches the list of available models from Ollama.
 func (p *OllamaProvider) GetModels() []string {
+	models := p.fetchModelNames([]string{"mistral:7b", "qwen3-vl:30b"})
+	filtered := make([]string, 0, len(models))
+	for _, m := range models {
+		name := strings.ToLower(m)
+		if strings.Contains(name, "gemma") || IsOllamaCloudModel(m) {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	return filtered
+}
+
+func (p *OllamaProvider) fetchModelNames(fallback []string) []string {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get("http://" + p.Host + "/api/tags")
 	if err != nil {
 		log.Printf("Failed to fetch Ollama models: %v", err)
-		return []string{"mistral:7b", "qwen3-vl:30b"} // fallback
+		return append([]string(nil), fallback...)
 	}
 	defer resp.Body.Close()
 
 	var tagsResp OllamaTagsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tagsResp); err != nil {
 		log.Printf("Failed to decode Ollama models: %v", err)
-		return []string{"mistral:7b", "qwen3-vl:30b"} // fallback
+		return append([]string(nil), fallback...)
 	}
 
 	models := make([]string, 0, len(tagsResp.Models))
 	for _, m := range tagsResp.Models {
-		name := strings.ToLower(m.Name)
-		if strings.Contains(name, "gemma") {
-			continue
-		}
 		models = append(models, m.Name)
 	}
 	return models
