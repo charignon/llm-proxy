@@ -1,6 +1,10 @@
 package app
 
-import "testing"
+import (
+	"testing"
+
+	"llm-proxy/internal/domain"
+)
 
 func TestResolveExplicitModelRoutesOllamaCloudModels(t *testing.T) {
 	t.Parallel()
@@ -29,5 +33,19 @@ func TestResolveExplicitModelRoutesOllamaCloudModels(t *testing.T) {
 				t.Fatalf("resolveExplicitModel(%q) model = %q, want %q", tc.model, route.Model, tc.want)
 			}
 		})
+	}
+}
+
+func TestResolveRouteRejectsSensitiveExplicitCloudModels(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(nil, nil)
+	sensitive := true
+	_, err := router.ResolveRoute(&domain.ChatCompletionRequest{
+		Model:     "qwen3.5:cloud",
+		Sensitive: &sensitive,
+	})
+	if err == nil {
+		t.Fatal("expected sensitive explicit cloud model to be rejected")
 	}
 }

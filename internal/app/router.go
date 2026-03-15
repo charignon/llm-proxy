@@ -40,7 +40,11 @@ func (r *Router) ResolveRoute(req *domain.ChatCompletionRequest) (*domain.RouteC
 
 	// If model is explicitly specified (not a routing keyword), use it directly
 	if req.Model != "" && req.Model != "auto" && req.Model != "route" {
-		return r.resolveExplicitModel(req.Model), nil
+		route := r.resolveExplicitModel(req.Model)
+		if req.Sensitive != nil && *req.Sensitive && !isLocalExplicitProvider(route) {
+			return nil, fmt.Errorf("sensitive requests cannot use %s/%s", route.Provider, route.Model)
+		}
+		return route, nil
 	}
 
 	// Use routing table - choose text or vision based on content
@@ -114,6 +118,18 @@ func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 		provider = "ollama"
 	}
 	return &domain.RouteConfig{Provider: provider, Model: model}
+}
+
+func isLocalExplicitProvider(route *domain.RouteConfig) bool {
+	if route == nil {
+		return false
+	}
+	switch route.Provider {
+	case "ollama", "llamacpp", "local-vision":
+		return !providers.IsOllamaCloudModel(route.Model)
+	default:
+		return false
+	}
 }
 
 // isTogetherModel checks if the model ID is a Together.ai model.
