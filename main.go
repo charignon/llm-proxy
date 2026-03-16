@@ -209,6 +209,7 @@ var router *app.Router
 // HTTP handler for chat completions (primary adapter)
 var chatHandler *httphandlers.ChatHandler
 var responsesHandler *httphandlers.ResponsesHandler
+var anthropicMessagesHandler *httphandlers.AnthropicMessagesHandler
 
 // Audio and search handlers (extracted adapters)
 var sttHandler *httphandlers.STTHandler
@@ -2840,6 +2841,14 @@ func main() {
 	}
 	log.Printf("Responses API mode: %s", responsesMode)
 
+	anthropicMessagesHandler = &httphandlers.AnthropicMessagesHandler{
+		ChatHandler:      chatHandler,
+		AnthropicKey:     anthropicKey,
+		AnthropicTimeout: anthropicTimeout,
+		OllamaTimeout:    chatTimeout,
+		OllamaBaseURL:    "http://" + ollamaHost,
+	}
+
 	// Initialize STT concurrency manager (max 5 concurrent, queue up to 200)
 	sttConcurrencyMgr = loadmanager.NewConcurrencyManager(5, 200)
 	log.Printf("STT concurrency manager initialized: max 5 concurrent, queue 200")
@@ -2922,6 +2931,7 @@ func main() {
 	http.HandleFunc("/health", handleHealth)
 	http.HandleFunc("/metrics", handleMetrics)
 	http.Handle("/v1/chat/completions", chatHandler)
+	http.Handle("/v1/messages", anthropicMessagesHandler)
 	http.HandleFunc("/v1/estimate", handleEstimate)
 	http.HandleFunc("/v1/models", handleModels)
 	http.HandleFunc("/api/stats", withCORS(historyHandler.HandleStats))
