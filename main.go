@@ -41,87 +41,97 @@ import (
 
 // Configuration
 var (
-	port             = getEnv("PORT", "8080")
-	openaiKey        = getEnv("OPENAI_API_KEY", "")
-	anthropicKey     = getEnv("ANTHROPIC_API_KEY", "")
-	geminiKey        = getEnv("GEMINI_API_KEY", "")
-	aidaToken        = getEnv("AIDA_TOKEN", "") // Google AIDA API token for Jules
-	ollamaHost       = getEnv("OLLAMA_HOST", "localhost:11434")
-	llamacppHost     = getEnv("LLAMACPP_HOST", "") // Optional: llama.cpp server for load balancing (e.g., "studio.lan:8081")
-	dataDir          = getEnv("DATA_DIR", "./data")
-	postgresConnStr  = getEnv("POSTGRES_CONN_STR", "") // PostgreSQL connection string for analytics (optional)
-	cacheTTLHours    = 24 * 7                                                // 1 week cache
-	whisperServerURL = getEnv("WHISPER_SERVER_URL", "http://localhost:8890") // Local whisper server
-	ttsServerURL     = getEnv("TTS_SERVER_URL", "http://localhost:7788")     // Local TTS server (Kokoro)
-	ttsCacheDir      = getEnv("TTS_CACHE_DIR", "")                           // TTS audio cache directory (default: DATA_DIR/tts-cache)
-	ttsCacheMaxSize  = getEnvInt("TTS_CACHE_MAX_SIZE_MB", 1024)              // TTS cache max size in MB (default: 1GB)
-	ttsCacheTTLDays  = getEnvInt("TTS_CACHE_TTL_DAYS", 7)                    // TTS cache TTL in days (default: 7 days)
-	chatTimeout           = getEnvInt("CHAT_TIMEOUT", 240)                 // Chat timeout in seconds
-	speechTimeout         = getEnvInt("SPEECH_TIMEOUT", 240)               // Speech transcription timeout in seconds
-	speechStreamingTimeout = getEnvInt("SPEECH_STREAMING_TIMEOUT", 240)    // Speech streaming transcription timeout in seconds
-	aidaTimeout           = getEnvInt("AIDA_TIMEOUT", 300)                 // AIDA proxy timeout in seconds
-	geminiTimeout         = getEnvInt("GEMINI_TIMEOUT", 300)               // Gemini proxy and provider timeout in seconds
-	openaiTimeout         = getEnvInt("OPENAI_TIMEOUT", 240)               // OpenAI provider timeout in seconds
-	openaiStreamingTimeout = getEnvInt("OPENAI_STREAMING_TIMEOUT", 300)    // OpenAI streaming timeout in seconds
-	anthropicTimeout      = getEnvInt("ANTHROPIC_TIMEOUT", 240)            // Anthropic provider timeout in seconds
-	imageGenTimeout       = getEnvInt("IMAGE_GEN_TIMEOUT", 120)           // Image generation timeout in seconds
-	ttsTimeout            = getEnvInt("TTS_TIMEOUT", 120)                 // TTS timeout in seconds (OpenAI)
-	ttsKokoroTimeout      = getEnvInt("TTS_KOKORO_TIMEOUT", 60)           // TTS Kokoro timeout in seconds
-	webSearchTimeout      = getEnvInt("WEB_SEARCH_TIMEOUT", 120)          // Web search timeout in seconds
-	llamacppTimeout       = getEnvInt("LLAMACPP_TIMEOUT", 300)             // llama.cpp vision timeout in seconds
-	togetherKey           = getEnv("TOGETHER_API_KEY", "")                 // Together.ai API key
-	togetherTimeout       = getEnvInt("TOGETHER_TIMEOUT", 240)             // Together.ai provider timeout in seconds
+	port                   = getEnv("PORT", "8080")
+	openaiKey              = getEnv("OPENAI_API_KEY", "")
+	anthropicKey           = getEnv("ANTHROPIC_API_KEY", "")
+	geminiKey              = getEnv("GEMINI_API_KEY", "")
+	aidaToken              = getEnv("AIDA_TOKEN", "") // Google AIDA API token for Jules
+	ollamaHost             = getEnv("OLLAMA_HOST", "localhost:11434")
+	llamacppHost           = getEnv("LLAMACPP_HOST", "") // Optional: llama.cpp server for load balancing (e.g., "studio.lan:8081")
+	dataDir                = getEnv("DATA_DIR", "./data")
+	postgresConnStr        = getEnv("POSTGRES_CONN_STR", "")                       // PostgreSQL connection string for analytics (optional)
+	cacheTTLHours          = 24 * 7                                                // 1 week cache
+	whisperServerURL       = getEnv("WHISPER_SERVER_URL", "http://localhost:8890") // Local whisper server
+	ttsServerURL           = getEnv("TTS_SERVER_URL", "http://localhost:7788")     // Local TTS server (Kokoro)
+	ttsCacheDir            = getEnv("TTS_CACHE_DIR", "")                           // TTS audio cache directory (default: DATA_DIR/tts-cache)
+	ttsCacheMaxSize        = getEnvInt("TTS_CACHE_MAX_SIZE_MB", 1024)              // TTS cache max size in MB (default: 1GB)
+	ttsCacheTTLDays        = getEnvInt("TTS_CACHE_TTL_DAYS", 7)                    // TTS cache TTL in days (default: 7 days)
+	chatTimeout            = getEnvInt("CHAT_TIMEOUT", 240)                        // Chat timeout in seconds
+	speechTimeout          = getEnvInt("SPEECH_TIMEOUT", 240)                      // Speech transcription timeout in seconds
+	speechStreamingTimeout = getEnvInt("SPEECH_STREAMING_TIMEOUT", 240)            // Speech streaming transcription timeout in seconds
+	aidaTimeout            = getEnvInt("AIDA_TIMEOUT", 300)                        // AIDA proxy timeout in seconds
+	geminiTimeout          = getEnvInt("GEMINI_TIMEOUT", 300)                      // Gemini proxy and provider timeout in seconds
+	openaiTimeout          = getEnvInt("OPENAI_TIMEOUT", 240)                      // OpenAI provider timeout in seconds
+	openaiStreamingTimeout = getEnvInt("OPENAI_STREAMING_TIMEOUT", 300)            // OpenAI streaming timeout in seconds
+	anthropicTimeout       = getEnvInt("ANTHROPIC_TIMEOUT", 240)                   // Anthropic provider timeout in seconds
+	imageGenTimeout        = getEnvInt("IMAGE_GEN_TIMEOUT", 120)                   // Image generation timeout in seconds
+	ttsTimeout             = getEnvInt("TTS_TIMEOUT", 120)                         // TTS timeout in seconds (OpenAI)
+	ttsKokoroTimeout       = getEnvInt("TTS_KOKORO_TIMEOUT", 60)                   // TTS Kokoro timeout in seconds
+	webSearchTimeout       = getEnvInt("WEB_SEARCH_TIMEOUT", 120)                  // Web search timeout in seconds
+	llamacppTimeout        = getEnvInt("LLAMACPP_TIMEOUT", 300)                    // llama.cpp vision timeout in seconds
+	togetherKey            = getEnv("TOGETHER_API_KEY", "")                        // Together.ai API key
+	togetherTimeout        = getEnvInt("TOGETHER_TIMEOUT", 240)                    // Together.ai provider timeout in seconds
 )
 
 // Model pricing per 1M tokens (input, output)
 var modelPricing = map[string][2]float64{
 	// OpenAI GPT-5 series
-	"gpt-5":        {2.50, 10.00},
-	"gpt-5-mini":   {0.50, 2.00},
-	"gpt-5.1":      {2.50, 10.00},
-	"gpt-5.2":      {3.00, 12.00},
-	"gpt-5.2-mini": {0.60, 2.40},
+	"gpt-5":      {1.25, 10.00},
+	"gpt-5-mini": {0.50, 2.00},
+	"gpt-5-nano": {0.10, 0.40},
+	"gpt-5-pro":  {5.00, 20.00},
+	"gpt-5.1":    {1.25, 10.00},
+	"gpt-5.2":    {1.75, 14.00},
+	"gpt-5.4":    {2.00, 16.00},
+	// OpenAI GPT-4.1 series
+	"gpt-4.1":      {2.00, 8.00},
+	"gpt-4.1-mini": {0.40, 1.60},
+	"gpt-4.1-nano": {0.10, 0.40},
 	// OpenAI GPT-4o series
 	"gpt-4o":      {2.50, 10.00},
 	"gpt-4o-mini": {0.15, 0.60},
-	// OpenAI GPT-4 legacy
-	"gpt-4-turbo": {10.00, 30.00},
-	"gpt-4":       {30.00, 60.00},
-	// OpenAI GPT-3.5
-	"gpt-3.5-turbo": {0.50, 1.50},
 	// OpenAI reasoning models (o-series)
 	"o1":      {15.00, 60.00},
-	"o1-mini": {1.10, 4.40},
 	"o1-pro":  {150.00, 600.00},
 	"o3":      {10.00, 40.00},
 	"o3-mini": {1.10, 4.40},
 	"o4-mini": {1.10, 4.40},
-	// Anthropic - Claude 4.5 models only
+	// Anthropic - Claude models
+	"claude-opus-4-6":            {5.00, 25.00},
 	"claude-opus-4-5-20251101":   {5.00, 25.00},
+	"claude-opus-4-1-20250805":   {5.00, 25.00},
+	"claude-opus-4-20250514":     {15.00, 75.00},
+	"claude-sonnet-4-6":          {3.00, 15.00},
 	"claude-sonnet-4-5-20250929": {3.00, 15.00},
+	"claude-sonnet-4-20250514":   {3.00, 15.00},
 	"claude-haiku-4-5-20251001":  {1.00, 5.00},
-	// Ollama (free)
-	"codegemma:7b":         {0, 0},
-	"codestral:latest":     {0, 0},
-	"cogito:14b":           {0, 0},
-	"cogito:32b":           {0, 0},
-	"cogito:70b":           {0, 0},
-	"cogito:8b":            {0, 0},
-	"deepseek-coder:33b":   {0, 0},
-	"deepseek-r1:70b":      {0, 0},
+	// Ollama (free - models currently installed on studio.lan)
+	"myqwen3.5:120b":                    {0, 0},
+	"myqwen3.5:35b":                     {0, 0},
+	"myqwen2.5:14b-128k":                {0, 0},
+	"qwen3.5:122b-a10b-q4_K_M":          {0, 0},
+	"huihui_ai/qwen3.5-abliterated:35b": {0, 0},
+	"glm-ocr:latest":                    {0, 0},
+	"fixt/home-3b-v3:latest":            {0, 0},
+	"qwen3:4b-instruct":                 {0, 0},
+	"qwen3:30b-instruct":                {0, 0},
+	"qwen2.5:14b-instruct":              {0, 0},
+	"qwen2.5:32b-instruct":              {0, 0},
+	"iquest-coder:40b-instruct-q4_K_M":  {0, 0},
+	"hf.co/mradermacher/IQuest-Coder-V1-40B-Instruct-GGUF:Q4_K_M": {0, 0},
+	"gpt-oss:120b":         {0, 0},
 	"devstral-small-2:24b": {0, 0},
 	"devstral:24b":         {0, 0},
-	"granite3.1-moe:3b":    {0, 0},
-	"llama3.1-large":       {0, 0},
-	"llama3.1:8b":          {0, 0},
-	"llama3.3:70b":         {0, 0},
-	"llama4:scout":         {0, 0},
-	"mistral:7b":           {0, 0},
-	"phi4:14b":             {0, 0},
-	"qwen3-coder:30b":      {0, 0},
-	"qwen3-vl:235b":        {0, 0},
 	"qwen3-vl:30b":         {0, 0},
-	"qwen3-vl:8b":          {0, 0},
+	"qwen3-vl:32b":         {0, 0},
+	"qwen3-vl:235b":        {0, 0},
+	"qwen3:32b":            {0, 0},
+	"qwen2.5:32b":          {0, 0},
+	"qwen2.5-coder:32b":    {0, 0},
+	"exaone-deep:32b":      {0, 0},
+	"deepseek-coder:33b":   {0, 0},
+	"qwen3-coder:30b":      {0, 0},
+	"codestral:latest":     {0, 0},
 	// Google Gemini models (real Google API model names)
 	"gemini-3-pro-preview":           {2.50, 15.00},
 	"gemini-3-flash-preview":         {0.30, 1.20},
@@ -135,27 +145,27 @@ var modelPricing = map[string][2]float64{
 	"gemini-exp-1206":                {0, 0}, // Free experimental
 	"gemini-2.0-flash-thinking-exp":  {0, 0}, // Free experimental
 	// Together.ai models (top 20 largest/most capable)
-	"meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8": {0.27, 0.85},  // 1024K ctx, 128-expert MoE
-	"meta-llama/Llama-4-Scout-17B-16E-Instruct":         {0.18, 0.59},  // 1024K ctx, 16-expert MoE
-	"Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8":           {2.00, 2.00},  // 256K ctx, 480B params
-	"moonshotai/Kimi-K2-Thinking":                       {1.20, 4.00},  // 256K ctx, 1T params
-	"moonshotai/Kimi-K2-Instruct":                       {1.00, 3.00},  // 256K ctx, 1T params
-	"moonshotai/Kimi-K2-Instruct-0905":                  {1.00, 3.00},  // 256K ctx, 1T params
-	"Qwen/Qwen3-235B-A22B-Thinking-2507":                {0.65, 3.00},  // 256K ctx, thinking model
-	"Qwen/Qwen3-VL-32B-Instruct":                        {0.50, 1.50},  // 256K ctx, vision
-	"Qwen/Qwen3-235B-A22B-Instruct-2507-tput":           {0.20, 0.60},  // 256K ctx, throughput
-	"Qwen/Qwen3-Next-80B-A3B-Thinking":                  {0.15, 1.50},  // 256K ctx, thinking
-	"Qwen/Qwen3-Next-80B-A3B-Instruct":                  {0.15, 1.50},  // 256K ctx
-	"zai-org/GLM-4.6":                                   {0.60, 2.20},  // 198K ctx, 357B params
-	"deepseek-ai/DeepSeek-R1":                           {3.00, 7.00},  // 160K ctx, reasoning
-	"deepcogito/cogito-v2-1-671b":                       {1.25, 1.25},  // 160K ctx, 671B MoE
-	"deepseek-ai/DeepSeek-R1-0528-tput":                 {0.55, 2.19},  // 160K ctx, throughput
-	"deepseek-ai/DeepSeek-V3":                           {1.25, 1.25},  // 128K ctx
-	"deepseek-ai/DeepSeek-V3.1":                         {0.60, 1.70},  // 128K ctx
-	"Qwen/Qwen2.5-72B-Instruct-Turbo":                   {1.20, 1.20},  // 128K ctx
-	"meta-llama/Llama-3.3-70B-Instruct-Turbo":           {0.88, 0.88},  // 128K ctx
-	"meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo":     {3.50, 3.50},  // 128K ctx, 405B params
-	"meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo":      {0.88, 0.88},  // 128K ctx
+	"meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8": {0.27, 0.85}, // 1024K ctx, 128-expert MoE
+	"meta-llama/Llama-4-Scout-17B-16E-Instruct":         {0.18, 0.59}, // 1024K ctx, 16-expert MoE
+	"Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8":           {2.00, 2.00}, // 256K ctx, 480B params
+	"moonshotai/Kimi-K2-Thinking":                       {1.20, 4.00}, // 256K ctx, 1T params
+	"moonshotai/Kimi-K2-Instruct":                       {1.00, 3.00}, // 256K ctx, 1T params
+	"moonshotai/Kimi-K2-Instruct-0905":                  {1.00, 3.00}, // 256K ctx, 1T params
+	"Qwen/Qwen3-235B-A22B-Thinking-2507":                {0.65, 3.00}, // 256K ctx, thinking model
+	"Qwen/Qwen3-VL-32B-Instruct":                        {0.50, 1.50}, // 256K ctx, vision
+	"Qwen/Qwen3-235B-A22B-Instruct-2507-tput":           {0.20, 0.60}, // 256K ctx, throughput
+	"Qwen/Qwen3-Next-80B-A3B-Thinking":                  {0.15, 1.50}, // 256K ctx, thinking
+	"Qwen/Qwen3-Next-80B-A3B-Instruct":                  {0.15, 1.50}, // 256K ctx
+	"zai-org/GLM-4.6":                                   {0.60, 2.20}, // 198K ctx, 357B params
+	"deepseek-ai/DeepSeek-R1":                           {3.00, 7.00}, // 160K ctx, reasoning
+	"deepcogito/cogito-v2-1-671b":                       {1.25, 1.25}, // 160K ctx, 671B MoE
+	"deepseek-ai/DeepSeek-R1-0528-tput":                 {0.55, 2.19}, // 160K ctx, throughput
+	"deepseek-ai/DeepSeek-V3":                           {1.25, 1.25}, // 128K ctx
+	"deepseek-ai/DeepSeek-V3.1":                         {0.60, 1.70}, // 128K ctx
+	"Qwen/Qwen2.5-72B-Instruct-Turbo":                   {1.20, 1.20}, // 128K ctx
+	"meta-llama/Llama-3.3-70B-Instruct-Turbo":           {0.88, 0.88}, // 128K ctx
+	"meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo":     {3.50, 3.50}, // 128K ctx, 405B params
+	"meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo":      {0.88, 0.88}, // 128K ctx
 }
 
 // RouteConfig is an alias to the domain type for routing decisions.
@@ -170,17 +180,17 @@ type RouteConfig = domain.RouteConfig
 var routingTable = map[string]map[string]*RouteConfig{
 	// sensitive: false (text only)
 	"false": {
-		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-5-20250929"},
-		"high":      {Provider: "openai", Model: "gpt-4o"},
+		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		"high":      {Provider: "openai", Model: "gpt-4.1"},
 		"medium":    {Provider: "openai", Model: "gpt-4o-mini"},
-		"low":       {Provider: "ollama", Model: "qwen2.5:1.5b"},
+		"low":       {Provider: "ollama", Model: "qwen3:4b-instruct"},
 	},
 	// sensitive: true (text only, local)
 	"true": {
 		"very_high": nil, // Not available - Claude requires cloud
-		"high":      {Provider: "ollama", Model: "llama3.3:70b"},
-		"medium":    {Provider: "ollama", Model: "qwen3-vl:30b"},
-		"low":       {Provider: "ollama", Model: "qwen2.5:1.5b"},
+		"high":      {Provider: "ollama", Model: "qwen2.5:32b-instruct"},
+		"medium":    {Provider: "ollama", Model: "qwen3:30b-instruct"},
+		"low":       {Provider: "ollama", Model: "qwen3:4b-instruct"},
 	},
 }
 
@@ -189,8 +199,8 @@ var routingTable = map[string]map[string]*RouteConfig{
 var visionRoutingTable = map[string]map[string]*RouteConfig{
 	// sensitive: false (can use cloud)
 	"false": {
-		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-5-20250929"}, // Claude has great vision
-		"high":      {Provider: "openai", Model: "gpt-4o-mini"},                   // Fast and cheap
+		"very_high": {Provider: "anthropic", Model: "claude-sonnet-4-6"}, // Claude has great vision
+		"high":      {Provider: "openai", Model: "gpt-4o-mini"},          // Fast and cheap
 		"medium":    {Provider: "openai", Model: "gpt-4o"},
 		"low":       {Provider: "ollama", Model: "qwen3-vl:30b"},
 	},
@@ -1452,18 +1462,33 @@ func handleUsecases(w http.ResponseWriter, r *http.Request) {
 func handleAvailableModels(w http.ResponseWriter, r *http.Request) {
 	models := map[string][]string{
 		"anthropic": {
+			"claude-opus-4-6",
 			"claude-opus-4-5-20251101",
+			"claude-opus-4-1-20250805",
+			"claude-opus-4-20250514",
+			"claude-sonnet-4-6",
 			"claude-sonnet-4-5-20250929",
+			"claude-sonnet-4-20250514",
 			"claude-haiku-4-5-20251001",
 		},
 		"openai": {
+			"gpt-5.4",
+			"gpt-5.2",
+			"gpt-5.1",
+			"gpt-5",
+			"gpt-5-pro",
+			"gpt-5-mini",
+			"gpt-5-nano",
+			"gpt-4.1",
+			"gpt-4.1-mini",
+			"gpt-4.1-nano",
 			"gpt-4o",
 			"gpt-4o-mini",
-			"gpt-4-turbo",
-			"gpt-3.5-turbo",
 			"o1",
-			"o1-mini",
+			"o1-pro",
+			"o3",
 			"o3-mini",
+			"o4-mini",
 		},
 		"ollama":       ollamaProvider.GetModels(),
 		"ollama-cloud": ollamaCloudProvider.GetModels(),
@@ -1488,8 +1513,13 @@ func handleModelsConfig(w http.ResponseWriter, r *http.Request) {
 
 		// Anthropic models
 		anthropicModels := []string{
+			"claude-opus-4-6",
 			"claude-opus-4-5-20251101",
+			"claude-opus-4-1-20250805",
+			"claude-opus-4-20250514",
+			"claude-sonnet-4-6",
 			"claude-sonnet-4-5-20250929",
+			"claude-sonnet-4-20250514",
 			"claude-haiku-4-5-20251001",
 		}
 		for _, m := range anthropicModels {
@@ -1502,13 +1532,23 @@ func handleModelsConfig(w http.ResponseWriter, r *http.Request) {
 
 		// OpenAI models
 		openaiModels := []string{
+			"gpt-5.4",
+			"gpt-5.2",
+			"gpt-5.1",
+			"gpt-5",
+			"gpt-5-pro",
+			"gpt-5-mini",
+			"gpt-5-nano",
+			"gpt-4.1",
+			"gpt-4.1-mini",
+			"gpt-4.1-nano",
 			"gpt-4o",
 			"gpt-4o-mini",
-			"gpt-4-turbo",
-			"gpt-3.5-turbo",
 			"o1",
-			"o1-mini",
+			"o1-pro",
+			"o3",
 			"o3-mini",
+			"o4-mini",
 		}
 		for _, m := range openaiModels {
 			configs = append(configs, ModelConfig{
@@ -1768,14 +1808,14 @@ func handleTTSCacheStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"enabled":    true,
-		"hits":       hits,
-		"misses":     misses,
-		"hit_rate":   hitRate,
-		"size_bytes": sizeBytes,
-		"size_mb":    float64(sizeBytes) / (1024 * 1024),
+		"enabled":     true,
+		"hits":        hits,
+		"misses":      misses,
+		"hit_rate":    hitRate,
+		"size_bytes":  sizeBytes,
+		"size_mb":     float64(sizeBytes) / (1024 * 1024),
 		"max_size_mb": ttsCacheMaxSize,
-		"ttl_days":   ttsCacheTTLDays,
+		"ttl_days":    ttsCacheTTLDays,
 	})
 }
 
@@ -2804,20 +2844,20 @@ func main() {
 
 	// Initialize chat handler (primary adapter)
 	chatHandler = &httphandlers.ChatHandler{
-		Router:                  router,
-		Providers:               chatProviders,
-		Cache:                   requestCache,
-		Logger:                  requestLogger,
-		Metrics:                 metrics,
-		GenerateKey:             generateCacheKey,
-		CalculateCost:           calculateCost,
-		AddPending:              addPendingRequest,
-		RemovePending:           removePendingRequest,
-		IsModelDisabled:         isModelDisabled,
-		GetProviderOverride:     getProviderOverride,
-		CheckBudget:             budgetChecker.CheckBudget,
-		OpenAIStreamingTimeout:  openaiStreamingTimeout,
-		OllamaHost:              ollamaHost,
+		Router:                 router,
+		Providers:              chatProviders,
+		Cache:                  requestCache,
+		Logger:                 requestLogger,
+		Metrics:                metrics,
+		GenerateKey:            generateCacheKey,
+		CalculateCost:          calculateCost,
+		AddPending:             addPendingRequest,
+		RemovePending:          removePendingRequest,
+		IsModelDisabled:        isModelDisabled,
+		GetProviderOverride:    getProviderOverride,
+		CheckBudget:            budgetChecker.CheckBudget,
+		OpenAIStreamingTimeout: openaiStreamingTimeout,
+		OllamaHost:             ollamaHost,
 	}
 
 	// Initialize Responses API handler (OpenAI's newer API with smart routing)
@@ -2899,7 +2939,7 @@ func main() {
 
 	// Initialize budget handler
 	budgetHandler := httphandlers.NewBudgetHandler(budgetRepository)
-	
+
 	// Budget API wrapper functions
 	handleBudgetProviders := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
@@ -2910,11 +2950,11 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	}
-	
+
 	handleBudgetProviderDelete := func(w http.ResponseWriter, r *http.Request) {
 		budgetHandler.HandleDeleteProviderBudget(w, r)
 	}
-	
+
 	handleBudgetGlobal := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			budgetHandler.HandleGetGlobalBudget(w, r)
@@ -2966,7 +3006,7 @@ func main() {
 	http.HandleFunc("/stats", uiHandler.HandleStatsPage)
 	http.HandleFunc("/budgets", uiHandler.HandleBudgetsPage)
 	http.HandleFunc("/test", uiHandler.HandleTestPlayground)
-	
+
 	// Budget API routes
 	http.HandleFunc("/api/budgets/providers", withCORS(handleBudgetProviders))
 	http.HandleFunc("/api/budgets/providers/", withCORS(handleBudgetProviderDelete))
