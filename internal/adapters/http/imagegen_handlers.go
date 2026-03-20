@@ -30,6 +30,15 @@ var ImageGenPricing = map[string]map[string]float64{
 		"512x512":   0.018,
 		"1024x1024": 0.020,
 	},
+	"gpt-image-1.5": {
+		"1024x1024": 0.015,
+	},
+	"chatgpt-image-latest": {
+		"1024x1024": 0.015,
+	},
+	"gpt-image-1-mini": {
+		"1024x1024": 0.005,
+	},
 }
 
 // ImageGenHandler handles image generation requests.
@@ -138,16 +147,21 @@ func (h *ImageGenHandler) HandleImageGeneration(w http.ResponseWriter, r *http.R
 
 	// Build OpenAI request
 	openaiReq := map[string]interface{}{
-		"model":           req.Model,
-		"prompt":          req.Prompt,
-		"n":               req.N,
-		"size":            req.Size,
-		"quality":         req.Quality,
-		"response_format": req.ResponseFormat,
+		"model":  req.Model,
+		"prompt": req.Prompt,
+		"n":      req.N,
+		"size":   req.Size,
 	}
-	if req.Style != "" {
-		openaiReq["style"] = req.Style
+
+	// Only include response_format for DALL-E models (gpt-image models don't support it)
+	if req.Model == "dall-e-2" || req.Model == "dall-e-3" {
+		openaiReq["response_format"] = req.ResponseFormat
+		openaiReq["quality"] = req.Quality
+		if req.Style != "" {
+			openaiReq["style"] = req.Style
+		}
 	}
+
 	if req.User != "" {
 		openaiReq["user"] = req.User
 	}
@@ -213,7 +227,7 @@ func calculateImageGenCost(model, size, quality string, n int) float64 {
 		return 0
 	}
 
-	// Build key: size-quality for DALL-E 3, just size for DALL-E 2
+	// Build key: size-quality for DALL-E 3, just size for other models
 	key := size
 	if model == "dall-e-3" {
 		key = size + "-" + quality
