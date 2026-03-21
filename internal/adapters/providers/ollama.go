@@ -114,13 +114,17 @@ func (p *OllamaProvider) chat(req *domain.ChatCompletionRequest, model, provider
 		messages = append(messages, ollamaMsg)
 	}
 
-	// Disable thinking mode by default for faster responses
+	// Use request's Think setting, default to false for faster responses
 	thinkFalse := false
+	think := &thinkFalse
+	if req.Think != nil {
+		think = req.Think
+	}
 	ollamaReq := ollamaRequest{
 		Model:      model,
 		Messages:   messages,
 		Stream:     false,
-		Think:      &thinkFalse, // Disable thinking mode (qwen3.5, etc.)
+		Think:      think,
 		Tools:      req.Tools,
 		ToolChoice: req.ToolChoice,
 		KeepAlive:  "30m", // Keep model loaded for 30 min of inactivity

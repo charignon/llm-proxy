@@ -26,6 +26,7 @@ type ChatCompletionRequest struct {
 	Precision string `json:"precision,omitempty"`
 	Usecase   string `json:"usecase,omitempty"`
 	NoCache   bool   `json:"no_cache,omitempty"`
+	Think     *bool  `json:"think,omitempty"` // Enable thinking mode for Ollama models (default: false)
 
 	// Proxy behavior overrides
 	StripReasoningSummary bool `json:"-"`

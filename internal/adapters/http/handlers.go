@@ -732,12 +732,17 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 	// Build Ollama streaming request
 	// Don't set num_ctx - let Ollama use whatever context the model was loaded with
 	// Setting a larger context than loaded causes Ollama to hang while reallocating
+	// Use request's Think setting, default to false for faster responses
 	thinkFalse := false
+	think := &thinkFalse
+	if req.Think != nil {
+		think = req.Think
+	}
 	ollamaReq := ollamaStreamRequest{
 		Model:      route.Model,
 		Messages:   messages,
-		Stream:     true,        // Enable streaming
-		Think:      &thinkFalse, // Disable thinking mode (qwen3.5, etc.)
+		Stream:     true, // Enable streaming
+		Think:      think,
 		Tools:      req.Tools,
 		ToolChoice: req.ToolChoice,
 		KeepAlive:  "30m",
