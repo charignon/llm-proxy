@@ -32,6 +32,7 @@ type ollamaRequest struct {
 	Model      string          `json:"model"`
 	Messages   []ollamaMessage `json:"messages"`
 	Stream     bool            `json:"stream"`
+	Think      *bool           `json:"think,omitempty"` // Disable thinking mode for qwen3.5 etc.
 	Tools      []domain.Tool   `json:"tools,omitempty"`
 	ToolChoice interface{}     `json:"tool_choice,omitempty"`
 	KeepAlive  string          `json:"keep_alive,omitempty"`
@@ -113,10 +114,13 @@ func (p *OllamaProvider) chat(req *domain.ChatCompletionRequest, model, provider
 		messages = append(messages, ollamaMsg)
 	}
 
+	// Disable thinking mode by default for faster responses
+	thinkFalse := false
 	ollamaReq := ollamaRequest{
 		Model:      model,
 		Messages:   messages,
 		Stream:     false,
+		Think:      &thinkFalse, // Disable thinking mode (qwen3.5, etc.)
 		Tools:      req.Tools,
 		ToolChoice: req.ToolChoice,
 		KeepAlive:  "30m", // Keep model loaded for 30 min of inactivity

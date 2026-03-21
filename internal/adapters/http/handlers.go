@@ -626,6 +626,7 @@ type ollamaStreamRequest struct {
 	Model      string                `json:"model"`
 	Messages   []ollamaStreamMessage `json:"messages"`
 	Stream     bool                  `json:"stream"`
+	Think      *bool                 `json:"think,omitempty"` // Disable thinking mode for qwen3.5 etc.
 	Tools      []domain.Tool         `json:"tools,omitempty"`
 	ToolChoice interface{}           `json:"tool_choice,omitempty"`
 	KeepAlive  string                `json:"keep_alive,omitempty"`
@@ -731,10 +732,12 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 	// Build Ollama streaming request
 	// Don't set num_ctx - let Ollama use whatever context the model was loaded with
 	// Setting a larger context than loaded causes Ollama to hang while reallocating
+	thinkFalse := false
 	ollamaReq := ollamaStreamRequest{
 		Model:      route.Model,
 		Messages:   messages,
-		Stream:     true, // Enable streaming
+		Stream:     true,        // Enable streaming
+		Think:      &thinkFalse, // Disable thinking mode (qwen3.5, etc.)
 		Tools:      req.Tools,
 		ToolChoice: req.ToolChoice,
 		KeepAlive:  "30m",
