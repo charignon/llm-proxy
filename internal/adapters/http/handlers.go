@@ -644,13 +644,24 @@ type ollamaStreamOptions struct {
 	NumCtx      int     `json:"num_ctx,omitempty"`
 }
 
+// ollamaStreamToolCall matches Ollama's tool_call format in streaming responses.
+type ollamaStreamToolCall struct {
+	ID       string `json:"id,omitempty"`
+	Function struct {
+		Index     int                    `json:"index,omitempty"`
+		Name      string                 `json:"name"`
+		Arguments map[string]interface{} `json:"arguments"`
+	} `json:"function"`
+}
+
 // ollamaStreamChunk is a single chunk from Ollama's NDJSON streaming response.
 type ollamaStreamChunk struct {
 	Model   string `json:"model"`
 	Message struct {
-		Role     string `json:"role"`
-		Content  string `json:"content"`
-		Thinking string `json:"thinking,omitempty"`
+		Role      string                 `json:"role"`
+		Content   string                 `json:"content"`
+		Thinking  string                 `json:"thinking,omitempty"`
+		ToolCalls []ollamaStreamToolCall `json:"tool_calls,omitempty"`
 	} `json:"message"`
 	Done            bool `json:"done"`
 	PromptEvalCount int  `json:"prompt_eval_count,omitempty"`
@@ -808,6 +819,7 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 	var responseContent strings.Builder
 	var thinkingContent strings.Builder
 	var inputTokens, outputTokens int
+	var hasToolCalls bool
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
@@ -831,39 +843,74 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 			continue
 		}
 
-		// Convert to OpenAI SSE format
-		sseChunk := map[string]interface{}{
-			"id":      responseID,
-			"object":  "chat.completion.chunk",
-			"created": time.Now().Unix(),
-			"model":   chunk.Model,
-			"choices": []map[string]interface{}{
-				{
-					"index": 0,
-					"delta": map[string]interface{}{
-						"content": chunk.Message.Content,
-					},
-				},
-			},
-		}
+		// Build delta for OpenAI SSE format
+		delta := map[string]interface{}{}
 
-		// Accumulate content
+		// Handle text content
 		if chunk.Message.Content != "" {
+			delta["content"] = chunk.Message.Content
 			responseContent.WriteString(chunk.Message.Content)
 		}
+
+		// Handle thinking content
 		if chunk.Message.Thinking != "" {
 			thinkingContent.WriteString(chunk.Message.Thinking)
 		}
 
-		// Send SSE chunk
-		chunkJSON, _ := json.Marshal(sseChunk)
-		fmt.Fprintf(w, "data: %s\n\n", chunkJSON)
-		flusher.Flush()
+		// Handle tool calls - convert Ollama format to OpenAI format
+		if len(chunk.Message.ToolCalls) > 0 {
+			log.Printf("Ollama streaming: got %d tool calls", len(chunk.Message.ToolCalls))
+			hasToolCalls = true
+			var openAIToolCalls []map[string]interface{}
+			for i, tc := range chunk.Message.ToolCalls {
+				// Convert arguments map to JSON string (OpenAI format)
+				argsJSON, _ := json.Marshal(tc.Function.Arguments)
+				toolCallID := tc.ID
+				if toolCallID == "" {
+					toolCallID = fmt.Sprintf("call_%d_%d", time.Now().UnixNano(), i)
+				}
+				openAIToolCalls = append(openAIToolCalls, map[string]interface{}{
+					"index": i,
+					"id":    toolCallID,
+					"type":  "function",
+					"function": map[string]string{
+						"name":      tc.Function.Name,
+						"arguments": string(argsJSON),
+					},
+				})
+			}
+			delta["tool_calls"] = openAIToolCalls
+		}
+
+		// Only send chunk if there's content or tool calls
+		if len(delta) > 0 {
+			sseChunk := map[string]interface{}{
+				"id":      responseID,
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   chunk.Model,
+				"choices": []map[string]interface{}{
+					{
+						"index": 0,
+						"delta": delta,
+					},
+				},
+			}
+			chunkJSON, _ := json.Marshal(sseChunk)
+			fmt.Fprintf(w, "data: %s\n\n", chunkJSON)
+			flusher.Flush()
+		}
 
 		// Capture token counts from final chunk
 		if chunk.Done {
 			inputTokens = chunk.PromptEvalCount
 			outputTokens = chunk.EvalCount
+
+			// Determine finish reason
+			finishReason := "stop"
+			if hasToolCalls {
+				finishReason = "tool_calls"
+			}
 
 			// Send final chunk with finish_reason
 			finalChunk := map[string]interface{}{
@@ -875,7 +922,7 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 					{
 						"index":         0,
 						"delta":         map[string]interface{}{},
-						"finish_reason": "stop",
+						"finish_reason": finishReason,
 					},
 				},
 				"usage": map[string]int{
