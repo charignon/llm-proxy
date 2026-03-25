@@ -2139,7 +2139,8 @@
             const sensitiveClass = data.sensitive ? 'sensitive' : 'not-sensitive';
             const sensitiveText = data.sensitive ? 'YES (local only)' : 'No (cloud OK)';
 
-            let html = '<div style="display:flex;justify-content:flex-end;margin-bottom:12px">';
+            let html = '<div style="display:flex;justify-content:flex-end;margin-bottom:12px;gap:8px">';
+            html += '<a href="/api/request?id=' + data.id + '" target="_blank" style="padding:8px 16px;background:#374151;border:none;border-radius:6px;color:#e2e8f0;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px;text-decoration:none"><span style="font-size:16px">{}</span> JSON API</a>';
             html += '<button onclick="copyRequestJson()" style="padding:8px 16px;background:#374151;border:none;border-radius:6px;color:#e2e8f0;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px"><span style="font-size:16px">📋</span> Copy Full JSON</button>';
             html += '</div>';
             html += '<div class="modal-section"><h3>Request Metadata</h3><div class="detail-grid">';
