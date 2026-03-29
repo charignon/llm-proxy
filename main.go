@@ -48,6 +48,7 @@ var (
 	aidaToken              = getEnv("AIDA_TOKEN", "") // Google AIDA API token for Jules
 	ollamaHost             = getEnv("OLLAMA_HOST", "localhost:11434")
 	llamacppHost           = getEnv("LLAMACPP_HOST", "") // Optional: llama.cpp server for load balancing (e.g., "studio.lan:8081")
+	mlxHost                = getEnv("MLX_HOST", "")      // Optional: MLX LM server (e.g., "localhost:8086")
 	dataDir                = getEnv("DATA_DIR", "./data")
 	postgresConnStr        = getEnv("POSTGRES_CONN_STR", "")                       // PostgreSQL connection string for analytics (optional)
 	cacheTTLHours          = 24 * 7                                                // 1 week cache
@@ -69,6 +70,7 @@ var (
 	ttsKokoroTimeout       = getEnvInt("TTS_KOKORO_TIMEOUT", 60)                   // TTS Kokoro timeout in seconds
 	webSearchTimeout       = getEnvInt("WEB_SEARCH_TIMEOUT", 120)                  // Web search timeout in seconds
 	llamacppTimeout        = getEnvInt("LLAMACPP_TIMEOUT", 300)                    // llama.cpp vision timeout in seconds
+	mlxTimeout             = getEnvInt("MLX_TIMEOUT", 300)                        // MLX server timeout in seconds
 	togetherKey            = getEnv("TOGETHER_API_KEY", "")                        // Together.ai API key
 	togetherTimeout        = getEnvInt("TOGETHER_TIMEOUT", 240)                    // Together.ai provider timeout in seconds
 )
@@ -949,6 +951,12 @@ func initChatProviders() {
 		llamacppProvider = providers.NewLlamaCppProvider(llamacppHost, llamacppTimeout)
 		chatProviders["llamacpp"] = llamacppProvider
 		log.Printf("llama.cpp provider configured at %s", llamacppHost)
+	}
+
+	// If MLX host is configured, add it as a provider
+	if mlxHost != "" {
+		chatProviders["mlx"] = providers.NewMLXProvider(mlxHost, mlxTimeout)
+		log.Printf("MLX provider configured at %s", mlxHost)
 	}
 
 	// If Together.ai key is configured, add it as a provider
