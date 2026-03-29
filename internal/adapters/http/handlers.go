@@ -315,12 +315,17 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // handleStreaming handles streaming chat completion requests by forwarding to OpenAI/Together/Ollama with stream=true.
 func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, req *domain.ChatCompletionRequest, route *domain.RouteConfig, body []byte, logEntry *domain.RequestLog, startTime time.Time) {
 	// Check if provider supports streaming
-	if route.Provider != "openai" && route.Provider != "together" && route.Provider != "ollama" && route.Provider != "ollama-cloud" {
+	if route.Provider != "openai" && route.Provider != "together" && route.Provider != "ollama" && route.Provider != "ollama-cloud" && route.Provider != "mlx" {
 		http.Error(w, fmt.Sprintf("Streaming not supported for provider: %s", route.Provider), http.StatusBadRequest)
 		return
 	}
 
 	// Handle Ollama streaming separately (uses NDJSON, not SSE)
+	if route.Provider == "mlx" {
+		h.handleMLXStreaming(w, r, req, route, logEntry, startTime)
+		return
+	}
+
 	if route.Provider == "ollama" || route.Provider == "ollama-cloud" {
 		h.handleOllamaStreaming(w, r, req, route, logEntry, startTime)
 		return
@@ -1364,4 +1369,149 @@ func (r *responseRecorder) WriteHeader(code int) {
 // Flush implements http.Flusher (no-op for buffered recorder)
 func (r *responseRecorder) Flush() {
 	// No-op - we buffer everything
+}
+
+// handleMLXStreaming handles streaming requests to MLX LM server.
+// MLX uses OpenAI-compatible SSE streaming format with data: prefixes.
+// handleMLXStreaming handles streaming requests to MLX LM server.
+// MLX uses OpenAI-compatible SSE streaming format with data: prefixes.
+// This handler cleans up MLX-specific fields (empty tool_calls, reasoning)
+// that cause parsing errors in LibreChat.
+func (h *ChatHandler) handleMLXStreaming(w http.ResponseWriter, r *http.Request, req *domain.ChatCompletionRequest, route *domain.RouteConfig, logEntry *domain.RequestLog, startTime time.Time) {
+	// Get MLX provider
+	provider, ok := h.Providers["mlx"]
+	if !ok {
+		http.Error(w, "MLX provider not configured", http.StatusInternalServerError)
+		return
+	}
+
+	mlxProvider, ok := provider.(*providers.MLXProvider)
+	if !ok {
+		http.Error(w, "Invalid MLX provider type", http.StatusInternalServerError)
+		return
+	}
+
+	// Build MLX streaming request
+	mlxReq := map[string]interface{}{
+		"model":    route.Model,
+		"messages": req.Messages,
+		"stream":   true,
+	}
+	if req.MaxTokens > 0 {
+		mlxReq["max_tokens"] = req.MaxTokens
+	}
+	if req.MaxCompletionTokens > 0 {
+		mlxReq["max_tokens"] = req.MaxCompletionTokens
+	}
+	if req.Temperature > 0 {
+		mlxReq["temperature"] = req.Temperature
+	}
+
+	body, _ := json.Marshal(mlxReq)
+	url := "http://" + mlxProvider.Host + "/v1/chat/completions"
+
+	httpReq, err := http.NewRequestWithContext(r.Context(), "POST", url, bytes.NewReader(body))
+	if err != nil {
+		logEntry.Success = false
+		logEntry.Error = err.Error()
+		http.Error(w, "Failed to create request", http.StatusInternalServerError)
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	client := &http.Client{Timeout: time.Duration(mlxProvider.Timeout) * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		logEntry.Success = false
+		logEntry.Error = err.Error()
+		http.Error(w, "MLX request failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		logEntry.Success = false
+		logEntry.Error = fmt.Sprintf("MLX error %d: %s", resp.StatusCode, string(respBody))
+		http.Error(w, logEntry.Error, resp.StatusCode)
+		return
+	}
+
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Stream response from MLX server, cleaning up incompatible fields
+	scanner := bufio.NewScanner(resp.Body)
+	var totalContent string
+	var inputTokens, outputTokens int
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		// Clean up MLX-specific fields that break LibreChat
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			if data != "[DONE]" {
+				var chunk map[string]interface{}
+				if err := json.Unmarshal([]byte(data), &chunk); err == nil {
+					// Clean up choices
+					if choices, ok := chunk["choices"].([]interface{}); ok {
+						for _, choice := range choices {
+							if c, ok := choice.(map[string]interface{}); ok {
+								if delta, ok := c["delta"].(map[string]interface{}); ok {
+									// Remove empty tool_calls array (causes LibreChat parsing errors)
+									if tc, ok := delta["tool_calls"].([]interface{}); ok && len(tc) == 0 {
+										delete(delta, "tool_calls")
+									}
+									// Remove empty reasoning string
+									if r, ok := delta["reasoning"].(string); ok && r == "" {
+										delete(delta, "reasoning")
+									}
+									// Extract content for logging
+									if content, ok := delta["content"].(string); ok {
+										totalContent += content
+									}
+								}
+							}
+						}
+					}
+					// Extract usage for logging
+					if usage, ok := chunk["usage"].(map[string]interface{}); ok {
+						if pt, ok := usage["prompt_tokens"].(float64); ok {
+							inputTokens = int(pt)
+						}
+						if ct, ok := usage["completion_tokens"].(float64); ok {
+							outputTokens = int(ct)
+						}
+					}
+					// Re-serialize cleaned chunk
+					cleanedData, _ := json.Marshal(chunk)
+					line = "data: " + string(cleanedData)
+				}
+			}
+		}
+
+		// Write cleaned line to client with proper SSE format (double newline)
+		fmt.Fprintf(w, "%s\n\n", line)
+		flusher.Flush()
+	}
+
+	// Log the request
+	logEntry.Success = true
+	logEntry.InputTokens = inputTokens
+	logEntry.OutputTokens = outputTokens
+	logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+	h.Logger.LogRequest(logEntry)
 }
