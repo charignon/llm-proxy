@@ -1945,18 +1945,6 @@
             }
         }
 
-        // Available models for assistant alias dropdowns (populated dynamically)
-        let availableModels = {};
-
-        async function loadAvailableModels() {
-            try {
-                const resp = await fetch('/api/models');
-                availableModels = await resp.json();
-            } catch (err) {
-                console.error('Failed to load available models:', err);
-            }
-        }
-
         async function loadAssistantModels() {
             try {
                 // Load available models first if not loaded
