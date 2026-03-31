@@ -10,6 +10,10 @@ import (
 	"llm-proxy/internal/domain"
 )
 
+// AssistantModelResolver is a function that resolves assistant model aliases.
+// Returns (provider, model, found). If found is false, the alias is not an assistant model.
+type AssistantModelResolver func(alias string) (provider string, model string, found bool)
+
 // Router handles routing decisions for chat completion requests.
 type Router struct {
 	textRoutes     map[string]map[string]*domain.RouteConfig // sensitive -> precision -> config
@@ -19,6 +23,9 @@ type Router struct {
 	// Usecase overrides: usecase -> type -> sensitive -> precision -> config
 	usecaseRoutes map[string]map[string]map[string]map[string]*domain.RouteConfig
 	usecaseMutex  sync.RWMutex
+
+	// Assistant model resolver for assistant/assistant-mini/assistant-nano
+	assistantResolver AssistantModelResolver
 }
 
 // NewRouter creates a new router with the provided routing tables.
@@ -33,10 +40,30 @@ func NewRouter(
 	}
 }
 
+// SetAssistantResolver sets the function used to resolve assistant model aliases.
+func (r *Router) SetAssistantResolver(resolver AssistantModelResolver) {
+	r.assistantResolver = resolver
+}
+
 // ResolveRoute determines the provider and model for a chat completion request.
 func (r *Router) ResolveRoute(req *domain.ChatCompletionRequest) (*domain.RouteConfig, error) {
 	// Force nvr-proxy callers off legacy models (llava/gemma) to qwen3-vl:30b
 	req.Model = forceNVRProxyModel(req.Model, req.Usecase)
+
+	// Check for assistant model aliases (assistant, assistant-mini, assistant-nano)
+	if r.assistantResolver != nil && req.Model != "" {
+		// Strip ollama/ prefix if present for alias lookup
+		modelForLookup := req.Model
+		if strings.HasPrefix(modelForLookup, "ollama/") {
+			modelForLookup = strings.TrimPrefix(modelForLookup, "ollama/")
+		}
+		// Also strip :latest suffix for alias lookup
+		modelForLookup = strings.TrimSuffix(modelForLookup, ":latest")
+
+		if provider, model, found := r.assistantResolver(modelForLookup); found {
+			return &domain.RouteConfig{Provider: provider, Model: model}, nil
+		}
+	}
 
 	// If model is explicitly specified (not a routing keyword), use it directly
 	if req.Model != "" && req.Model != "auto" && req.Model != "route" {

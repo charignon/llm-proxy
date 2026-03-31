@@ -596,6 +596,15 @@
                     </div>
                 </div>
                 
+                <!-- Assistant Models -->
+                <div style="margin-bottom: 20px;">
+                    <h3 style="color: #a5b4fc; font-size: 14px; font-weight: 600; margin-bottom: 12px;">Assistant Model Aliases</h3>
+                    <p style="color: #888; font-size: 12px; margin-bottom: 12px;">Configure which models back the assistant, assistant-mini, and assistant-nano aliases</p>
+                    <div id="assistant-models-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
                 <!-- Server URLs -->
                 <div style="margin-bottom: 20px;">
                     <h3 style="color: #a5b4fc; font-size: 14px; font-weight: 600; margin-bottom: 12px;">Server URLs</h3>
@@ -1762,6 +1771,7 @@
                 loadSystemMetrics();
                 loadBackendInfo();
                 loadServerConfig();
+                loadAssistantModels();
                 // Auto-refresh every 2 seconds
                 if (systemMetricsInterval) clearInterval(systemMetricsInterval);
                 systemMetricsInterval = setInterval(() => {
@@ -1932,6 +1942,108 @@
                         element.style.color = '#ef4444';
                     }
                 });
+            }
+        }
+
+        // Available models for assistant alias dropdowns (populated dynamically)
+        let availableModels = {};
+
+        async function loadAvailableModels() {
+            try {
+                const resp = await fetch('/api/models');
+                availableModels = await resp.json();
+            } catch (err) {
+                console.error('Failed to load available models:', err);
+            }
+        }
+
+        async function loadAssistantModels() {
+            try {
+                // Load available models first if not loaded
+                if (Object.keys(availableModels).length === 0) {
+                    await loadAvailableModels();
+                }
+
+                const resp = await fetch('/api/assistant-models');
+                const data = await resp.json();
+
+                const grid = document.getElementById('assistant-models-grid');
+                grid.innerHTML = '';
+
+                const aliases = ['assistant', 'assistant-mini', 'assistant-nano'];
+                const descriptions = {
+                    'assistant': 'Full-size model for complex tasks',
+                    'assistant-mini': 'Smaller model for faster responses',
+                    'assistant-nano': 'Tiny model for quick, simple tasks'
+                };
+
+                aliases.forEach(alias => {
+                    const config = data[alias] || { provider: 'ollama', model: '' };
+                    const card = document.createElement('div');
+                    card.style.cssText = 'padding: 16px; background: #1e1e2e; border-radius: 8px; border: 1px solid #374151;';
+
+                    // Build model options grouped by provider
+                    let modelOptions = '';
+                    for (const [provider, models] of Object.entries(availableModels)) {
+                        if (models && models.length > 0) {
+                            modelOptions += `<optgroup label="${provider}">`;
+                            models.forEach(model => {
+                                const fullModel = `${provider}/${model}`;
+                                const selected = (config.provider === provider && config.model === model) ? 'selected' : '';
+                                modelOptions += `<option value="${fullModel}" ${selected}>${model}</option>`;
+                            });
+                            modelOptions += '</optgroup>';
+                        }
+                    }
+
+                    card.innerHTML = `
+                        <div style="color: #a5b4fc; font-size: 14px; font-weight: 600; margin-bottom: 4px;">${alias}</div>
+                        <div style="color: #888; font-size: 11px; margin-bottom: 12px;">${descriptions[alias]}</div>
+                        <select id="assistant-select-${alias}" onchange="updateAssistantModel('${alias}', this.value)" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid #374151; border-radius: 6px; color: #fff; font-size: 13px; cursor: pointer;">
+                            <option value="">Select model...</option>
+                            ${modelOptions}
+                        </select>
+                        <div id="assistant-status-${alias}" style="margin-top: 8px; font-size: 11px; color: #888;">
+                            Current: ${config.provider}/${config.model}
+                        </div>
+                    `;
+                    grid.appendChild(card);
+                });
+            } catch (err) {
+                console.error('Failed to load assistant models:', err);
+                const grid = document.getElementById('assistant-models-grid');
+                grid.innerHTML = '<div style="color: #ef4444; padding: 16px;">Failed to load assistant models</div>';
+            }
+        }
+
+        async function updateAssistantModel(alias, value) {
+            if (!value) return;
+
+            const statusEl = document.getElementById(`assistant-status-${alias}`);
+            statusEl.textContent = 'Saving...';
+            statusEl.style.color = '#f59e0b';
+
+            try {
+                const [provider, ...modelParts] = value.split('/');
+                const model = modelParts.join('/');
+
+                const resp = await fetch('/api/assistant-models', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ alias, provider, model })
+                });
+
+                if (resp.ok) {
+                    statusEl.textContent = `Updated: ${provider}/${model}`;
+                    statusEl.style.color = '#22c55e';
+                } else {
+                    const err = await resp.text();
+                    statusEl.textContent = `Error: ${err}`;
+                    statusEl.style.color = '#ef4444';
+                }
+            } catch (err) {
+                statusEl.textContent = `Error: ${err.message}`;
+                statusEl.style.color = '#ef4444';
             }
         }
 

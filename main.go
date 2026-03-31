@@ -268,6 +268,15 @@ var disabledModelsMutex sync.RWMutex
 var localVisionBackend = "ollama" // default to ollama
 var localVisionBackendMutex sync.RWMutex
 
+// Assistant model mappings: alias -> {provider, model}
+type AssistantModelConfig struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+var assistantModels = make(map[string]AssistantModelConfig)
+var assistantModelsMutex sync.RWMutex
+
 func isModelDisabled(model string) bool {
 	disabledModelsMutex.RLock()
 	defer disabledModelsMutex.RUnlock()
@@ -373,6 +382,72 @@ func getProviderOverride(provider, model string) (ports.ChatProvider, string) {
 	}
 
 	return nil, ""
+}
+
+// loadAssistantModels loads assistant model mappings from the database.
+func loadAssistantModels() {
+	rows, err := db.Query(`SELECT alias, provider, model FROM assistant_models`)
+	if err != nil {
+		log.Printf("Failed to load assistant models: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	assistantModelsMutex.Lock()
+	defer assistantModelsMutex.Unlock()
+	assistantModels = make(map[string]AssistantModelConfig)
+	for rows.Next() {
+		var alias, provider, model string
+		if err := rows.Scan(&alias, &provider, &model); err != nil {
+			continue
+		}
+		assistantModels[alias] = AssistantModelConfig{Provider: provider, Model: model}
+	}
+	log.Printf("Loaded %d assistant model mappings", len(assistantModels))
+}
+
+// getAssistantModel returns the provider and model for an assistant alias, or empty if not found.
+func getAssistantModel(alias string) (string, string, bool) {
+	assistantModelsMutex.RLock()
+	defer assistantModelsMutex.RUnlock()
+	if config, ok := assistantModels[alias]; ok {
+		return config.Provider, config.Model, true
+	}
+	return "", "", false
+}
+
+// setAssistantModel sets the provider and model for an assistant alias and persists to database.
+func setAssistantModel(alias, provider, model string) error {
+	// Only allow the three assistant aliases
+	if alias != "assistant" && alias != "assistant-mini" && alias != "assistant-nano" {
+		return fmt.Errorf("invalid alias: %s (must be 'assistant', 'assistant-mini', or 'assistant-nano')", alias)
+	}
+
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	_, err := db.Exec(`INSERT OR REPLACE INTO assistant_models (alias, provider, model) VALUES (?, ?, ?)`, alias, provider, model)
+	if err != nil {
+		return err
+	}
+
+	assistantModelsMutex.Lock()
+	assistantModels[alias] = AssistantModelConfig{Provider: provider, Model: model}
+	assistantModelsMutex.Unlock()
+
+	log.Printf("Assistant model %s changed to: %s/%s", alias, provider, model)
+	return nil
+}
+
+// getAllAssistantModels returns all assistant model mappings.
+func getAllAssistantModels() map[string]AssistantModelConfig {
+	assistantModelsMutex.RLock()
+	defer assistantModelsMutex.RUnlock()
+	result := make(map[string]AssistantModelConfig)
+	for k, v := range assistantModels {
+		result[k] = v
+	}
+	return result
 }
 
 // Pending requests tracker
@@ -587,6 +662,24 @@ func initDB() error {
 	if err != nil {
 		return err
 	}
+
+	// Create assistant_models table for configurable assistant model mappings
+	// Maps assistant, assistant-mini, assistant-nano to actual provider/model
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS assistant_models (
+			alias TEXT PRIMARY KEY NOT NULL,
+			provider TEXT NOT NULL,
+			model TEXT NOT NULL
+		)
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Insert default assistant model mappings if they don't exist
+	db.Exec(`INSERT OR IGNORE INTO assistant_models (alias, provider, model) VALUES ('assistant', 'ollama', 'qwen3.5:122b-a10b-q4_K_M')`)
+	db.Exec(`INSERT OR IGNORE INTO assistant_models (alias, provider, model) VALUES ('assistant-mini', 'ollama', 'myqwen3.5:35b')`)
+	db.Exec(`INSERT OR IGNORE INTO assistant_models (alias, provider, model) VALUES ('assistant-nano', 'ollama', 'qwen3:4b-instruct')`)
 
 	// Create provider_budgets table for per-provider budget limits
 	_, err = db.Exec(`
@@ -1666,6 +1759,49 @@ func handleBackend(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
 			"backend": getLocalVisionBackend(),
+		})
+		return
+	}
+
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+// handleAssistantModels returns or sets assistant model mappings.
+// GET: returns all assistant model mappings
+// POST: sets a single mapping with {"alias": "assistant", "provider": "ollama", "model": "qwen3.5:122b"}
+func handleAssistantModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(getAllAssistantModels())
+		return
+	}
+
+	if r.Method == "POST" {
+		var req struct {
+			Alias    string `json:"alias"`
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		if req.Alias == "" || req.Provider == "" || req.Model == "" {
+			http.Error(w, "alias, provider, and model are required", http.StatusBadRequest)
+			return
+		}
+
+		if err := setAssistantModel(req.Alias, req.Provider, req.Model); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"alias":   req.Alias,
+			"config":  AssistantModelConfig{Provider: req.Provider, Model: req.Model},
 		})
 		return
 	}
@@ -2837,6 +2973,12 @@ func main() {
 	// Load local vision backend preference
 	loadLocalVisionBackend()
 
+	// Load assistant model mappings
+	loadAssistantModels()
+
+	// Set assistant model resolver on router
+	router.SetAssistantResolver(getAssistantModel)
+
 	// Initialize cache
 	initCache()
 
@@ -3007,6 +3149,7 @@ func main() {
 	http.HandleFunc("/api/system/truncate-logs", withCORS(handleTruncateLogs))
 	http.HandleFunc("/api/system/db-stats", withCORS(handleDbStats))
 	http.HandleFunc("/api/backend", withCORS(handleBackend))
+	http.HandleFunc("/api/assistant-models", withCORS(handleAssistantModels))
 	http.HandleFunc("/api/settings/server-config", withCORS(handleServerConfig))
 	http.HandleFunc("/api/llamacpp/info", withCORS(handleLlamaCppInfo))
 	http.HandleFunc("/api/llamacpp/metrics", withCORS(handleLlamaCppMetrics))
