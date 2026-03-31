@@ -1188,6 +1188,25 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Add MLX models if the provider is configured
+	if mlxProvider, ok := chatProviders["mlx"].(*providers.MLXProvider); ok {
+		if mlxModels, err := mlxProvider.GetModels(); err == nil {
+			for _, model := range mlxModels {
+				// Prefix with "mlx/" so router knows to use MLX provider
+				prefixedModel := "mlx/" + model
+				if !seen[prefixedModel] {
+					models = append(models, map[string]interface{}{
+						"id":       prefixedModel,
+						"object":   "model",
+						"owned_by": "llm-proxy",
+						"local":    true, // MLX runs locally on Apple Silicon
+					})
+					seen[prefixedModel] = true
+				}
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"object": "list",
