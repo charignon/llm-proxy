@@ -3,6 +3,7 @@ package providers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,7 +36,7 @@ func (p *GeminiProvider) GetAPIKey() string {
 }
 
 // Chat implements ChatProvider.Chat for Gemini using the OpenAI-compatible endpoint.
-func (p *GeminiProvider) Chat(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+func (p *GeminiProvider) Chat(ctx context.Context, req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
 	if p.APIKey == "" {
 		return nil, fmt.Errorf("GEMINI_API_KEY not set")
 	}
@@ -74,7 +75,7 @@ func (p *GeminiProvider) Chat(req *domain.ChatCompletionRequest, model string) (
 
 	log.Printf("[DEBUG] Gemini request to %s: model=%s", endpoint, model)
 
-	httpReq, _ := http.NewRequest("POST", endpoint, bytes.NewReader(body))
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
 	httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
@@ -102,7 +103,7 @@ func (p *GeminiProvider) Chat(req *domain.ChatCompletionRequest, model string) (
 
 // ChatNative uses Gemini's native API format (non-OpenAI compatible)
 // This can be used for features not available in the OpenAI-compatible endpoint.
-func (p *GeminiProvider) ChatNative(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+func (p *GeminiProvider) ChatNative(ctx context.Context, req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
 	if p.APIKey == "" {
 		return nil, fmt.Errorf("GEMINI_API_KEY not set")
 	}
@@ -208,7 +209,7 @@ func (p *GeminiProvider) ChatNative(req *domain.ChatCompletionRequest, model str
 
 	log.Printf("[DEBUG] Gemini native request: model=%s", model)
 
-	httpReq, _ := http.NewRequest("POST", endpoint, bytes.NewReader(body))
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: time.Duration(p.Timeout) * time.Second}

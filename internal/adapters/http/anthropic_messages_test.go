@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -148,12 +149,52 @@ func TestAnthropicMessagesHandlerTranslatesForOpenAI(t *testing.T) {
 	}
 }
 
+func TestAnthropicMessagesHandlerPassthroughReturns499OnCanceledRequest(t *testing.T) {
+	t.Parallel()
+
+	handler := &AnthropicMessagesHandler{
+		ChatHandler:   minimalChatHandler(t, nil),
+		OllamaBaseURL: "http://127.0.0.1:1",
+		OllamaTimeout: 5,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"ollama/qwen3-vl:30b",
+		"max_tokens":64,
+		"messages":[{"role":"user","content":"hello"}],
+		"usecase":"test-anthropic-cancel",
+		"sensitive":true,
+		"precision":"high"
+	}`)).WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(rr, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return after cancellation")
+	}
+
+	if rr.Code != statusClientClosedRequest {
+		t.Fatalf("status = %d, want %d", rr.Code, statusClientClosedRequest)
+	}
+}
+
 type stubChatProvider struct {
 	resp *domain.ChatCompletionResponse
 	err  error
 }
 
-func (s stubChatProvider) Chat(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+func (s stubChatProvider) Chat(ctx context.Context, req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+	_ = ctx
 	return s.resp, s.err
 }
 
@@ -187,7 +228,8 @@ func minimalChatHandler(t *testing.T, providers map[string]ports.ChatProvider) *
 		CalculateCost: func(model string, inputTokens, outputTokens int) float64 {
 			return 0
 		},
-		AddPending: func(req *domain.ChatCompletionRequest, route *domain.RouteConfig, startTime time.Time) string {
+		AddPending: func(req *domain.ChatCompletionRequest, route *domain.RouteConfig, startTime time.Time, cancel context.CancelFunc) string {
+			_ = cancel
 			return "pending"
 		},
 		RemovePending: func(id string) {},

@@ -19,14 +19,14 @@ import (
 
 // STTHandler handles speech-to-text (Whisper) transcription requests.
 type STTHandler struct {
-	WhisperServerURL  string
-	OpenAIKey         string
-	Logger            ports.RequestLogger
-	ConcurrencyMgr    *loadmanager.ConcurrencyManager
-	Timeout           int // Speech timeout in seconds
-	StreamingTimeout  int // Speech streaming timeout in seconds
-	AddPending        func(provider, model string, sensitive bool, startTime time.Time) string
-	RemovePending     func(id string)
+	WhisperServerURL string
+	OpenAIKey        string
+	Logger           ports.RequestLogger
+	ConcurrencyMgr   *loadmanager.ConcurrencyManager
+	Timeout          int // Speech timeout in seconds
+	StreamingTimeout int // Speech streaming timeout in seconds
+	AddPending       func(provider, model string, sensitive bool, startTime time.Time, cancel context.CancelFunc) string
+	RemovePending    func(id string)
 }
 
 // NewSTTHandler creates a new STT handler.
@@ -48,10 +48,10 @@ func (h *STTHandler) HandleTranscription(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Acquire concurrency slot with configured timeout
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(h.Timeout)*time.Second)
-	defer cancel()
+	acquireCtx, acquireCancel := context.WithTimeout(r.Context(), time.Duration(h.Timeout)*time.Second)
+	defer acquireCancel()
 
-	if err := h.ConcurrencyMgr.AcquireSlot(ctx); err != nil {
+	if err := h.ConcurrencyMgr.AcquireSlot(acquireCtx); err != nil {
 		if err == context.DeadlineExceeded {
 			http.Error(w, "Request timeout waiting for available slot", http.StatusServiceUnavailable)
 		} else {
@@ -64,6 +64,8 @@ func (h *STTHandler) HandleTranscription(w http.ResponseWriter, r *http.Request)
 	defer h.ConcurrencyMgr.ReleaseSlot()
 
 	startTime := time.Now()
+	reqCtx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	// Parse multipart form (max 32MB)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
@@ -112,7 +114,7 @@ func (h *STTHandler) HandleTranscription(w http.ResponseWriter, r *http.Request)
 	// Add pending request tracking
 	var pendingID string
 	if h.AddPending != nil {
-		pendingID = h.AddPending(provider, modelName, sensitive, startTime)
+		pendingID = h.AddPending(provider, modelName, sensitive, startTime, cancel)
 		defer func() {
 			if h.RemovePending != nil && pendingID != "" {
 				h.RemovePending(pendingID)
@@ -135,10 +137,10 @@ func (h *STTHandler) HandleTranscription(w http.ResponseWriter, r *http.Request)
 
 	if sensitive {
 		// Use local whisper server
-		resp, err = h.callLocalWhisper(fileContent, header.Filename, model, language, prompt)
+		resp, err = h.callLocalWhisper(reqCtx, fileContent, header.Filename, model, language, prompt)
 	} else {
 		// Use OpenAI Whisper API
-		resp, err = h.callOpenAIWhisper(fileContent, header.Filename, model, language, prompt)
+		resp, err = h.callOpenAIWhisper(reqCtx, fileContent, header.Filename, model, language, prompt)
 	}
 
 	latencyMs := time.Since(startTime).Milliseconds()
@@ -177,10 +179,10 @@ func (h *STTHandler) HandleStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Acquire concurrency slot with configured streaming timeout
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(h.StreamingTimeout)*time.Second)
-	defer cancel()
+	acquireCtx, acquireCancel := context.WithTimeout(r.Context(), time.Duration(h.StreamingTimeout)*time.Second)
+	defer acquireCancel()
 
-	if err := h.ConcurrencyMgr.AcquireSlot(ctx); err != nil {
+	if err := h.ConcurrencyMgr.AcquireSlot(acquireCtx); err != nil {
 		if err == context.DeadlineExceeded {
 			http.Error(w, "Request timeout waiting for available slot", http.StatusServiceUnavailable)
 		} else {
@@ -193,6 +195,8 @@ func (h *STTHandler) HandleStream(w http.ResponseWriter, r *http.Request) {
 	defer h.ConcurrencyMgr.ReleaseSlot()
 
 	startTime := time.Now()
+	reqCtx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	// Check sensitive flag - streaming MUST be local only
 	if !isSensitiveRequest(r) {
@@ -234,7 +238,7 @@ func (h *STTHandler) HandleStream(w http.ResponseWriter, r *http.Request) {
 	// Add pending request tracking
 	var pendingID string
 	if h.AddPending != nil {
-		pendingID = h.AddPending("local", modelName, true, startTime)
+		pendingID = h.AddPending("local", modelName, true, startTime, cancel)
 		defer func() {
 			if h.RemovePending != nil && pendingID != "" {
 				h.RemovePending(pendingID)
@@ -303,7 +307,7 @@ func (h *STTHandler) HandleStream(w http.ResponseWriter, r *http.Request) {
 
 	// Make streaming request to local whisper server
 	whisperURL := h.WhisperServerURL + "/v1/audio/transcriptions/stream"
-	req, err := http.NewRequest("POST", whisperURL, &buf)
+	req, err := http.NewRequestWithContext(reqCtx, "POST", whisperURL, &buf)
 	if err != nil {
 		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
 		logEntry.Success = false
@@ -364,7 +368,7 @@ func (h *STTHandler) HandleStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // callLocalWhisper sends a transcription request to the local whisper server.
-func (h *STTHandler) callLocalWhisper(fileContent []byte, filename, model, language, prompt string) (*domain.WhisperTranscriptionResponse, error) {
+func (h *STTHandler) callLocalWhisper(ctx context.Context, fileContent []byte, filename, model, language, prompt string) (*domain.WhisperTranscriptionResponse, error) {
 	// Create multipart form for local whisper server
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -395,7 +399,7 @@ func (h *STTHandler) callLocalWhisper(fileContent []byte, filename, model, langu
 
 	// Make request to local whisper server
 	url := h.WhisperServerURL + "/v1/audio/transcriptions"
-	req, err := http.NewRequest("POST", url, &buf)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, &buf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -423,7 +427,7 @@ func (h *STTHandler) callLocalWhisper(fileContent []byte, filename, model, langu
 }
 
 // callOpenAIWhisper sends a transcription request to OpenAI's Whisper API.
-func (h *STTHandler) callOpenAIWhisper(fileContent []byte, filename, model, language, prompt string) (*domain.WhisperTranscriptionResponse, error) {
+func (h *STTHandler) callOpenAIWhisper(ctx context.Context, fileContent []byte, filename, model, language, prompt string) (*domain.WhisperTranscriptionResponse, error) {
 	if h.OpenAIKey == "" {
 		return nil, fmt.Errorf("OPENAI_API_KEY not set")
 	}
@@ -462,7 +466,7 @@ func (h *STTHandler) callOpenAIWhisper(fileContent []byte, filename, model, lang
 	}
 
 	// Make request to OpenAI
-	req, err := http.NewRequest("POST", "https://api.openai.com/v1/audio/transcriptions", &buf)
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/audio/transcriptions", &buf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

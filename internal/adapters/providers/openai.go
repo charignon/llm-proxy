@@ -3,6 +3,7 @@ package providers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,7 +37,7 @@ func (p *OpenAIProvider) GetAPIKey() string {
 }
 
 // Chat implements ChatProvider.Chat for OpenAI.
-func (p *OpenAIProvider) Chat(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+func (p *OpenAIProvider) Chat(ctx context.Context, req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
 	if p.APIKey == "" {
 		return nil, fmt.Errorf("OPENAI_API_KEY not set")
 	}
@@ -59,15 +60,15 @@ func (p *OpenAIProvider) Chat(req *domain.ChatCompletionRequest, model string) (
 
 	if hasWebSearch {
 		log.Printf("[DEBUG] Using OpenAI Responses API for web_search")
-		return p.chatWithResponses(req, model, functionTools)
+		return p.chatWithResponses(ctx, req, model, functionTools)
 	}
 
 	// Standard Chat Completions API path
-	return p.chatWithCompletions(req, model)
+	return p.chatWithCompletions(ctx, req, model)
 }
 
 // chatWithCompletions uses the standard Chat Completions API
-func (p *OpenAIProvider) chatWithCompletions(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+func (p *OpenAIProvider) chatWithCompletions(ctx context.Context, req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
 	openaiReq := map[string]interface{}{
 		"model":    model,
 		"messages": req.Messages,
@@ -107,7 +108,7 @@ func (p *OpenAIProvider) chatWithCompletions(req *domain.ChatCompletionRequest, 
 
 	body, _ := json.Marshal(openaiReq)
 
-	httpReq, _ := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
 	httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
@@ -133,7 +134,7 @@ func (p *OpenAIProvider) chatWithCompletions(req *domain.ChatCompletionRequest, 
 }
 
 // chatWithResponses uses the Responses API which supports web_search
-func (p *OpenAIProvider) chatWithResponses(req *domain.ChatCompletionRequest, model string, functionTools []domain.Tool) (*domain.ChatCompletionResponse, error) {
+func (p *OpenAIProvider) chatWithResponses(ctx context.Context, req *domain.ChatCompletionRequest, model string, functionTools []domain.Tool) (*domain.ChatCompletionResponse, error) {
 	// Build input from messages (Responses API uses a different format)
 	var input []map[string]interface{}
 	for _, msg := range req.Messages {
@@ -180,7 +181,7 @@ func (p *OpenAIProvider) chatWithResponses(req *domain.ChatCompletionRequest, mo
 	body, _ := json.Marshal(openaiReq)
 	log.Printf("[DEBUG] Responses API request: %s", string(body)[:min(500, len(body))])
 
-	httpReq, _ := http.NewRequest("POST", "https://api.openai.com/v1/responses", bytes.NewReader(body))
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/responses", bytes.NewReader(body))
 	httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
@@ -202,9 +203,9 @@ func (p *OpenAIProvider) chatWithResponses(req *domain.ChatCompletionRequest, mo
 
 	// Parse Responses API response format
 	var responsesResult struct {
-		ID      string `json:"id"`
-		Status  string `json:"status"`
-		Output  []struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		Output []struct {
 			Type    string `json:"type"`
 			ID      string `json:"id"`
 			Status  string `json:"status"`

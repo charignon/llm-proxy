@@ -2,6 +2,7 @@ package providers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -70,11 +71,11 @@ type ollamaToolCall struct {
 }
 
 // Chat implements ChatProvider.Chat for Ollama.
-func (p *OllamaProvider) Chat(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
-	return p.chat(req, model, "ollama", false)
+func (p *OllamaProvider) Chat(ctx context.Context, req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+	return p.chat(ctx, req, model, "ollama", false)
 }
 
-func (p *OllamaProvider) chat(req *domain.ChatCompletionRequest, model, providerName string, allowCloud bool) (*domain.ChatCompletionResponse, error) {
+func (p *OllamaProvider) chat(ctx context.Context, req *domain.ChatCompletionRequest, model, providerName string, allowCloud bool) (*domain.ChatCompletionResponse, error) {
 	if !allowCloud && IsOllamaCloudModel(model) {
 		return nil, fmt.Errorf("cloud model %q must use ollama-cloud provider", model)
 	}
@@ -137,7 +138,7 @@ func (p *OllamaProvider) chat(req *domain.ChatCompletionRequest, model, provider
 	body, _ := json.Marshal(ollamaReq)
 	log.Printf("Ollama request - tools: %d, tool_choice: %v", len(req.Tools), req.ToolChoice)
 
-	httpReq, _ := http.NewRequest("POST", "http://"+p.Host+"/api/chat", bytes.NewReader(body))
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", "http://"+p.Host+"/api/chat", bytes.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: time.Duration(p.Timeout) * time.Second}

@@ -2,6 +2,8 @@
 package providers
 
 import (
+	"context"
+
 	"llm-proxy/internal/domain"
 	"llm-proxy/internal/ports"
 )
@@ -25,8 +27,8 @@ func NewSelectableProvider(ollama, llamacpp ports.ChatProvider, getPref func() s
 }
 
 // Chat implements the ChatProvider interface.
-func (p *SelectableProvider) Chat(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
-	return p.getSelectedProvider().Chat(req, model)
+func (p *SelectableProvider) Chat(ctx context.Context, req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+	return p.getSelectedProvider().Chat(ctx, req, model)
 }
 
 // IsHealthy returns true if the currently selected provider is healthy.

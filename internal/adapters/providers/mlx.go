@@ -2,6 +2,7 @@ package providers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,7 +31,7 @@ func NewMLXProvider(host string, timeout int) *MLXProvider {
 
 // Chat implements ChatProvider.Chat for MLX LM server.
 // MLX server provides an OpenAI-compatible /v1/chat/completions endpoint.
-func (p *MLXProvider) Chat(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+func (p *MLXProvider) Chat(ctx context.Context, req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
 	mlxReq := map[string]interface{}{
 		"model":    model,
 		"messages": req.Messages,
@@ -52,7 +53,7 @@ func (p *MLXProvider) Chat(req *domain.ChatCompletionRequest, model string) (*do
 	log.Printf("[MLX] Request to %s, model=%s, messages=%d", p.Host, model, len(req.Messages))
 
 	url := "http://" + p.Host + "/v1/chat/completions"
-	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %v", err)
 	}

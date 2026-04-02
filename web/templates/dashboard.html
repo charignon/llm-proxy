@@ -448,7 +448,7 @@
             <div class="section" id="pending-section" style="display:none">
                 <h2 class="section-title">Pending Requests <span class="pending-count" id="pending-count"></span></h2>
                 <table id="pending-table">
-                    <thead><tr><th>Started</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Usecase</th><th>Elapsed</th><th>Preview</th></tr></thead>
+                    <thead><tr><th>Started</th><th>Provider</th><th>Model</th><th>Sensitive</th><th>Precision</th><th>Usecase</th><th>Elapsed</th><th>Preview</th><th>Action</th></tr></thead>
                     <tbody></tbody>
                 </table>
             </div>
@@ -2797,11 +2797,34 @@
                         '<td><span class="badge precision">' + (req.precision || '-') + '</span></td>' +
                         '<td><span class="badge usecase">' + (req.usecase || '-') + '</span></td>' +
                         '<td class="elapsed-time">' + elapsed + '</td>' +
-                        '<td class="preview-text" title="' + escapeHtml(req.preview) + '">' + escapeHtml(req.preview) + '</td>';
+                        '<td class="preview-text" title="' + escapeHtml(req.preview) + '">' + escapeHtml(req.preview) + '</td>' +
+                        '<td><button onclick="cancelPending(\'' + req.id + '\', this)" style="padding: 6px 10px; border-radius: 6px; border: 1px solid #ef4444; background: rgba(239,68,68,0.12); color: #fca5a5; cursor: pointer; font-size: 12px;">Cancel</button></td>';
                     tbody.appendChild(tr);
                 }
             } catch (err) {
                 console.error('Failed to load pending requests:', err);
+            }
+        }
+
+        async function cancelPending(id, button) {
+            if (!id || !button) return;
+            button.disabled = true;
+            button.textContent = 'Cancelling...';
+            button.style.cursor = 'default';
+
+            try {
+                const resp = await fetch('/api/pending/' + encodeURIComponent(id) + '/cancel', {
+                    method: 'POST'
+                });
+                if (!resp.ok) {
+                    throw new Error(await resp.text());
+                }
+                setTimeout(loadPending, 250);
+            } catch (err) {
+                console.error('Failed to cancel pending request:', err);
+                button.disabled = false;
+                button.textContent = 'Cancel';
+                button.style.cursor = 'pointer';
             }
         }
 

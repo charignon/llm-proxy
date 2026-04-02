@@ -2,6 +2,7 @@ package providers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -68,7 +69,7 @@ type anthropicContentBlock struct {
 }
 
 // Chat implements ChatProvider.Chat for Anthropic.
-func (p *AnthropicProvider) Chat(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+func (p *AnthropicProvider) Chat(ctx context.Context, req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
 	if p.APIKey == "" {
 		return nil, fmt.Errorf("ANTHROPIC_API_KEY not set")
 	}
@@ -217,7 +218,7 @@ func (p *AnthropicProvider) Chat(req *domain.ChatCompletionRequest, model string
 
 	body, _ := json.Marshal(anthropicReq)
 
-	httpReq, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 	httpReq.Header.Set("x-api-key", p.APIKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	httpReq.Header.Set("Content-Type", "application/json")

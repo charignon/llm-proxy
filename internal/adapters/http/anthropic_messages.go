@@ -3,6 +3,7 @@ package http
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -154,8 +155,10 @@ func (h *AnthropicMessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 	}
 
 	pendingID := ""
+	reqCtx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 	if h.ChatHandler.AddPending != nil {
-		pendingID = h.ChatHandler.AddPending(chatReq, route, startTime)
+		pendingID = h.ChatHandler.AddPending(chatReq, route, startTime, cancel)
 		defer func() {
 			if pendingID != "" && h.ChatHandler.RemovePending != nil {
 				h.ChatHandler.RemovePending(pendingID)
@@ -164,16 +167,17 @@ func (h *AnthropicMessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 	}
 
 	if req.Stream {
-		h.streamNativeMessages(w, r, body, req, route, actualProviderName, logEntry, startTime)
+		h.streamNativeMessages(w, r, reqCtx, body, req, route, actualProviderName, logEntry, startTime)
 		return
 	}
 
-	h.forwardNativeMessages(w, r, body, req, route, actualProviderName, logEntry, startTime)
+	h.forwardNativeMessages(w, r, reqCtx, body, req, route, actualProviderName, logEntry, startTime)
 }
 
 func (h *AnthropicMessagesHandler) forwardNativeMessages(
 	w http.ResponseWriter,
 	r *http.Request,
+	ctx context.Context,
 	body []byte,
 	req domain.AnthropicMessagesRequest,
 	route *domain.RouteConfig,
@@ -181,7 +185,7 @@ func (h *AnthropicMessagesHandler) forwardNativeMessages(
 	logEntry *domain.RequestLog,
 	startTime time.Time,
 ) {
-	httpReq, err := h.buildPassthroughRequest(actualProviderName, route.Model, body, r.Header)
+	httpReq, err := h.buildPassthroughRequest(ctx, actualProviderName, route.Model, body, r.Header)
 	if err != nil {
 		logEntry.Success = false
 		logEntry.Error = err.Error()
@@ -199,7 +203,11 @@ func (h *AnthropicMessagesHandler) forwardNativeMessages(
 		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
 		h.ChatHandler.Logger.LogRequest(logEntry)
 		h.ChatHandler.Metrics.RecordRequest(actualProviderName, route.Model, "error", logEntry.LatencyMs, 0, 0, 0, false)
-		h.jsonError(w, http.StatusBadGateway, "api_error", err.Error())
+		statusCode := http.StatusBadGateway
+		if isContextCanceled(err) {
+			statusCode = statusClientClosedRequest
+		}
+		h.jsonError(w, statusCode, "api_error", err.Error())
 		return
 	}
 	defer resp.Body.Close()
@@ -262,6 +270,7 @@ func (h *AnthropicMessagesHandler) forwardNativeMessages(
 func (h *AnthropicMessagesHandler) streamNativeMessages(
 	w http.ResponseWriter,
 	r *http.Request,
+	ctx context.Context,
 	body []byte,
 	req domain.AnthropicMessagesRequest,
 	route *domain.RouteConfig,
@@ -269,7 +278,7 @@ func (h *AnthropicMessagesHandler) streamNativeMessages(
 	logEntry *domain.RequestLog,
 	startTime time.Time,
 ) {
-	httpReq, err := h.buildPassthroughRequest(actualProviderName, route.Model, body, r.Header)
+	httpReq, err := h.buildPassthroughRequest(ctx, actualProviderName, route.Model, body, r.Header)
 	if err != nil {
 		logEntry.Success = false
 		logEntry.Error = err.Error()
@@ -287,7 +296,11 @@ func (h *AnthropicMessagesHandler) streamNativeMessages(
 		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
 		h.ChatHandler.Logger.LogRequest(logEntry)
 		h.ChatHandler.Metrics.RecordRequest(actualProviderName, route.Model, "error", logEntry.LatencyMs, 0, 0, 0, false)
-		h.jsonError(w, http.StatusBadGateway, "api_error", err.Error())
+		statusCode := http.StatusBadGateway
+		if isContextCanceled(err) {
+			statusCode = statusClientClosedRequest
+		}
+		h.jsonError(w, statusCode, "api_error", err.Error())
 		return
 	}
 	defer resp.Body.Close()
@@ -345,7 +358,7 @@ func (h *AnthropicMessagesHandler) streamNativeMessages(
 
 func (h *AnthropicMessagesHandler) translateAndRoute(w http.ResponseWriter, r *http.Request, chatReq *domain.ChatCompletionRequest) {
 	chatBody, _ := json.Marshal(chatReq)
-	newReq, _ := http.NewRequest("POST", r.URL.String(), bytes.NewReader(chatBody))
+	newReq, _ := http.NewRequestWithContext(r.Context(), "POST", r.URL.String(), bytes.NewReader(chatBody))
 	newReq.Header = r.Header.Clone()
 	newReq.Header.Set("Content-Type", "application/json")
 	newReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(chatBody)))
@@ -380,7 +393,7 @@ func (h *AnthropicMessagesHandler) translateAndRoute(w http.ResponseWriter, r *h
 	_ = json.NewEncoder(w).Encode(messagesResp)
 }
 
-func (h *AnthropicMessagesHandler) buildPassthroughRequest(provider, model string, body []byte, headers http.Header) (*http.Request, error) {
+func (h *AnthropicMessagesHandler) buildPassthroughRequest(ctx context.Context, provider, model string, body []byte, headers http.Header) (*http.Request, error) {
 	sanitizedBody, err := sanitizeMessagesBody(body, model)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sanitize messages request: %w", err)
@@ -391,7 +404,7 @@ func (h *AnthropicMessagesHandler) buildPassthroughRequest(provider, model strin
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(sanitizedBody))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(sanitizedBody))
 	if err != nil {
 		return nil, err
 	}

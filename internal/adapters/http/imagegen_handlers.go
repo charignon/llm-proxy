@@ -43,11 +43,11 @@ var ImageGenPricing = map[string]map[string]float64{
 
 // ImageGenHandler handles image generation requests.
 type ImageGenHandler struct {
-	OpenAIKey  string
-	Logger     ports.RequestLogger
-	Router     *app.Router
+	OpenAIKey   string
+	Logger      ports.RequestLogger
+	Router      *app.Router
 	CheckBudget func(provider string) error
-	Timeout    int // Timeout in seconds
+	Timeout     int // Timeout in seconds
 }
 
 // NewImageGenHandler creates a new image generation handler.
@@ -169,7 +169,7 @@ func (h *ImageGenHandler) HandleImageGeneration(w http.ResponseWriter, r *http.R
 	reqBody, _ := json.Marshal(openaiReq)
 
 	// Call OpenAI
-	httpReq, _ := http.NewRequest("POST", "https://api.openai.com/v1/images/generations", bytes.NewReader(reqBody))
+	httpReq, _ := http.NewRequestWithContext(r.Context(), "POST", "https://api.openai.com/v1/images/generations", bytes.NewReader(reqBody))
 	httpReq.Header.Set("Authorization", "Bearer "+h.OpenAIKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 

@@ -4,7 +4,9 @@ package http
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -30,7 +32,7 @@ type ChatHandler struct {
 	CalculateCost func(model string, inputTokens, outputTokens int) float64
 
 	// Pending request tracking
-	AddPending    func(req *domain.ChatCompletionRequest, route *domain.RouteConfig, startTime time.Time) string
+	AddPending    func(req *domain.ChatCompletionRequest, route *domain.RouteConfig, startTime time.Time, cancel context.CancelFunc) string
 	RemovePending func(id string)
 
 	// Model availability check (returns true if model is disabled)
@@ -55,6 +57,12 @@ type ChatHandler struct {
 // MetricsRecorder interface for recording request metrics.
 type MetricsRecorder interface {
 	RecordRequest(provider, model, status string, durationMs int64, inputTokens, outputTokens int, cost float64, cached bool)
+}
+
+const statusClientClosedRequest = 499
+
+func isContextCanceled(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // getClientIP extracts the client IP address from the request.
@@ -214,7 +222,20 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Handle streaming requests
 	if req.Stream {
-		h.handleStreaming(w, r, &req, route, body, logEntry, startTime)
+		reqCtx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+
+		pendingID := ""
+		if h.AddPending != nil {
+			pendingID = h.AddPending(&req, route, startTime, cancel)
+			defer func() {
+				if pendingID != "" && h.RemovePending != nil {
+					h.RemovePending(pendingID)
+				}
+			}()
+		}
+
+		h.handleStreaming(w, r, reqCtx, &req, route, body, logEntry, startTime)
 		return
 	}
 
@@ -249,8 +270,18 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Track pending request
-	pendingID := h.AddPending(&req, route, startTime)
-	defer h.RemovePending(pendingID)
+	reqCtx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	pendingID := ""
+	if h.AddPending != nil {
+		pendingID = h.AddPending(&req, route, startTime, cancel)
+		defer func() {
+			if pendingID != "" && h.RemovePending != nil {
+				h.RemovePending(pendingID)
+			}
+		}()
+	}
 
 	// Make the actual call
 	var resp *domain.ChatCompletionResponse
@@ -267,7 +298,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				logEntry.Provider = overrideName
 			}
 		}
-		resp, err = provider.Chat(&req, route.Model)
+		resp, err = provider.Chat(reqCtx, &req, route.Model)
 	}
 
 	logEntry.LatencyMs = time.Since(startTime).Milliseconds()
@@ -279,7 +310,11 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Logger.LogRequest(logEntry)
 		h.Metrics.RecordRequest(actualProviderName, route.Model, "error", logEntry.LatencyMs, 0, 0, 0, false)
 
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		statusCode := http.StatusInternalServerError
+		if isContextCanceled(err) {
+			statusCode = statusClientClosedRequest
+		}
+		http.Error(w, err.Error(), statusCode)
 		return
 	}
 
@@ -313,7 +348,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleStreaming handles streaming chat completion requests by forwarding to OpenAI/Together/Ollama with stream=true.
-func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, req *domain.ChatCompletionRequest, route *domain.RouteConfig, body []byte, logEntry *domain.RequestLog, startTime time.Time) {
+func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, ctx context.Context, req *domain.ChatCompletionRequest, route *domain.RouteConfig, body []byte, logEntry *domain.RequestLog, startTime time.Time) {
 	// Check if provider supports streaming
 	if route.Provider != "openai" && route.Provider != "together" && route.Provider != "ollama" && route.Provider != "ollama-cloud" && route.Provider != "mlx" {
 		http.Error(w, fmt.Sprintf("Streaming not supported for provider: %s", route.Provider), http.StatusBadRequest)
@@ -327,7 +362,7 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 	}
 
 	if route.Provider == "ollama" || route.Provider == "ollama-cloud" {
-		h.handleOllamaStreaming(w, r, req, route, logEntry, startTime)
+		h.handleOllamaStreaming(w, r, ctx, req, route, logEntry, startTime)
 		return
 	}
 
@@ -428,7 +463,7 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 	}
 
 	// Make streaming request
-	httpReq, _ := http.NewRequest("POST", endpoint, strings.NewReader(string(reqBody)))
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(reqBody))
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
@@ -440,7 +475,11 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 		logEntry.Error = err.Error()
 		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
 		h.Logger.LogRequest(logEntry)
-		http.Error(w, fmt.Sprintf("%s request failed: %s", route.Provider, err.Error()), http.StatusBadGateway)
+		statusCode := http.StatusBadGateway
+		if isContextCanceled(err) {
+			statusCode = statusClientClosedRequest
+		}
+		http.Error(w, fmt.Sprintf("%s request failed: %s", route.Provider, err.Error()), statusCode)
 		return
 	}
 	defer resp.Body.Close()
@@ -511,6 +550,15 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, re
 				}
 			}
 		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		logEntry.Success = false
+		logEntry.Error = err.Error()
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		h.Logger.LogRequest(logEntry)
+		h.Metrics.RecordRequest(route.Provider, route.Model, "error", logEntry.LatencyMs, inputTokens, outputTokens, 0, false)
+		return
 	}
 
 	// Build a synthetic response for logging and caching
@@ -675,7 +723,7 @@ type ollamaStreamChunk struct {
 
 // handleOllamaStreaming handles streaming requests to Ollama.
 // Ollama uses NDJSON streaming, which we convert to OpenAI-compatible SSE format.
-func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Request, req *domain.ChatCompletionRequest, route *domain.RouteConfig, logEntry *domain.RequestLog, startTime time.Time) {
+func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Request, ctx context.Context, req *domain.ChatCompletionRequest, route *domain.RouteConfig, logEntry *domain.RequestLog, startTime time.Time) {
 	if route.Provider == "ollama" && providers.IsOllamaCloudModel(route.Model) {
 		err := fmt.Errorf("cloud model %q must use ollama-cloud provider", route.Model)
 		logEntry.Success = false
@@ -776,7 +824,7 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 		ollamaHost = "localhost:11434"
 	}
 
-	httpReq, _ := http.NewRequest("POST", "http://"+ollamaHost+"/api/chat", bytes.NewReader(reqBody))
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", "http://"+ollamaHost+"/api/chat", bytes.NewReader(reqBody))
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	// Use a long timeout for streaming (10 minutes)
@@ -789,7 +837,11 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 		logEntry.Error = err.Error()
 		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
 		h.Logger.LogRequest(logEntry)
-		http.Error(w, fmt.Sprintf("Ollama request failed: %s", err.Error()), http.StatusBadGateway)
+		statusCode := http.StatusBadGateway
+		if isContextCanceled(err) {
+			statusCode = statusClientClosedRequest
+		}
+		http.Error(w, fmt.Sprintf("Ollama request failed: %s", err.Error()), statusCode)
 		return
 	}
 	defer resp.Body.Close()
@@ -939,6 +991,15 @@ func (h *ChatHandler) handleOllamaStreaming(w http.ResponseWriter, r *http.Reque
 			fmt.Fprintf(w, "data: %s\n\n", finalJSON)
 			flusher.Flush()
 		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		logEntry.Success = false
+		logEntry.Error = err.Error()
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		h.Logger.LogRequest(logEntry)
+		h.Metrics.RecordRequest(route.Provider, route.Model, "error", logEntry.LatencyMs, inputTokens, outputTokens, 0, false)
+		return
 	}
 
 	// Send [DONE] marker
@@ -1104,7 +1165,7 @@ func (h *ResponsesHandler) forwardToOpenAI(w http.ResponseWriter, r *http.Reques
 	log.Printf("[Responses API] Forwarding to OpenAI: model=%s, stream=%v", req.Model, req.Stream)
 
 	// Forward to OpenAI
-	httpReq, err := http.NewRequest("POST", "https://api.openai.com/v1/responses", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(r.Context(), "POST", "https://api.openai.com/v1/responses", bytes.NewReader(body))
 	if err != nil {
 		h.jsonError(w, http.StatusInternalServerError, "request_creation_failed", err.Error())
 		return
@@ -1116,7 +1177,11 @@ func (h *ResponsesHandler) forwardToOpenAI(w http.ResponseWriter, r *http.Reques
 	client := &http.Client{Timeout: time.Duration(h.ChatHandler.OpenAIStreamingTimeout) * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		h.jsonError(w, http.StatusBadGateway, "openai_request_failed", err.Error())
+		statusCode := http.StatusBadGateway
+		if isContextCanceled(err) {
+			statusCode = statusClientClosedRequest
+		}
+		h.jsonError(w, statusCode, "openai_request_failed", err.Error())
 		return
 	}
 	defer resp.Body.Close()
@@ -1235,6 +1300,19 @@ func (h *ResponsesHandler) streamOpenAIResponse(w http.ResponseWriter, resp *htt
 		responseBuilder.WriteString(line + "\n")
 	}
 
+	if err := scanner.Err(); err != nil {
+		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+		logEntry.Success = false
+		logEntry.Error = err.Error()
+		logEntry.RequestType = "responses-stream"
+		logEntry.InputTokens = inputTokens
+		logEntry.OutputTokens = outputTokens
+		logEntry.ResponseBody = []byte(responseBuilder.String())
+		h.Logger.LogRequest(logEntry)
+		h.Metrics.RecordRequest("openai", logEntry.Model, "error", logEntry.LatencyMs, inputTokens, outputTokens, 0, false)
+		return
+	}
+
 	logEntry.LatencyMs = time.Since(startTime).Milliseconds()
 	logEntry.Success = true
 	logEntry.RequestType = "responses-stream"
@@ -1257,7 +1335,7 @@ func (h *ResponsesHandler) translateAndRoute(w http.ResponseWriter, r *http.Requ
 	chatBody, _ := json.Marshal(chatReq)
 
 	// Create a new HTTP request with the translated body
-	newReq, _ := http.NewRequest("POST", r.URL.String(), bytes.NewReader(chatBody))
+	newReq, _ := http.NewRequestWithContext(r.Context(), "POST", r.URL.String(), bytes.NewReader(chatBody))
 	newReq.Header = r.Header.Clone()
 	newReq.Header.Set("Content-Type", "application/json")
 	newReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(chatBody)))

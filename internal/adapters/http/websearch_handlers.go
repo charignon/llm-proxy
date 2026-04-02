@@ -3,6 +3,7 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -126,9 +127,9 @@ func (h *WebSearchHandler) HandleWebSearch(w http.ResponseWriter, r *http.Reques
 
 	var resp WebSearchResponse
 	if provider == "openai" {
-		resp = h.doOpenAIWebSearch(req)
+		resp = h.doOpenAIWebSearch(r.Context(), req)
 	} else {
-		resp = h.doAnthropicWebSearch(req)
+		resp = h.doAnthropicWebSearch(r.Context(), req)
 	}
 
 	// Update log entry with response
@@ -159,7 +160,7 @@ func (h *WebSearchHandler) HandleWebSearch(w http.ResponseWriter, r *http.Reques
 }
 
 // doAnthropicWebSearch performs a web search using Anthropic's API.
-func (h *WebSearchHandler) doAnthropicWebSearch(req WebSearchRequest) WebSearchResponse {
+func (h *WebSearchHandler) doAnthropicWebSearch(ctx context.Context, req WebSearchRequest) WebSearchResponse {
 	if h.AnthropicKey == "" {
 		return WebSearchResponse{Error: "Anthropic API key not configured"}
 	}
@@ -191,7 +192,7 @@ func (h *WebSearchHandler) doAnthropicWebSearch(req WebSearchRequest) WebSearchR
 
 	reqBody, _ := json.Marshal(anthropicReq)
 
-	httpReq, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(reqBody))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(reqBody))
 	if err != nil {
 		return WebSearchResponse{Error: "Failed to create request: " + err.Error()}
 	}
@@ -215,10 +216,10 @@ func (h *WebSearchHandler) doAnthropicWebSearch(req WebSearchRequest) WebSearchR
 
 	var anthropicResp struct {
 		Content []struct {
-			Type    string `json:"type"`
-			Text    string `json:"text"`
-			Name    string `json:"name"`
-			Input   struct {
+			Type  string `json:"type"`
+			Text  string `json:"text"`
+			Name  string `json:"name"`
+			Input struct {
 				Query string `json:"query"`
 			} `json:"input"`
 			Content []struct {
@@ -304,7 +305,7 @@ func (h *WebSearchHandler) doAnthropicWebSearch(req WebSearchRequest) WebSearchR
 }
 
 // doOpenAIWebSearch performs a web search using OpenAI's API.
-func (h *WebSearchHandler) doOpenAIWebSearch(req WebSearchRequest) WebSearchResponse {
+func (h *WebSearchHandler) doOpenAIWebSearch(ctx context.Context, req WebSearchRequest) WebSearchResponse {
 	if h.OpenAIKey == "" {
 		return WebSearchResponse{Error: "OpenAI API key not configured"}
 	}
@@ -333,7 +334,7 @@ func (h *WebSearchHandler) doOpenAIWebSearch(req WebSearchRequest) WebSearchResp
 
 	reqBody, _ := json.Marshal(openaiReq)
 
-	httpReq, err := http.NewRequest("POST", "https://api.openai.com/v1/responses", bytes.NewReader(reqBody))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/responses", bytes.NewReader(reqBody))
 	if err != nil {
 		return WebSearchResponse{Error: "Failed to create request: " + err.Error()}
 	}

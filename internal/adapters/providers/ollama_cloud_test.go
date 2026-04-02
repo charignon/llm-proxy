@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,7 +39,7 @@ func TestOllamaProviderRejectsCloudModels(t *testing.T) {
 	t.Parallel()
 
 	p := NewOllamaProvider("127.0.0.1:1", 1)
-	_, err := p.Chat(&domain.ChatCompletionRequest{}, "qwen3.5:cloud")
+	_, err := p.Chat(context.Background(), &domain.ChatCompletionRequest{}, "qwen3.5:cloud")
 	if err == nil {
 		t.Fatal("expected cloud model rejection error")
 	}

@@ -17,12 +17,13 @@ import (
 
 // HistoryHandler handles request history and stats API endpoints.
 type HistoryHandler struct {
-	DB             *sql.DB
-	DBMutex        *sync.Mutex
-	Cache          ports.Cache
-	GetPending     func() []*domain.PendingRequest
-	ReplayHelper   func(w http.ResponseWriter, r *http.Request, reqBody []byte, modelOverride string)
-	BudgetRepo     ports.BudgetRepository
+	DB            *sql.DB
+	DBMutex       *sync.Mutex
+	Cache         ports.Cache
+	GetPending    func() []*domain.PendingRequest
+	CancelPending func(id string) bool
+	ReplayHelper  func(w http.ResponseWriter, r *http.Request, reqBody []byte, modelOverride string)
+	BudgetRepo    ports.BudgetRepository
 }
 
 // RequestHistoryEntry represents a request in the history list.
@@ -302,6 +303,11 @@ func extractToolsFromRequestBody(requestBody string) ([]string, bool) {
 
 // HandlePendingRequests handles GET /api/pending requests.
 func (h *HistoryHandler) HandlePendingRequests(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	if h.GetPending == nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode([]interface{}{})
@@ -326,6 +332,43 @@ func (h *HistoryHandler) HandlePendingRequests(w http.ResponseWriter, r *http.Re
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+// HandleCancelPendingRequest handles POST /api/pending/{id}/cancel requests.
+func (h *HistoryHandler) HandleCancelPendingRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if h.CancelPending == nil {
+		http.Error(w, "Pending cancellation not configured", http.StatusNotImplemented)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/pending/")
+	if path == "" || !strings.HasSuffix(path, "/cancel") {
+		http.NotFound(w, r)
+		return
+	}
+
+	id := strings.TrimSuffix(path, "/cancel")
+	id = strings.TrimSuffix(id, "/")
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	if !h.CancelPending(id) {
+		http.Error(w, "Pending request not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status": "cancelling",
+		"id":     id,
+	})
 }
 
 // HandleUsecasesHistory handles GET /api/usecases/history requests.
@@ -394,7 +437,7 @@ func (h *HistoryHandler) HandleUsecaseDistribution(w http.ResponseWriter, r *htt
 				model,
 				COUNT(*) as count
 			FROM requests
-			WHERE timestamp >= datetime('now', 'localtime', '`+interval+`')
+			WHERE timestamp >= datetime('now', 'localtime', '` + interval + `')
 			GROUP BY sensitive, precision, route_type, model
 			ORDER BY count DESC
 		`)
@@ -471,7 +514,7 @@ func (h *HistoryHandler) HandleModelStats(w http.ResponseWriter, r *http.Request
 			SELECT model, COUNT(*), COALESCE(SUM(cost_usd), 0), AVG(latency_ms)
 			FROM requests
 			WHERE usecase = ?
-				AND timestamp >= datetime('now', 'localtime', '` + interval + `')
+				AND timestamp >= datetime('now', 'localtime', '`+interval+`')
 			GROUP BY model ORDER BY COUNT(*) DESC LIMIT 20
 		`, usecase)
 	}
@@ -557,13 +600,13 @@ func (h *HistoryHandler) HandleStats(w http.ResponseWriter, r *http.Request) {
 		var cost float64
 		var avgLatency float64
 		rows.Scan(&provider, &count, &cost, &avgLatency)
-		
+
 		providerData := map[string]interface{}{
 			"count":          count,
 			"cost_usd":       cost,
 			"avg_latency_ms": avgLatency,
 		}
-		
+
 		// Add budget information if available
 		if h.BudgetRepo != nil {
 			providerBudget, err := h.BudgetRepo.GetProviderBudget(provider)
@@ -578,7 +621,7 @@ func (h *HistoryHandler) HandleStats(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		
+
 		byProvider[provider] = providerData
 	}
 	stats["by_provider"] = byProvider

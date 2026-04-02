@@ -2,6 +2,7 @@ package providers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -60,7 +61,7 @@ func injectThinkingPrefix(messages []domain.Message) []domain.Message {
 
 // Chat implements ChatProvider.Chat for llama.cpp server.
 // llama-server provides an OpenAI-compatible /v1/chat/completions endpoint.
-func (p *LlamaCppProvider) Chat(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+func (p *LlamaCppProvider) Chat(ctx context.Context, req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
 	messages := req.Messages
 
 	// For thinking models, inject the <think> prefix to trigger reasoning
@@ -90,7 +91,7 @@ func (p *LlamaCppProvider) Chat(req *domain.ChatCompletionRequest, model string)
 	log.Printf("[LlamaCpp] Request to %s, model=%s, messages=%d", p.Host, model, len(req.Messages))
 
 	url := "http://" + p.Host + "/v1/chat/completions"
-	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %v", err)
 	}

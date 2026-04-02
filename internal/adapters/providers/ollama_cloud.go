@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"context"
 	"sort"
 	"strings"
 
@@ -27,8 +28,8 @@ func NewOllamaCloudProvider(host string, timeout int) *OllamaCloudProvider {
 }
 
 // Chat implements ChatProvider.Chat for Ollama cloud models.
-func (p *OllamaCloudProvider) Chat(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
-	return p.base.chat(req, model, "ollama-cloud", true)
+func (p *OllamaCloudProvider) Chat(ctx context.Context, req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+	return p.base.chat(ctx, req, model, "ollama-cloud", true)
 }
 
 // GetModels returns the cloud models exposed through the local Ollama daemon.

@@ -3,6 +3,7 @@ package providers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,7 +35,7 @@ func (p *TogetherProvider) GetAPIKey() string {
 }
 
 // Chat implements ChatProvider.Chat for Together.ai using the OpenAI-compatible endpoint.
-func (p *TogetherProvider) Chat(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+func (p *TogetherProvider) Chat(ctx context.Context, req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
 	if p.APIKey == "" {
 		return nil, fmt.Errorf("TOGETHER_API_KEY not set")
 	}
@@ -73,7 +74,7 @@ func (p *TogetherProvider) Chat(req *domain.ChatCompletionRequest, model string)
 
 	log.Printf("[DEBUG] Together request to %s: model=%s", endpoint, model)
 
-	httpReq, _ := http.NewRequest("POST", endpoint, bytes.NewReader(body))
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
 	httpReq.Header.Set("Authorization", "Bearer "+p.APIKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 

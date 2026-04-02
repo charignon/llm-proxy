@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sync"
@@ -28,7 +29,7 @@ func NewLoadBalancedProvider(name string, providers ...ports.ChatProvider) *Load
 
 // Chat implements ChatProvider.Chat using round-robin load balancing.
 // Falls back to next provider if one fails.
-func (lb *LoadBalancedProvider) Chat(req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
+func (lb *LoadBalancedProvider) Chat(ctx context.Context, req *domain.ChatCompletionRequest, model string) (*domain.ChatCompletionResponse, error) {
 	lb.mu.RLock()
 	count := len(lb.providers)
 	lb.mu.RUnlock()
@@ -50,7 +51,7 @@ func (lb *LoadBalancedProvider) Chat(req *domain.ChatCompletionRequest, model st
 		lb.mu.RUnlock()
 
 		// Try this provider
-		resp, err := provider.Chat(req, model)
+		resp, err := provider.Chat(ctx, req, model)
 		if err == nil {
 			log.Printf("[LoadBalancer:%s] Request served by backend %d", lb.name, providerIdx)
 			return resp, nil

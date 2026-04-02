@@ -29,23 +29,23 @@ var TTSVoiceMap = map[string]string{
 
 // TTSHandler handles text-to-speech requests.
 type TTSHandler struct {
-	TTSServerURL string
-	OpenAIAPIKey string
-	Logger       ports.RequestLogger
-	CheckBudget  func(provider string) error
-	AudioCache   ports.AudioCache
-	CacheTTL     time.Duration
-	Timeout        int // Timeout in seconds for OpenAI TTS
-	KokoroTimeout  int // Timeout in seconds for Kokoro TTS
+	TTSServerURL  string
+	OpenAIAPIKey  string
+	Logger        ports.RequestLogger
+	CheckBudget   func(provider string) error
+	AudioCache    ports.AudioCache
+	CacheTTL      time.Duration
+	Timeout       int // Timeout in seconds for OpenAI TTS
+	KokoroTimeout int // Timeout in seconds for Kokoro TTS
 }
 
 // NewTTSHandler creates a new TTS handler.
 func NewTTSHandler(ttsServerURL string, openaiAPIKey string, logger ports.RequestLogger, timeout, kokoroTimeout int) *TTSHandler {
 	return &TTSHandler{
-		TTSServerURL: ttsServerURL,
-		OpenAIAPIKey: openaiAPIKey,
-		Logger:       logger,
-		CacheTTL:     7 * 24 * time.Hour, // Default 7 day TTL
+		TTSServerURL:  ttsServerURL,
+		OpenAIAPIKey:  openaiAPIKey,
+		Logger:        logger,
+		CacheTTL:      7 * 24 * time.Hour, // Default 7 day TTL
 		Timeout:       timeout,
 		KokoroTimeout: kokoroTimeout,
 	}
@@ -190,7 +190,7 @@ func (h *TTSHandler) handleOpenAITTS(w http.ResponseWriter, r *http.Request, req
 
 	// Forward to OpenAI
 	client := &http.Client{Timeout: time.Duration(h.Timeout) * time.Second}
-	openaiReq, err := http.NewRequest("POST", "https://api.openai.com/v1/audio/speech", bytes.NewReader(body))
+	openaiReq, err := http.NewRequestWithContext(r.Context(), "POST", "https://api.openai.com/v1/audio/speech", bytes.NewReader(body))
 	if err != nil {
 		logEntry.LatencyMs = time.Since(startTime).Milliseconds()
 		logEntry.Success = false

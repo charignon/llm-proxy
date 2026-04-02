@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -70,7 +71,7 @@ var (
 	ttsKokoroTimeout       = getEnvInt("TTS_KOKORO_TIMEOUT", 60)                   // TTS Kokoro timeout in seconds
 	webSearchTimeout       = getEnvInt("WEB_SEARCH_TIMEOUT", 120)                  // Web search timeout in seconds
 	llamacppTimeout        = getEnvInt("LLAMACPP_TIMEOUT", 300)                    // llama.cpp vision timeout in seconds
-	mlxTimeout             = getEnvInt("MLX_TIMEOUT", 300)                        // MLX server timeout in seconds
+	mlxTimeout             = getEnvInt("MLX_TIMEOUT", 300)                         // MLX server timeout in seconds
 	togetherKey            = getEnv("TOGETHER_API_KEY", "")                        // Together.ai API key
 	togetherTimeout        = getEnvInt("TOGETHER_TIMEOUT", 240)                    // Together.ai provider timeout in seconds
 )
@@ -450,8 +451,13 @@ func getAllAssistantModels() map[string]AssistantModelConfig {
 	return result
 }
 
+type pendingRequestState struct {
+	request *PendingRequest
+	cancel  context.CancelFunc
+}
+
 // Pending requests tracker
-var pendingRequests = make(map[string]*PendingRequest)
+var pendingRequests = make(map[string]*pendingRequestState)
 var pendingMutex sync.RWMutex
 var pendingCounter int64
 
@@ -911,7 +917,7 @@ func getCachedResponse(key string) ([]byte, bool) {
 }
 
 // Pending request management
-func addPendingRequest(req *ChatCompletionRequest, route *RouteConfig, startTime time.Time) string {
+func addPendingRequest(req *ChatCompletionRequest, route *RouteConfig, startTime time.Time, cancel context.CancelFunc) string {
 	pendingMutex.Lock()
 	defer pendingMutex.Unlock()
 
@@ -949,39 +955,45 @@ func addPendingRequest(req *ChatCompletionRequest, route *RouteConfig, startTime
 		sensitive = *req.Sensitive
 	}
 
-	pendingRequests[id] = &PendingRequest{
-		ID:        id,
-		StartTime: startTime,
-		Provider:  route.Provider,
-		Model:     route.Model,
-		HasImages: req.HasImages(),
-		Sensitive: sensitive,
-		Precision: req.Precision,
-		Usecase:   req.Usecase,
-		Preview:   preview,
+	pendingRequests[id] = &pendingRequestState{
+		request: &PendingRequest{
+			ID:        id,
+			StartTime: startTime,
+			Provider:  route.Provider,
+			Model:     route.Model,
+			HasImages: req.HasImages(),
+			Sensitive: sensitive,
+			Precision: req.Precision,
+			Usecase:   req.Usecase,
+			Preview:   preview,
+		},
+		cancel: cancel,
 	}
 
 	return id
 }
 
 // addPendingSTTRequest adds a pending STT request to the tracking map.
-func addPendingSTTRequest(provider, model string, sensitive bool, startTime time.Time) string {
+func addPendingSTTRequest(provider, model string, sensitive bool, startTime time.Time, cancel context.CancelFunc) string {
 	pendingMutex.Lock()
 	defer pendingMutex.Unlock()
 
 	pendingCounter++
 	id := fmt.Sprintf("stt-%d", pendingCounter)
 
-	pendingRequests[id] = &PendingRequest{
-		ID:        id,
-		StartTime: startTime,
-		Provider:  provider,
-		Model:     model,
-		HasImages: false,
-		Sensitive: sensitive,
-		Precision: "",
-		Usecase:   "",
-		Preview:   "STT transcription",
+	pendingRequests[id] = &pendingRequestState{
+		request: &PendingRequest{
+			ID:        id,
+			StartTime: startTime,
+			Provider:  provider,
+			Model:     model,
+			HasImages: false,
+			Sensitive: sensitive,
+			Precision: "",
+			Usecase:   "",
+			Preview:   "STT transcription",
+		},
+		cancel: cancel,
 	}
 
 	return id
@@ -999,13 +1011,24 @@ func getPendingRequests() []*PendingRequest {
 
 	result := make([]*PendingRequest, 0, len(pendingRequests))
 	for _, req := range pendingRequests {
-		result = append(result, req)
+		result = append(result, req.request)
 	}
 	// Sort by StartTime ascending (oldest first) for stable display order
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].StartTime.Before(result[j].StartTime)
 	})
 	return result
+}
+
+func cancelPendingRequest(id string) bool {
+	pendingMutex.RLock()
+	req, ok := pendingRequests[id]
+	pendingMutex.RUnlock()
+	if !ok || req.cancel == nil {
+		return false
+	}
+	req.cancel()
+	return true
 }
 
 // resolveRoute delegates to the router service.
@@ -1365,7 +1388,7 @@ func handleReplayRequest(w http.ResponseWriter, r *http.Request) {
 
 	// Forward to chat completions handler by creating internal request
 	reqBytes, _ := json.Marshal(origReq)
-	internalReq, _ := http.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(reqBytes))
+	internalReq, _ := http.NewRequestWithContext(r.Context(), "POST", "/v1/chat/completions", bytes.NewReader(reqBytes))
 	internalReq.Header.Set("Content-Type", "application/json")
 	internalReq.Header.Set("X-LLM-Proxy-Replay", "true")
 
@@ -2750,7 +2773,7 @@ func handleAIDAProxy(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[AIDA] Proxying %s %s from %s", r.Method, r.URL.Path, clientIP)
 
-	proxyReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(body))
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, "Failed to create proxy request", http.StatusInternalServerError)
 		return
@@ -2836,7 +2859,7 @@ func handleGeminiProxy(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[Gemini] Proxying %s %s from %s", r.Method, path, clientIP)
 
-	proxyReq, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(body))
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, "Failed to create proxy request", http.StatusInternalServerError)
 		return
@@ -3101,6 +3124,7 @@ func main() {
 	// Initialize History handler
 	historyHandler = httphandlers.NewHistoryHandler(db, &dbMutex, requestCache)
 	historyHandler.GetPending = getPendingRequests
+	historyHandler.CancelPending = cancelPendingRequest
 	historyHandler.BudgetRepo = budgetRepository
 
 	// Initialize UI handler
@@ -3159,6 +3183,7 @@ func main() {
 	http.HandleFunc("/api/replay", withCORS(handleReplayRequest))
 	http.HandleFunc("/api/cache/clear", withCORS(historyHandler.HandleClearCache))
 	http.HandleFunc("/api/pending", withCORS(historyHandler.HandlePendingRequests))
+	http.HandleFunc("/api/pending/", withCORS(historyHandler.HandleCancelPendingRequest))
 	http.HandleFunc("/api/tts-history", withCORS(historyHandler.HandleTTSHistory))
 	http.HandleFunc("/api/tts-cache-stats", withCORS(handleTTSCacheStats))
 	http.HandleFunc("/api/tts-cache/clear", withCORS(handleTTSCacheClear))
