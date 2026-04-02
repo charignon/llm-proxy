@@ -24,7 +24,7 @@ type Router struct {
 	usecaseRoutes map[string]map[string]map[string]map[string]*domain.RouteConfig
 	usecaseMutex  sync.RWMutex
 
-	// Assistant model resolver for assistant/assistant-mini/assistant-nano
+	// Assistant model resolver for assistant aliases.
 	assistantResolver AssistantModelResolver
 }
 
@@ -50,15 +50,9 @@ func (r *Router) ResolveRoute(req *domain.ChatCompletionRequest) (*domain.RouteC
 	// Force nvr-proxy callers off legacy models (llava/gemma) to qwen3-vl:30b
 	req.Model = forceNVRProxyModel(req.Model, req.Usecase)
 
-	// Check for assistant model aliases (assistant, assistant-mini, assistant-nano)
+	// Check for assistant model aliases before treating the model as explicit.
 	if r.assistantResolver != nil && req.Model != "" {
-		// Strip ollama/ prefix if present for alias lookup
-		modelForLookup := req.Model
-		if strings.HasPrefix(modelForLookup, "ollama/") {
-			modelForLookup = strings.TrimPrefix(modelForLookup, "ollama/")
-		}
-		// Also strip :latest suffix for alias lookup
-		modelForLookup = strings.TrimSuffix(modelForLookup, ":latest")
+		modelForLookup := normalizeAssistantAlias(req.Model)
 
 		if provider, model, found := r.assistantResolver(modelForLookup); found {
 			return &domain.RouteConfig{Provider: provider, Model: model}, nil
@@ -148,6 +142,16 @@ func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 		provider = "ollama"
 	}
 	return &domain.RouteConfig{Provider: provider, Model: model}
+}
+
+func normalizeAssistantAlias(model string) string {
+	model = strings.TrimSuffix(model, ":latest")
+	for _, prefix := range []string{"ollama-cloud/", "ollama/", "mlx/"} {
+		if strings.HasPrefix(model, prefix) {
+			return strings.TrimPrefix(model, prefix)
+		}
+	}
+	return model
 }
 
 func isLocalExplicitProvider(route *domain.RouteConfig) bool {

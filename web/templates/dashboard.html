@@ -599,8 +599,8 @@
                 <!-- Assistant Models -->
                 <div style="margin-bottom: 20px;">
                     <h3 style="color: #a5b4fc; font-size: 14px; font-weight: 600; margin-bottom: 12px;">Assistant Model Aliases</h3>
-                    <p style="color: #888; font-size: 12px; margin-bottom: 12px;">Configure which models back the assistant, assistant-mini, and assistant-nano aliases</p>
-                    <div id="assistant-models-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
+                    <p style="color: #888; font-size: 12px; margin-bottom: 12px;">Configure which models back the assistant, assistant-mini, assistant-nano, and assistant-mlx aliases</p>
+                    <div id="assistant-models-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px;">
                         <!-- Populated by JS -->
                     </div>
                 </div>
@@ -1958,11 +1958,12 @@
                 const grid = document.getElementById('assistant-models-grid');
                 grid.innerHTML = '';
 
-                const aliases = ['assistant', 'assistant-mini', 'assistant-nano'];
+                const aliases = ['assistant', 'assistant-mini', 'assistant-nano', 'assistant-mlx'];
                 const descriptions = {
                     'assistant': 'Full-size model for complex tasks',
                     'assistant-mini': 'Smaller model for faster responses',
-                    'assistant-nano': 'Tiny model for quick, simple tasks'
+                    'assistant-nano': 'Tiny model for quick, simple tasks',
+                    'assistant-mlx': 'Local MLX-backed candidate for the main assistant slot'
                 };
 
                 aliases.forEach(alias => {

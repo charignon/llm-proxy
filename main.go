@@ -275,8 +275,47 @@ type AssistantModelConfig struct {
 	Model    string `json:"model"`
 }
 
+var assistantAliasOrder = []string{
+	"assistant",
+	"assistant-mini",
+	"assistant-nano",
+	"assistant-mlx",
+}
+
+var assistantAliasDefaults = map[string]AssistantModelConfig{
+	"assistant": {
+		Provider: "ollama",
+		Model:    "qwen3.5:122b-a10b-q4_K_M",
+	},
+	"assistant-mini": {
+		Provider: "ollama",
+		Model:    "myqwen3.5:35b",
+	},
+	"assistant-nano": {
+		Provider: "ollama",
+		Model:    "qwen3:4b-instruct",
+	},
+	"assistant-mlx": {
+		Provider: "mlx",
+		Model:    "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit",
+	},
+}
+
 var assistantModels = make(map[string]AssistantModelConfig)
 var assistantModelsMutex sync.RWMutex
+
+func isSupportedAssistantAlias(alias string) bool {
+	_, ok := assistantAliasDefaults[alias]
+	return ok
+}
+
+func formatSupportedAssistantAliases() string {
+	quotedAliases := make([]string, 0, len(assistantAliasOrder))
+	for _, alias := range assistantAliasOrder {
+		quotedAliases = append(quotedAliases, fmt.Sprintf("%q", alias))
+	}
+	return strings.Join(quotedAliases, ", ")
+}
 
 func isModelDisabled(model string) bool {
 	disabledModelsMutex.RLock()
@@ -419,9 +458,8 @@ func getAssistantModel(alias string) (string, string, bool) {
 
 // setAssistantModel sets the provider and model for an assistant alias and persists to database.
 func setAssistantModel(alias, provider, model string) error {
-	// Only allow the three assistant aliases
-	if alias != "assistant" && alias != "assistant-mini" && alias != "assistant-nano" {
-		return fmt.Errorf("invalid alias: %s (must be 'assistant', 'assistant-mini', or 'assistant-nano')", alias)
+	if !isSupportedAssistantAlias(alias) {
+		return fmt.Errorf("invalid alias: %s (must be one of %s)", alias, formatSupportedAssistantAliases())
 	}
 
 	dbMutex.Lock()
@@ -669,8 +707,8 @@ func initDB() error {
 		return err
 	}
 
-	// Create assistant_models table for configurable assistant model mappings
-	// Maps assistant, assistant-mini, assistant-nano to actual provider/model
+	// Create assistant_models table for configurable assistant model mappings.
+	// Maps assistant aliases to actual provider/model pairs.
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS assistant_models (
 			alias TEXT PRIMARY KEY NOT NULL,
@@ -682,10 +720,16 @@ func initDB() error {
 		return err
 	}
 
-	// Insert default assistant model mappings if they don't exist
-	db.Exec(`INSERT OR IGNORE INTO assistant_models (alias, provider, model) VALUES ('assistant', 'ollama', 'qwen3.5:122b-a10b-q4_K_M')`)
-	db.Exec(`INSERT OR IGNORE INTO assistant_models (alias, provider, model) VALUES ('assistant-mini', 'ollama', 'myqwen3.5:35b')`)
-	db.Exec(`INSERT OR IGNORE INTO assistant_models (alias, provider, model) VALUES ('assistant-nano', 'ollama', 'qwen3:4b-instruct')`)
+	// Insert default assistant model mappings if they don't exist.
+	for _, alias := range assistantAliasOrder {
+		config := assistantAliasDefaults[alias]
+		db.Exec(
+			`INSERT OR IGNORE INTO assistant_models (alias, provider, model) VALUES (?, ?, ?)`,
+			alias,
+			config.Provider,
+			config.Model,
+		)
+	}
 
 	// Create provider_budgets table for per-provider budget limits
 	_, err = db.Exec(`
@@ -1637,6 +1681,14 @@ func handleAvailableModels(w http.ResponseWriter, r *http.Request) {
 		"ollama-cloud": ollamaCloudProvider.GetModels(),
 	}
 
+	if mlxProvider, ok := chatProviders["mlx"].(*providers.MLXProvider); ok {
+		if mlxModels, err := mlxProvider.GetModels(); err == nil {
+			models["mlx"] = mlxModels
+		} else {
+			log.Printf("Failed to fetch MLX models: %v", err)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(models)
 }
@@ -1718,6 +1770,20 @@ func handleModelsConfig(w http.ResponseWriter, r *http.Request) {
 				Model:    m,
 				Enabled:  !isModelDisabled(m),
 			})
+		}
+
+		if mlxProvider, ok := chatProviders["mlx"].(*providers.MLXProvider); ok {
+			if mlxModels, err := mlxProvider.GetModels(); err == nil {
+				for _, m := range mlxModels {
+					configs = append(configs, ModelConfig{
+						Provider: "mlx",
+						Model:    m,
+						Enabled:  !isModelDisabled(m),
+					})
+				}
+			} else {
+				log.Printf("Failed to fetch MLX models for config: %v", err)
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")

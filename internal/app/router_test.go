@@ -49,3 +49,28 @@ func TestResolveRouteRejectsSensitiveExplicitCloudModels(t *testing.T) {
 		t.Fatal("expected sensitive explicit cloud model to be rejected")
 	}
 }
+
+func TestResolveRouteUsesAssistantAliasResolverForMLXAlias(t *testing.T) {
+	t.Parallel()
+
+	router := NewRouter(nil, nil)
+	router.SetAssistantResolver(func(alias string) (string, string, bool) {
+		if alias == "assistant-mlx" {
+			return "mlx", "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit", true
+		}
+		return "", "", false
+	})
+
+	route, err := router.ResolveRoute(&domain.ChatCompletionRequest{
+		Model: "mlx/assistant-mlx:latest",
+	})
+	if err != nil {
+		t.Fatalf("ResolveRoute returned error: %v", err)
+	}
+	if route.Provider != "mlx" {
+		t.Fatalf("ResolveRoute provider = %q, want %q", route.Provider, "mlx")
+	}
+	if route.Model != "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit" {
+		t.Fatalf("ResolveRoute model = %q, want %q", route.Model, "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit")
+	}
+}
