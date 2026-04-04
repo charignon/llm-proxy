@@ -74,6 +74,8 @@ var (
 	mlxTimeout             = getEnvInt("MLX_TIMEOUT", 300)                         // MLX server timeout in seconds
 	togetherKey            = getEnv("TOGETHER_API_KEY", "")                        // Together.ai API key
 	togetherTimeout        = getEnvInt("TOGETHER_TIMEOUT", 240)                    // Together.ai provider timeout in seconds
+	basetenKey             = getEnv("BASETEN_API_KEY", "")                         // Baseten API key
+	basetenTimeout         = getEnvInt("BASETEN_TIMEOUT", 240)                     // Baseten provider timeout in seconds
 )
 
 // Model pricing per 1M tokens (input, output)
@@ -1123,6 +1125,12 @@ func initChatProviders() {
 	if togetherKey != "" {
 		chatProviders["together"] = providers.NewTogetherProvider(togetherKey, togetherTimeout)
 		log.Printf("Together.ai provider configured")
+	}
+
+	// If Baseten key is configured, add it as a provider
+	if basetenKey != "" {
+		chatProviders["baseten"] = providers.NewBasetenProvider(basetenKey, basetenTimeout)
+		log.Printf("Baseten provider configured")
 	}
 }
 

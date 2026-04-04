@@ -347,10 +347,10 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// handleStreaming handles streaming chat completion requests by forwarding to OpenAI/Together/Ollama with stream=true.
+// handleStreaming handles streaming chat completion requests by forwarding to OpenAI/Together/Ollama/Baseten with stream=true.
 func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, ctx context.Context, req *domain.ChatCompletionRequest, route *domain.RouteConfig, body []byte, logEntry *domain.RequestLog, startTime time.Time) {
 	// Check if provider supports streaming
-	if route.Provider != "openai" && route.Provider != "together" && route.Provider != "ollama" && route.Provider != "ollama-cloud" && route.Provider != "mlx" {
+	if route.Provider != "openai" && route.Provider != "together" && route.Provider != "baseten" && route.Provider != "ollama" && route.Provider != "ollama-cloud" && route.Provider != "mlx" {
 		http.Error(w, fmt.Sprintf("Streaming not supported for provider: %s", route.Provider), http.StatusBadRequest)
 		return
 	}
@@ -460,6 +460,8 @@ func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, ct
 	endpoint := "https://api.openai.com/v1/chat/completions"
 	if route.Provider == "together" {
 		endpoint = "https://api.together.xyz/v1/chat/completions"
+	} else if route.Provider == "baseten" {
+		endpoint = "https://inference.baseten.co/v1/chat/completions"
 	}
 
 	// Make streaming request

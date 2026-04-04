@@ -130,6 +130,11 @@ func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 	} else if strings.HasPrefix(model, "ollama/") {
 		provider = "ollama"
 		model = strings.TrimPrefix(model, "ollama/")
+	} else if strings.HasPrefix(model, "baseten/") {
+		provider = "baseten"
+		model = strings.TrimPrefix(model, "baseten/")
+	} else if isBasetenModel(model) {
+		provider = "baseten"
 	} else if providers.IsOllamaCloudModel(model) {
 		provider = "ollama-cloud"
 	} else if strings.HasPrefix(model, "claude") {
@@ -181,6 +186,27 @@ func isTogetherModel(model string) bool {
 		"togethercomputer/", // Together's own models
 	}
 	for _, prefix := range togetherPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// isBasetenModel checks if the model ID is a Baseten model.
+// Baseten models use org/model format like "openai/gpt-oss-120b" or "google/gemma-4-31b-it"
+func isBasetenModel(model string) bool {
+	// Baseten model prefixes (organization names on Baseten)
+	basetenPrefixes := []string{
+		"openai/",     // OpenAI models on Baseten (e.g., gpt-oss)
+		"google/",     // Google models on Baseten (Gemma)
+		"nvidia/",     // NVIDIA models (Nemotron)
+		"alibaba/",    // Alibaba models (Qwen on Baseten)
+		"01-ai/",      // Yi models
+		"cohere/",     // Cohere models
+		"databricks/", // Databricks models
+	}
+	for _, prefix := range basetenPrefixes {
 		if strings.HasPrefix(model, prefix) {
 			return true
 		}
