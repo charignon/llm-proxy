@@ -137,6 +137,10 @@ var modelPricing = map[string][2]float64{
 	"deepseek-coder:33b":   {0, 0},
 	"qwen3-coder:30b":      {0, 0},
 	"codestral:latest":     {0, 0},
+	"gemma4:26b":           {0, 0},
+	"gemma4:31b":           {0, 0},
+	"gemma4:e4b":           {0, 0},
+	"gemma4:e2b":           {0, 0},
 	// Google Gemini models (real Google API model names)
 	"gemini-3-pro-preview":           {2.50, 15.00},
 	"gemini-3-flash-preview":         {0.30, 1.20},
