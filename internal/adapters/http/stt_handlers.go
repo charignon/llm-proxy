@@ -91,7 +91,8 @@ func (h *STTHandler) HandleTranscription(w http.ResponseWriter, r *http.Request)
 	// Get optional parameters
 	model := r.FormValue("model")
 	language := r.FormValue("language")
-	prompt := r.FormValue("prompt") // Context hints for transcription (names, jargon, etc.)
+	prompt := r.FormValue("prompt")          // Context hints for transcription (names, jargon, etc.)
+	responseFormat := r.FormValue("response_format") // "json" (default) or "verbose_json" for segments
 
 	// Route based on sensitive flag
 	sensitive := isSensitiveRequest(r)
@@ -137,10 +138,10 @@ func (h *STTHandler) HandleTranscription(w http.ResponseWriter, r *http.Request)
 
 	if sensitive {
 		// Use local whisper server
-		resp, err = h.callLocalWhisper(reqCtx, fileContent, header.Filename, model, language, prompt)
+		resp, err = h.callLocalWhisper(reqCtx, fileContent, header.Filename, model, language, prompt, responseFormat)
 	} else {
 		// Use OpenAI Whisper API
-		resp, err = h.callOpenAIWhisper(reqCtx, fileContent, header.Filename, model, language, prompt)
+		resp, err = h.callOpenAIWhisper(reqCtx, fileContent, header.Filename, model, language, prompt, responseFormat)
 	}
 
 	latencyMs := time.Since(startTime).Milliseconds()
@@ -368,7 +369,7 @@ func (h *STTHandler) HandleStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // callLocalWhisper sends a transcription request to the local whisper server.
-func (h *STTHandler) callLocalWhisper(ctx context.Context, fileContent []byte, filename, model, language, prompt string) (*domain.WhisperTranscriptionResponse, error) {
+func (h *STTHandler) callLocalWhisper(ctx context.Context, fileContent []byte, filename, model, language, prompt, responseFormat string) (*domain.WhisperTranscriptionResponse, error) {
 	// Create multipart form for local whisper server
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -391,6 +392,9 @@ func (h *STTHandler) callLocalWhisper(ctx context.Context, fileContent []byte, f
 	}
 	if prompt != "" {
 		writer.WriteField("prompt", prompt)
+	}
+	if responseFormat != "" {
+		writer.WriteField("response_format", responseFormat)
 	}
 
 	if err := writer.Close(); err != nil {
@@ -427,7 +431,7 @@ func (h *STTHandler) callLocalWhisper(ctx context.Context, fileContent []byte, f
 }
 
 // callOpenAIWhisper sends a transcription request to OpenAI's Whisper API.
-func (h *STTHandler) callOpenAIWhisper(ctx context.Context, fileContent []byte, filename, model, language, prompt string) (*domain.WhisperTranscriptionResponse, error) {
+func (h *STTHandler) callOpenAIWhisper(ctx context.Context, fileContent []byte, filename, model, language, prompt, responseFormat string) (*domain.WhisperTranscriptionResponse, error) {
 	if h.OpenAIKey == "" {
 		return nil, fmt.Errorf("OPENAI_API_KEY not set")
 	}
@@ -459,6 +463,9 @@ func (h *STTHandler) callOpenAIWhisper(ctx context.Context, fileContent []byte, 
 	// Add optional prompt for context hints
 	if prompt != "" {
 		writer.WriteField("prompt", prompt)
+	}
+	if responseFormat != "" {
+		writer.WriteField("response_format", responseFormat)
 	}
 
 	if err := writer.Close(); err != nil {

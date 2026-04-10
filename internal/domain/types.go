@@ -169,7 +169,17 @@ type TTSRequest struct {
 
 // WhisperTranscriptionResponse represents a transcription result.
 type WhisperTranscriptionResponse struct {
-	Text string `json:"text"`
+	Text     string                `json:"text"`
+	Segments []WhisperSegment      `json:"segments,omitempty"`
+	Language string                `json:"language,omitempty"`
+}
+
+// WhisperSegment represents a segment in verbose_json output.
+type WhisperSegment struct {
+	ID    int     `json:"id"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+	Text  string  `json:"text"`
 }
 
 // ============================================================================
