@@ -1508,6 +1508,8 @@ func (h *ChatHandler) handleMLXStreaming(w http.ResponseWriter, r *http.Request,
 	if len(req.Tools) > 0 {
 		streamReq["tools"] = req.Tools
 	}
+	// Always request usage in final chunk so clients can track context
+	streamReq["stream_options"] = map[string]bool{"include_usage": true}
 
 	body, _ := json.Marshal(streamReq)
 	url := "http://" + host + "/v1/chat/completions"
