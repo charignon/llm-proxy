@@ -203,6 +203,70 @@
         }
         .refresh-btn:hover { background: #4f46e5; }
 
+        /* Lockdown button (top-right) */
+        .lockdown-btn {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 10px;
+            border: 2px solid #7f1d1d;
+            background: #1f1010;
+            color: #fca5a5;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.15s;
+            z-index: 200;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+        }
+        .lockdown-btn:hover {
+            background: #2a1515;
+            border-color: #ef4444;
+            color: #fecaca;
+        }
+        .lockdown-btn .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #4b5563;
+        }
+        .lockdown-btn.on {
+            background: #ef4444;
+            border-color: #fca5a5;
+            color: #fff;
+            box-shadow: 0 0 20px rgba(239, 68, 68, 0.7), 0 0 40px rgba(239, 68, 68, 0.3);
+            animation: lockdownPulse 2s ease-in-out infinite;
+        }
+        .lockdown-btn.on .dot {
+            background: #fff;
+            box-shadow: 0 0 8px #fff;
+        }
+        @keyframes lockdownPulse {
+            0%, 100% { box-shadow: 0 0 20px rgba(239, 68, 68, 0.7), 0 0 40px rgba(239, 68, 68, 0.3); }
+            50%      { box-shadow: 0 0 28px rgba(239, 68, 68, 0.95), 0 0 56px rgba(239, 68, 68, 0.5); }
+        }
+        body.lockdown-active {
+            box-shadow: inset 0 0 0 3px #ef4444;
+        }
+        .lockdown-banner {
+            display: none;
+            background: rgba(239, 68, 68, 0.12);
+            border: 1px solid #ef4444;
+            color: #fecaca;
+            padding: 10px 16px;
+            border-radius: 10px;
+            margin-bottom: 16px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        body.lockdown-active .lockdown-banner { display: block; }
+
         @keyframes spin { 100% { transform: rotate(360deg); } }
         .spinning { animation: spin 1s linear infinite; }
 
@@ -395,9 +459,16 @@
     </style>
 </head>
 <body>
+    <button id="lockdown-btn" class="lockdown-btn" onclick="toggleLockdown()" title="Block all cloud providers — only local models allowed">
+        <span class="dot"></span>
+        <span id="lockdown-btn-label">Lockdown</span>
+    </button>
     <div class="container">
         <h1>LLM Proxy</h1>
         <p class="subtitle">Unified AI gateway with routing, caching, and cost tracking</p>
+        <div id="lockdown-banner" class="lockdown-banner">
+            🔒 <strong>Lockdown mode is ON.</strong> Cloud providers (OpenAI, Anthropic, Gemini, Ollama Cloud, Together, Baseten) are blocked. Only local models (ollama, llamacpp, mlx) are allowed.
+        </div>
 
         <!-- Navigation Tabs -->
         <div class="nav-tabs">
@@ -2863,6 +2934,56 @@
             }
             btn.classList.remove('spinning');
         }
+
+        // Lockdown mode: block all cloud providers
+        function applyLockdownUI(enabled) {
+            const btn = document.getElementById('lockdown-btn');
+            const label = document.getElementById('lockdown-btn-label');
+            if (enabled) {
+                document.body.classList.add('lockdown-active');
+                btn.classList.add('on');
+                label.textContent = 'Lockdown ON';
+            } else {
+                document.body.classList.remove('lockdown-active');
+                btn.classList.remove('on');
+                label.textContent = 'Lockdown';
+            }
+        }
+
+        async function loadLockdownState() {
+            try {
+                const resp = await fetch('/api/settings/lockdown-mode');
+                const data = await resp.json();
+                applyLockdownUI(!!data.enabled);
+            } catch (e) {
+                console.error('Failed to load lockdown state', e);
+            }
+        }
+
+        async function toggleLockdown() {
+            const currentlyOn = document.body.classList.contains('lockdown-active');
+            const target = !currentlyOn;
+            if (target && !confirm('Enable lockdown mode?\n\nAll cloud providers (OpenAI, Anthropic, Gemini, Ollama Cloud, Together, Baseten) will be blocked. Only local models (ollama, llamacpp, mlx) will work.')) {
+                return;
+            }
+            try {
+                const resp = await fetch('/api/settings/lockdown-mode', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: target })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    applyLockdownUI(!!data.enabled);
+                } else {
+                    alert('Failed to change lockdown mode');
+                }
+            } catch (e) {
+                alert('Failed to change lockdown mode: ' + e);
+            }
+        }
+
+        loadLockdownState();
 
         // Handle URL hash navigation
         function handleHash() {

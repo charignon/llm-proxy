@@ -14,6 +14,9 @@ import (
 // Returns (provider, model, found). If found is false, the alias is not an assistant model.
 type AssistantModelResolver func(alias string) (provider string, model string, found bool)
 
+// LockdownChecker reports whether the proxy is in lockdown mode (cloud blocked).
+type LockdownChecker func() bool
+
 // Router handles routing decisions for chat completion requests.
 type Router struct {
 	textRoutes     map[string]map[string]*domain.RouteConfig // sensitive -> precision -> config
@@ -26,6 +29,9 @@ type Router struct {
 
 	// Assistant model resolver for assistant aliases.
 	assistantResolver AssistantModelResolver
+
+	// Lockdown checker: when it returns true, cloud routes are rejected.
+	lockdownChecker LockdownChecker
 }
 
 // NewRouter creates a new router with the provided routing tables.
@@ -45,6 +51,22 @@ func (r *Router) SetAssistantResolver(resolver AssistantModelResolver) {
 	r.assistantResolver = resolver
 }
 
+// SetLockdownChecker sets the function used to check whether lockdown mode is on.
+func (r *Router) SetLockdownChecker(checker LockdownChecker) {
+	r.lockdownChecker = checker
+}
+
+// enforceLockdown rejects cloud routes when lockdown mode is enabled.
+func (r *Router) enforceLockdown(route *domain.RouteConfig) error {
+	if r.lockdownChecker == nil || !r.lockdownChecker() {
+		return nil
+	}
+	if isLocalExplicitProvider(route) {
+		return nil
+	}
+	return fmt.Errorf("lockdown mode: cloud provider %s blocked (model %s); only local models allowed", route.Provider, route.Model)
+}
+
 // ResolveRoute determines the provider and model for a chat completion request.
 func (r *Router) ResolveRoute(req *domain.ChatCompletionRequest) (*domain.RouteConfig, error) {
 	// Force nvr-proxy callers off legacy models (llava/gemma) to qwen3-vl:30b
@@ -55,7 +77,11 @@ func (r *Router) ResolveRoute(req *domain.ChatCompletionRequest) (*domain.RouteC
 		modelForLookup := normalizeAssistantAlias(req.Model)
 
 		if provider, model, found := r.assistantResolver(modelForLookup); found {
-			return &domain.RouteConfig{Provider: provider, Model: model}, nil
+			route := &domain.RouteConfig{Provider: provider, Model: model}
+			if err := r.enforceLockdown(route); err != nil {
+				return nil, err
+			}
+			return route, nil
 		}
 	}
 
@@ -64,6 +90,9 @@ func (r *Router) ResolveRoute(req *domain.ChatCompletionRequest) (*domain.RouteC
 		route := r.resolveExplicitModel(req.Model)
 		if req.Sensitive != nil && *req.Sensitive && !isLocalExplicitProvider(route) {
 			return nil, fmt.Errorf("sensitive requests cannot use %s/%s", route.Provider, route.Model)
+		}
+		if err := r.enforceLockdown(route); err != nil {
+			return nil, err
 		}
 		return route, nil
 	}
@@ -113,6 +142,10 @@ func (r *Router) ResolveRoute(req *domain.ChatCompletionRequest) (*domain.RouteC
 
 	if route == nil {
 		return nil, fmt.Errorf("capability not available: sensitive=%s, precision=%s", sensitive, precision)
+	}
+
+	if err := r.enforceLockdown(route); err != nil {
+		return nil, err
 	}
 
 	return route, nil
@@ -325,6 +358,10 @@ func (r *Router) GetImageGenRoutes() map[string]map[string]*domain.RouteConfig {
 
 // ResolveImageGenRoute determines the provider and model for an image generation request.
 func (r *Router) ResolveImageGenRoute(req *domain.ImageGenerationRequest) (*domain.RouteConfig, error) {
+	if r.lockdownChecker != nil && r.lockdownChecker() {
+		return nil, fmt.Errorf("lockdown mode: image generation blocked (no local image provider available)")
+	}
+
 	// If model is explicitly specified (not a routing keyword), use it directly
 	if req.Model != "" && req.Model != "auto" && req.Model != "route" {
 		// For image generation, only OpenAI DALL-E models are supported

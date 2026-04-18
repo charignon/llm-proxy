@@ -408,6 +408,64 @@ func getLocalVisionProvider() ports.ChatProvider {
 	return ollamaProvider
 }
 
+// Lockdown mode: when enabled, all cloud providers (OpenAI, Anthropic, Gemini,
+// Ollama Cloud, Together, Baseten) are blocked and only local models
+// (ollama, llamacpp, mlx) are allowed. Persisted in the settings table.
+var lockdownMode = false
+var lockdownModeMutex sync.RWMutex
+
+// loadLockdownMode loads the lockdown preference from the database.
+func loadLockdownMode() {
+	var value string
+	err := db.QueryRow(`SELECT value FROM settings WHERE key = 'lockdown_mode'`).Scan(&value)
+	if err != nil {
+		lockdownMode = false
+		log.Printf("Lockdown mode: off (default)")
+		return
+	}
+	lockdownModeMutex.Lock()
+	defer lockdownModeMutex.Unlock()
+	lockdownMode = value == "1" || value == "true"
+	if lockdownMode {
+		log.Printf("Lockdown mode: ON (cloud providers blocked)")
+	} else {
+		log.Printf("Lockdown mode: off")
+	}
+}
+
+// getLockdownMode returns whether lockdown mode is currently enabled.
+func getLockdownMode() bool {
+	lockdownModeMutex.RLock()
+	defer lockdownModeMutex.RUnlock()
+	return lockdownMode
+}
+
+// setLockdownMode sets and persists the lockdown mode preference.
+func setLockdownMode(enabled bool) error {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	value := "0"
+	if enabled {
+		value = "1"
+	}
+	_, err := db.Exec(`INSERT OR REPLACE INTO settings (key, value) VALUES ('lockdown_mode', ?)`, value)
+	if err != nil {
+		return err
+	}
+
+	lockdownModeMutex.Lock()
+	lockdownMode = enabled
+	lockdownModeMutex.Unlock()
+
+	if enabled {
+		log.Printf("Lockdown mode ENABLED: cloud providers blocked")
+	} else {
+		log.Printf("Lockdown mode disabled")
+	}
+	return nil
+}
+
 // getProviderOverride returns an override provider for vision models if llamacpp is preferred.
 // This intercepts ollama vision model requests and routes them to llamacpp when the backend is set.
 // Returns the provider and name, or nil/"" if no override.
@@ -1904,6 +1962,43 @@ func handleBackend(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
+// handleLockdownMode returns or sets the lockdown preference.
+// GET: returns {"enabled": bool}
+// POST: sets lockdown state with {"enabled": bool}
+func handleLockdownMode(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"enabled": getLockdownMode(),
+		})
+		return
+	}
+
+	if r.Method == "POST" {
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		if err := setLockdownMode(req.Enabled); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"enabled": getLockdownMode(),
+		})
+		return
+	}
+
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
 // handleAssistantModels returns or sets assistant model mappings.
 // GET: returns all assistant model mappings
 // POST: sets a single mapping with {"alias": "assistant", "provider": "ollama", "model": "qwen3.5:122b"}
@@ -2845,6 +2940,10 @@ func validateRoutingTableSecurity() {
 // handleAIDAProxy proxies requests to Google's AIDA API (used by Jules CLI)
 // This allows centralizing API tokens on the server and logging all requests
 func handleAIDAProxy(w http.ResponseWriter, r *http.Request) {
+	if getLockdownMode() {
+		http.Error(w, "lockdown mode: cloud provider (AIDA) blocked", http.StatusForbidden)
+		return
+	}
 	if aidaToken == "" {
 		http.Error(w, "AIDA_TOKEN not configured", http.StatusServiceUnavailable)
 		return
@@ -2930,6 +3029,10 @@ func handleAIDAProxy(w http.ResponseWriter, r *http.Request) {
 // handleGeminiProxy provides a direct proxy to Google's Gemini API
 // This allows using Gemini with the stored API key
 func handleGeminiProxy(w http.ResponseWriter, r *http.Request) {
+	if getLockdownMode() {
+		http.Error(w, "lockdown mode: cloud provider (Gemini) blocked", http.StatusForbidden)
+		return
+	}
 	if geminiKey == "" {
 		http.Error(w, "GEMINI_API_KEY not configured", http.StatusServiceUnavailable)
 		return
@@ -3111,11 +3214,17 @@ func main() {
 	// Load local vision backend preference
 	loadLocalVisionBackend()
 
+	// Load lockdown mode preference
+	loadLockdownMode()
+
 	// Load assistant model mappings
 	loadAssistantModels()
 
 	// Set assistant model resolver on router
 	router.SetAssistantResolver(getAssistantModel)
+
+	// Wire lockdown checker so the router can reject cloud routes when enabled
+	router.SetLockdownChecker(getLockdownMode)
 
 	// Initialize cache
 	initCache()
@@ -3291,6 +3400,7 @@ func main() {
 	http.HandleFunc("/api/backend", withCORS(handleBackend))
 	http.HandleFunc("/api/assistant-models", withCORS(handleAssistantModels))
 	http.HandleFunc("/api/settings/server-config", withCORS(handleServerConfig))
+	http.HandleFunc("/api/settings/lockdown-mode", withCORS(handleLockdownMode))
 	http.HandleFunc("/api/llamacpp/info", withCORS(handleLlamaCppInfo))
 	http.HandleFunc("/api/llamacpp/metrics", withCORS(handleLlamaCppMetrics))
 	http.HandleFunc("/analytics", uiHandler.HandleAnalyticsPage)
