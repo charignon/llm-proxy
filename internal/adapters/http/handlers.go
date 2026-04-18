@@ -1554,7 +1554,20 @@ func (h *ChatHandler) handleMLXStreaming(w http.ResponseWriter, r *http.Request,
 	// Stream response from MLX server, cleaning up incompatible fields
 	scanner := bufio.NewScanner(resp.Body)
 	var totalContent string
+	var reasoningContent string
 	var inputTokens, outputTokens int
+
+	// Accumulate tool calls from streaming chunks
+	type toolCall struct {
+		ID       string `json:"id"`
+		Type     string `json:"type"`
+		Function struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"function"`
+	}
+	var toolCalls []toolCall
+	toolCallArgs := map[int]*strings.Builder{}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -1562,18 +1575,16 @@ func (h *ChatHandler) handleMLXStreaming(w http.ResponseWriter, r *http.Request,
 			continue
 		}
 
-		// Clean up MLX-specific fields that break LibreChat
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data != "[DONE]" {
 				var chunk map[string]interface{}
 				if err := json.Unmarshal([]byte(data), &chunk); err == nil {
-					// Clean up choices
 					if choices, ok := chunk["choices"].([]interface{}); ok {
 						for _, choice := range choices {
 							if c, ok := choice.(map[string]interface{}); ok {
 								if delta, ok := c["delta"].(map[string]interface{}); ok {
-									// Remove empty tool_calls array (causes LibreChat parsing errors)
+									// Remove empty tool_calls array
 									if tc, ok := delta["tool_calls"].([]interface{}); ok && len(tc) == 0 {
 										delete(delta, "tool_calls")
 									}
@@ -1581,15 +1592,59 @@ func (h *ChatHandler) handleMLXStreaming(w http.ResponseWriter, r *http.Request,
 									if r, ok := delta["reasoning"].(string); ok && r == "" {
 										delete(delta, "reasoning")
 									}
-									// Extract content for logging
+									// Extract content
 									if content, ok := delta["content"].(string); ok {
 										totalContent += content
+									}
+									// Extract reasoning_content
+									if rc, ok := delta["reasoning_content"].(string); ok {
+										reasoningContent += rc
+									}
+									// Accumulate tool calls
+									if tcs, ok := delta["tool_calls"].([]interface{}); ok {
+										for _, tcRaw := range tcs {
+											tc, ok := tcRaw.(map[string]interface{})
+											if !ok {
+												continue
+											}
+											idx := 0
+											if i, ok := tc["index"].(float64); ok {
+												idx = int(i)
+											}
+											fn, _ := tc["function"].(map[string]interface{})
+											if fn == nil {
+												continue
+											}
+											name, _ := fn["name"].(string)
+											args, _ := fn["arguments"].(string)
+											id, _ := tc["id"].(string)
+
+											if id != "" && name != "" {
+												// New tool call
+												toolCalls = append(toolCalls, toolCall{
+													ID:   id,
+													Type: "function",
+												})
+												toolCalls[len(toolCalls)-1].Function.Name = name
+												idx = len(toolCalls) - 1
+												toolCallArgs[idx] = &strings.Builder{}
+												if args != "" {
+													toolCallArgs[idx].WriteString(args)
+												}
+											} else if args != "" && idx < len(toolCalls) {
+												// Append arguments to existing tool call
+												if _, ok := toolCallArgs[idx]; !ok {
+													toolCallArgs[idx] = &strings.Builder{}
+												}
+												toolCallArgs[idx].WriteString(args)
+											}
+										}
 									}
 								}
 							}
 						}
 					}
-					// Extract usage for logging
+					// Extract usage
 					if usage, ok := chunk["usage"].(map[string]interface{}); ok {
 						if pt, ok := usage["prompt_tokens"].(float64); ok {
 							inputTokens = int(pt)
@@ -1598,28 +1653,41 @@ func (h *ChatHandler) handleMLXStreaming(w http.ResponseWriter, r *http.Request,
 							outputTokens = int(ct)
 						}
 					}
-					// Re-serialize cleaned chunk
 					cleanedData, _ := json.Marshal(chunk)
 					line = "data: " + string(cleanedData)
 				}
 			}
 		}
 
-		// Write cleaned line to client with proper SSE format (double newline)
 		fmt.Fprintf(w, "%s\n\n", line)
 		flusher.Flush()
 	}
 
-	// Build synthetic response body for logging (so it shows in the UI)
+	// Finalize tool call arguments
+	for i, builder := range toolCallArgs {
+		if i < len(toolCalls) {
+			toolCalls[i].Function.Arguments = builder.String()
+		}
+	}
+
+	// Build synthetic response body for logging
+	message := map[string]interface{}{
+		"role":    "assistant",
+		"content": totalContent,
+	}
+	if reasoningContent != "" {
+		message["reasoning_content"] = reasoningContent
+	}
+	if len(toolCalls) > 0 {
+		message["tool_calls"] = toolCalls
+	}
+
 	syntheticResp := map[string]interface{}{
 		"model":    route.Model,
 		"provider": route.Provider,
 		"choices": []map[string]interface{}{
 			{
-				"message": map[string]string{
-					"role":    "assistant",
-					"content": totalContent,
-				},
+				"message":       message,
 				"finish_reason": "stop",
 			},
 		},
