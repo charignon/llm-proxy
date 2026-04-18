@@ -2348,14 +2348,38 @@
                 html += '<div class="modal-section">';
                 html += '<details open><summary style="cursor:pointer;font-size:16px;font-weight:600;color:#e2e8f0">Request Messages <span style="color:#888;font-weight:normal">(' + msgCount + ')</span></summary>';
                 html += '<div style="margin-top:12px">';
+                // Build lookup: tool_call_id -> tool name, and positional fallback
+                const toolCallMap = {};  // id -> {name, args}
+                const toolCallOrder = []; // sequential tool calls for positional matching
+                for (const msg of data.request.messages) {
+                    if (msg.role === 'assistant' && msg.tool_calls) {
+                        for (const tc of msg.tool_calls) {
+                            const fn = tc.function || {};
+                            const entry = {name: fn.name || 'unknown', args: fn.arguments || '{}'};
+                            if (tc.id) toolCallMap[tc.id] = entry;
+                            toolCallOrder.push(entry);
+                        }
+                    }
+                }
+                let toolResultIdx = 0;
+
                 for (const msg of data.request.messages) {
                     html += '<div class="message-block">';
                     if (msg.role === 'tool') {
-                        html += '<div class="message-role" style="color:#f59e0b">🔧 tool <span style="color:#64748b;font-size:11px;font-family:monospace">' + escapeHtml(msg.tool_call_id || '') + '</span></div>';
+                        // Resolve tool name from call_id or positional fallback
+                        let toolInfo = null;
+                        if (msg.tool_call_id && toolCallMap[msg.tool_call_id]) {
+                            toolInfo = toolCallMap[msg.tool_call_id];
+                        } else if (toolResultIdx < toolCallOrder.length) {
+                            toolInfo = toolCallOrder[toolResultIdx];
+                        }
+                        toolResultIdx++;
+                        const toolName = toolInfo ? toolInfo.name : 'unknown';
+                        html += '<div class="message-role" style="color:#f59e0b">🔧 ' + escapeHtml(toolName) + ' <span style="color:#22c55e;font-size:11px">result</span></div>';
                         const toolContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
                         if (toolContent.length > 200) {
-                            html += '<details><summary style="cursor:pointer;color:#94a3b8;font-size:12px">Show result (' + toolContent.length + ' chars)</summary>';
-                            html += '<div class="message-content">' + escapeHtml(toolContent) + '</div>';
+                            html += '<details><summary style="cursor:pointer;color:#94a3b8;font-size:12px">Show output (' + toolContent.length + ' chars)</summary>';
+                            html += '<div class="message-content" style="max-height:300px;overflow-y:auto">' + escapeHtml(toolContent) + '</div>';
                             html += '</details>';
                         } else {
                             html += '<div class="message-content">' + escapeHtml(toolContent) + '</div>';
@@ -2368,7 +2392,7 @@
                             let args = fn.arguments || '{}';
                             try { args = JSON.stringify(JSON.parse(args), null, 2); } catch(e) {}
                             html += '<div style="margin:4px 0;padding:8px;background:#1e293b;border-radius:6px;border-left:3px solid #f59e0b">';
-                            html += '<span style="color:#fbbf24;font-weight:600">' + escapeHtml(fn.name || 'unknown') + '</span>';
+                            html += '<span style="color:#fbbf24;font-weight:600">→ ' + escapeHtml(fn.name || 'unknown') + '</span>';
                             html += ' <span style="color:#64748b;font-size:11px">' + escapeHtml(tc.id || '') + '</span>';
                             if (args.length > 200) {
                                 html += '<details><summary style="cursor:pointer;color:#94a3b8;font-size:11px">Show input</summary>';
