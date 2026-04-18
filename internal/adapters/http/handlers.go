@@ -350,13 +350,13 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // handleStreaming handles streaming chat completion requests by forwarding to OpenAI/Together/Ollama/Baseten with stream=true.
 func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, ctx context.Context, req *domain.ChatCompletionRequest, route *domain.RouteConfig, body []byte, logEntry *domain.RequestLog, startTime time.Time) {
 	// Check if provider supports streaming
-	if route.Provider != "openai" && route.Provider != "together" && route.Provider != "baseten" && route.Provider != "ollama" && route.Provider != "ollama-cloud" && route.Provider != "mlx" {
+	if route.Provider != "openai" && route.Provider != "together" && route.Provider != "baseten" && route.Provider != "ollama" && route.Provider != "ollama-cloud" && route.Provider != "mlx" && route.Provider != "llamacpp" {
 		http.Error(w, fmt.Sprintf("Streaming not supported for provider: %s", route.Provider), http.StatusBadRequest)
 		return
 	}
 
 	// Handle Ollama streaming separately (uses NDJSON, not SSE)
-	if route.Provider == "mlx" {
+	if route.Provider == "mlx" || route.Provider == "llamacpp" {
 		h.handleMLXStreaming(w, r, req, route, logEntry, startTime)
 		return
 	}
@@ -1458,37 +1458,59 @@ func (r *responseRecorder) Flush() {
 // This handler cleans up MLX-specific fields (empty tool_calls, reasoning)
 // that cause parsing errors in LibreChat.
 func (h *ChatHandler) handleMLXStreaming(w http.ResponseWriter, r *http.Request, req *domain.ChatCompletionRequest, route *domain.RouteConfig, logEntry *domain.RequestLog, startTime time.Time) {
-	// Get MLX provider
-	provider, ok := h.Providers["mlx"]
-	if !ok {
-		http.Error(w, "MLX provider not configured", http.StatusInternalServerError)
-		return
+	// Resolve host and timeout based on provider (works for both mlx and llamacpp)
+	var host string
+	var timeout int
+	switch route.Provider {
+	case "llamacpp":
+		p, ok := h.Providers["llamacpp"]
+		if !ok {
+			http.Error(w, "llamacpp provider not configured", http.StatusInternalServerError)
+			return
+		}
+		lp, ok := p.(*providers.LlamaCppProvider)
+		if !ok {
+			http.Error(w, "Invalid llamacpp provider type", http.StatusInternalServerError)
+			return
+		}
+		host = lp.Host
+		timeout = lp.Timeout
+	default: // mlx
+		p, ok := h.Providers["mlx"]
+		if !ok {
+			http.Error(w, "MLX provider not configured", http.StatusInternalServerError)
+			return
+		}
+		mp, ok := p.(*providers.MLXProvider)
+		if !ok {
+			http.Error(w, "Invalid MLX provider type", http.StatusInternalServerError)
+			return
+		}
+		host = mp.Host
+		timeout = mp.Timeout
 	}
 
-	mlxProvider, ok := provider.(*providers.MLXProvider)
-	if !ok {
-		http.Error(w, "Invalid MLX provider type", http.StatusInternalServerError)
-		return
-	}
-
-	// Build MLX streaming request
-	mlxReq := map[string]interface{}{
+	// Build streaming request (OpenAI-compatible, works for both MLX and llama.cpp)
+	streamReq := map[string]interface{}{
 		"model":    route.Model,
 		"messages": req.Messages,
 		"stream":   true,
 	}
 	if req.MaxTokens > 0 {
-		mlxReq["max_tokens"] = req.MaxTokens
+		streamReq["max_tokens"] = req.MaxTokens
 	}
 	if req.MaxCompletionTokens > 0 {
-		mlxReq["max_tokens"] = req.MaxCompletionTokens
+		streamReq["max_tokens"] = req.MaxCompletionTokens
 	}
 	if req.Temperature > 0 {
-		mlxReq["temperature"] = req.Temperature
+		streamReq["temperature"] = req.Temperature
+	}
+	if len(req.Tools) > 0 {
+		streamReq["tools"] = req.Tools
 	}
 
-	body, _ := json.Marshal(mlxReq)
-	url := "http://" + mlxProvider.Host + "/v1/chat/completions"
+	body, _ := json.Marshal(streamReq)
+	url := "http://" + host + "/v1/chat/completions"
 
 	httpReq, err := http.NewRequestWithContext(r.Context(), "POST", url, bytes.NewReader(body))
 	if err != nil {
@@ -1500,7 +1522,7 @@ func (h *ChatHandler) handleMLXStreaming(w http.ResponseWriter, r *http.Request,
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	client := &http.Client{Timeout: time.Duration(mlxProvider.Timeout) * time.Second}
+	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		logEntry.Success = false
