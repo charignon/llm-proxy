@@ -124,6 +124,9 @@ func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 	if strings.HasPrefix(model, "ollama-cloud/") {
 		provider = "ollama-cloud"
 		model = strings.TrimPrefix(model, "ollama-cloud/")
+	} else if strings.HasPrefix(model, "llamacpp/") {
+		provider = "llamacpp"
+		model = strings.TrimPrefix(model, "llamacpp/")
 	} else if strings.HasPrefix(model, "mlx/") {
 		provider = "mlx"
 		model = strings.TrimPrefix(model, "mlx/")
@@ -151,7 +154,7 @@ func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 
 func normalizeAssistantAlias(model string) string {
 	model = strings.TrimSuffix(model, ":latest")
-	for _, prefix := range []string{"ollama-cloud/", "ollama/", "mlx/"} {
+	for _, prefix := range []string{"ollama-cloud/", "ollama/", "mlx/", "llamacpp/"} {
 		if strings.HasPrefix(model, prefix) {
 			return strings.TrimPrefix(model, prefix)
 		}

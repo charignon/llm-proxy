@@ -119,6 +119,29 @@ func (p *LlamaCppProvider) Chat(ctx context.Context, req *domain.ChatCompletionR
 	return &result, nil
 }
 
+// GetModels returns the list of models loaded in the llama.cpp server.
+func (p *LlamaCppProvider) GetModels() ([]string, error) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("http://" + p.Host + "/v1/models")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	models := make([]string, len(result.Data))
+	for i, m := range result.Data {
+		models[i] = m.ID
+	}
+	return models, nil
+}
+
 // IsHealthy checks if the llama.cpp server is responding.
 func (p *LlamaCppProvider) IsHealthy() bool {
 	client := &http.Client{Timeout: 2 * time.Second}

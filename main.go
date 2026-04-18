@@ -1267,6 +1267,24 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Add llama.cpp models if the provider is configured
+	if llamacppProvider != nil {
+		if llamaModels, err := llamacppProvider.GetModels(); err == nil {
+			for _, model := range llamaModels {
+				prefixedModel := "llamacpp/" + model
+				if !seen[prefixedModel] {
+					models = append(models, map[string]interface{}{
+						"id":       prefixedModel,
+						"object":   "model",
+						"owned_by": "llm-proxy",
+						"local":    true,
+					})
+					seen[prefixedModel] = true
+				}
+			}
+		}
+	}
+
 	// Add MLX models if the provider is configured
 	if mlxProvider, ok := chatProviders["mlx"].(*providers.MLXProvider); ok {
 		if mlxModels, err := mlxProvider.GetModels(); err == nil {
