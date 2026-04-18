@@ -1610,6 +1610,28 @@ func (h *ChatHandler) handleMLXStreaming(w http.ResponseWriter, r *http.Request,
 		flusher.Flush()
 	}
 
+	// Build synthetic response body for logging (so it shows in the UI)
+	syntheticResp := map[string]interface{}{
+		"model":    route.Model,
+		"provider": route.Provider,
+		"choices": []map[string]interface{}{
+			{
+				"message": map[string]string{
+					"role":    "assistant",
+					"content": totalContent,
+				},
+				"finish_reason": "stop",
+			},
+		},
+		"usage": map[string]int{
+			"prompt_tokens":     inputTokens,
+			"completion_tokens": outputTokens,
+			"total_tokens":      inputTokens + outputTokens,
+		},
+	}
+	respBytes, _ := json.Marshal(syntheticResp)
+	logEntry.ResponseBody = respBytes
+
 	// Log the request
 	logEntry.Success = true
 	logEntry.InputTokens = inputTokens
