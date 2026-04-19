@@ -86,6 +86,12 @@ func (p *LlamaCppProvider) Chat(ctx context.Context, req *domain.ChatCompletionR
 	if req.Temperature > 0 {
 		llamaReq["temperature"] = req.Temperature
 	}
+	if len(req.Tools) > 0 {
+		llamaReq["tools"] = req.Tools
+	}
+	if req.ToolChoice != nil {
+		llamaReq["tool_choice"] = req.ToolChoice
+	}
 
 	body, _ := json.Marshal(llamaReq)
 	log.Printf("[LlamaCpp] Request to %s, model=%s, messages=%d", p.Host, model, len(req.Messages))
