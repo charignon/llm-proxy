@@ -1359,10 +1359,11 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 				prefixedModel := "llamacpp-vision/" + model
 				if !seen[prefixedModel] {
 					models = append(models, map[string]interface{}{
-						"id":       prefixedModel,
-						"object":   "model",
-						"owned_by": "llm-proxy",
-						"local":    true,
+						"id":           prefixedModel,
+						"object":       "model",
+						"owned_by":     "llm-proxy",
+						"local":        true,
+						"vision_model": true,
 						"capabilities": map[string]bool{
 							"vision": true,
 						},
