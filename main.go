@@ -48,7 +48,8 @@ var (
 	geminiKey              = getEnv("GEMINI_API_KEY", "")
 	aidaToken              = getEnv("AIDA_TOKEN", "") // Google AIDA API token for Jules
 	ollamaHost             = getEnv("OLLAMA_HOST", "localhost:11434")
-	llamacppHost           = getEnv("LLAMACPP_HOST", "") // Optional: llama.cpp server for load balancing (e.g., "studio.lan:8081")
+	llamacppHost           = getEnv("LLAMACPP_HOST", "")        // Optional: llama.cpp text server (e.g., "localhost:8091")
+	llamacppVisionHost     = getEnv("LLAMACPP_VISION_HOST", "") // Optional: llama.cpp vision server with mmproj (e.g., "localhost:8081")
 	mlxHost                = getEnv("MLX_HOST", "")      // Optional: MLX LM server (e.g., "localhost:8086")
 	dataDir                = getEnv("DATA_DIR", "./data")
 	postgresConnStr        = getEnv("POSTGRES_CONN_STR", "")                       // PostgreSQL connection string for analytics (optional)
@@ -1158,6 +1159,7 @@ var ollamaCloudProvider *providers.OllamaCloudProvider
 
 // llamacppProvider is stored separately for health checks and backend switching.
 var llamacppProvider *providers.LlamaCppProvider
+var llamacppVisionProvider *providers.LlamaCppProvider
 
 func initChatProviders() {
 	ollamaProvider = providers.NewOllamaProvider(ollamaHost, chatTimeout)
@@ -1174,7 +1176,14 @@ func initChatProviders() {
 	if llamacppHost != "" {
 		llamacppProvider = providers.NewLlamaCppProvider(llamacppHost, llamacppTimeout)
 		chatProviders["llamacpp"] = llamacppProvider
-		log.Printf("llama.cpp provider configured at %s", llamacppHost)
+		log.Printf("llama.cpp text provider configured at %s", llamacppHost)
+	}
+
+	// If llama.cpp vision host is configured, add it as a separate provider
+	if llamacppVisionHost != "" {
+		llamacppVisionProvider = providers.NewLlamaCppProvider(llamacppVisionHost, llamacppTimeout)
+		chatProviders["llamacpp-vision"] = llamacppVisionProvider
+		log.Printf("llama.cpp vision provider configured at %s", llamacppVisionHost)
 	}
 
 	// If MLX host is configured, add it as a provider
@@ -2858,7 +2867,7 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 // isLocalProvider returns true if the provider runs locally (not cloud)
 func isLocalProvider(provider string) bool {
 	switch provider {
-	case "ollama", "llamacpp", "local-vision":
+	case "ollama", "llamacpp", "llamacpp-vision", "local-vision":
 		return true
 	default:
 		return false
@@ -3451,7 +3460,10 @@ func main() {
 	}
 	log.Printf("Timeouts: %v", timeouts)
 	if llamacppHost != "" {
-		log.Printf("llama.cpp host: %s (backend: %s)", llamacppHost, getLocalVisionBackend())
+		log.Printf("llama.cpp text host: %s", llamacppHost)
+	}
+	if llamacppVisionHost != "" {
+		log.Printf("llama.cpp vision host: %s", llamacppVisionHost)
 	}
 
 	if err := http.ListenAndServe(":"+port, nil); err != nil {

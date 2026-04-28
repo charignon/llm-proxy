@@ -157,6 +157,9 @@ func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 	if strings.HasPrefix(model, "ollama-cloud/") {
 		provider = "ollama-cloud"
 		model = strings.TrimPrefix(model, "ollama-cloud/")
+	} else if strings.HasPrefix(model, "llamacpp-vision/") {
+		provider = "llamacpp-vision"
+		model = strings.TrimPrefix(model, "llamacpp-vision/")
 	} else if strings.HasPrefix(model, "llamacpp/") {
 		provider = "llamacpp"
 		model = strings.TrimPrefix(model, "llamacpp/")
@@ -187,7 +190,7 @@ func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 
 func normalizeAssistantAlias(model string) string {
 	model = strings.TrimSuffix(model, ":latest")
-	for _, prefix := range []string{"ollama-cloud/", "ollama/", "mlx/", "llamacpp/"} {
+	for _, prefix := range []string{"ollama-cloud/", "ollama/", "mlx/", "llamacpp-vision/", "llamacpp/"} {
 		if strings.HasPrefix(model, prefix) {
 			return strings.TrimPrefix(model, prefix)
 		}
@@ -200,7 +203,7 @@ func isLocalExplicitProvider(route *domain.RouteConfig) bool {
 		return false
 	}
 	switch route.Provider {
-	case "ollama", "llamacpp", "local-vision", "mlx":
+	case "ollama", "llamacpp", "llamacpp-vision", "local-vision", "mlx":
 		return !providers.IsOllamaCloudModel(route.Model)
 	default:
 		return false
