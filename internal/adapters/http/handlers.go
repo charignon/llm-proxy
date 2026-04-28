@@ -21,6 +21,21 @@ import (
 	"llm-proxy/internal/ports"
 )
 
+// usecaseFromBearer extracts usecase from the Authorization Bearer token.
+// This allows clients like Jan that only support API key fields to pass
+// the usecase as the API key (e.g., "jan" becomes usecase "jan").
+func usecaseFromBearer(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if strings.HasPrefix(auth, "Bearer ") {
+		token := strings.TrimPrefix(auth, "Bearer ")
+		// Ignore common placeholder values
+		if token != "" && token != "not-needed" && token != "sk-" {
+			return token
+		}
+	}
+	return ""
+}
+
 // ChatHandler handles chat completion requests.
 type ChatHandler struct {
 	Router        *app.Router
@@ -126,6 +141,11 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Allow usecase from header (for clients like aider that can't add custom body fields)
 	if req.Usecase == "" {
 		req.Usecase = r.Header.Get("X-Usecase")
+	}
+
+	// Allow usecase from Bearer token (for clients like Jan that only support API key)
+	if req.Usecase == "" {
+		req.Usecase = usecaseFromBearer(r)
 	}
 
 	// Validate usecase is provided
@@ -1071,6 +1091,11 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Allow usecase from header
 	if req.Usecase == "" {
 		req.Usecase = r.Header.Get("X-Usecase")
+	}
+
+	// Allow usecase from Bearer token
+	if req.Usecase == "" {
+		req.Usecase = usecaseFromBearer(r)
 	}
 
 	// Validate usecase

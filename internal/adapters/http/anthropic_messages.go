@@ -51,6 +51,9 @@ func (h *AnthropicMessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		req.Usecase = r.Header.Get("X-Usecase")
 	}
 	if req.Usecase == "" {
+		req.Usecase = usecaseFromBearer(r)
+	}
+	if req.Usecase == "" {
 		h.jsonError(w, http.StatusBadRequest, "invalid_request_error",
 			"Missing required field: usecase. Please provide a usecase in the body or X-Usecase header.")
 		return
