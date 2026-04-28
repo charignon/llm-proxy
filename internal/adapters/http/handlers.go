@@ -370,13 +370,13 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // handleStreaming handles streaming chat completion requests by forwarding to OpenAI/Together/Ollama/Baseten with stream=true.
 func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, ctx context.Context, req *domain.ChatCompletionRequest, route *domain.RouteConfig, body []byte, logEntry *domain.RequestLog, startTime time.Time) {
 	// Check if provider supports streaming
-	if route.Provider != "openai" && route.Provider != "together" && route.Provider != "baseten" && route.Provider != "ollama" && route.Provider != "ollama-cloud" && route.Provider != "mlx" && route.Provider != "llamacpp" {
+	if route.Provider != "openai" && route.Provider != "together" && route.Provider != "baseten" && route.Provider != "ollama" && route.Provider != "ollama-cloud" && route.Provider != "mlx" && route.Provider != "llamacpp" && route.Provider != "llamacpp-vision" {
 		http.Error(w, fmt.Sprintf("Streaming not supported for provider: %s", route.Provider), http.StatusBadRequest)
 		return
 	}
 
 	// Handle Ollama streaming separately (uses NDJSON, not SSE)
-	if route.Provider == "mlx" || route.Provider == "llamacpp" {
+	if route.Provider == "mlx" || route.Provider == "llamacpp" || route.Provider == "llamacpp-vision" {
 		h.handleMLXStreaming(w, r, req, route, logEntry, startTime)
 		return
 	}
@@ -1487,15 +1487,15 @@ func (h *ChatHandler) handleMLXStreaming(w http.ResponseWriter, r *http.Request,
 	var host string
 	var timeout int
 	switch route.Provider {
-	case "llamacpp":
-		p, ok := h.Providers["llamacpp"]
+	case "llamacpp", "llamacpp-vision":
+		p, ok := h.Providers[route.Provider]
 		if !ok {
-			http.Error(w, "llamacpp provider not configured", http.StatusInternalServerError)
+			http.Error(w, route.Provider+" provider not configured", http.StatusInternalServerError)
 			return
 		}
 		lp, ok := p.(*providers.LlamaCppProvider)
 		if !ok {
-			http.Error(w, "Invalid llamacpp provider type", http.StatusInternalServerError)
+			http.Error(w, "Invalid "+route.Provider+" provider type", http.StatusInternalServerError)
 			return
 		}
 		host = lp.Host
