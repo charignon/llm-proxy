@@ -1334,11 +1334,29 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Add llama.cpp models if the provider is configured
+	// Add llama.cpp text models if the provider is configured
 	if llamacppProvider != nil {
 		if llamaModels, err := llamacppProvider.GetModels(); err == nil {
 			for _, model := range llamaModels {
 				prefixedModel := "llamacpp/" + model
+				if !seen[prefixedModel] {
+					models = append(models, map[string]interface{}{
+						"id":       prefixedModel,
+						"object":   "model",
+						"owned_by": "llm-proxy",
+						"local":    true,
+					})
+					seen[prefixedModel] = true
+				}
+			}
+		}
+	}
+
+	// Add llama.cpp vision models if the provider is configured
+	if llamacppVisionProvider != nil {
+		if llamaModels, err := llamacppVisionProvider.GetModels(); err == nil {
+			for _, model := range llamaModels {
+				prefixedModel := "llamacpp-vision/" + model
 				if !seen[prefixedModel] {
 					models = append(models, map[string]interface{}{
 						"id":       prefixedModel,
@@ -1370,6 +1388,11 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	// Sort models alphabetically by ID
+	sort.Slice(models, func(i, j int) bool {
+		return models[i]["id"].(string) < models[j]["id"].(string)
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
