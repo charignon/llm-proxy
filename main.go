@@ -1364,9 +1364,7 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 						"owned_by":     "llm-proxy",
 						"local":        true,
 						"vision_model": true,
-						"capabilities": map[string]bool{
-							"vision": true,
-						},
+						"capabilities": []string{"vision"},
 					})
 					seen[prefixedModel] = true
 				}
