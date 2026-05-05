@@ -3292,7 +3292,29 @@ func main() {
 	router.SetAssistantResolver(getAssistantModel)
 
 	// Set llama.cpp instance resolver for model-based routing
-	if len(llamacppModelToInstance) > 0 {
+	if len(llamacppInstanceProviders) > 0 {
+		// Refresh model-to-instance mapping (instances may not be ready at startup)
+		refreshLlamaCppModelMap := func() {
+			for name, provider := range llamacppInstanceProviders {
+				if models, err := provider.GetModels(); err == nil && len(models) > 0 {
+					for _, modelID := range models {
+						if _, exists := llamacppModelToInstance[modelID]; !exists {
+							llamacppModelToInstance[modelID] = name
+							log.Printf("  -> instance '%s' serves model: %s", name, modelID)
+						}
+					}
+				}
+			}
+		}
+		// Try now, and also refresh periodically
+		refreshLlamaCppModelMap()
+		go func() {
+			for {
+				time.Sleep(30 * time.Second)
+				refreshLlamaCppModelMap()
+			}
+		}()
+
 		router.SetLlamaCppInstanceResolver(func(model string) (string, bool) {
 			inst, ok := llamacppModelToInstance[model]
 			return inst, ok
