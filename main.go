@@ -3291,36 +3291,6 @@ func main() {
 	// Set assistant model resolver on router
 	router.SetAssistantResolver(getAssistantModel)
 
-	// Set llama.cpp instance resolver for model-based routing
-	if len(llamacppInstanceProviders) > 0 {
-		// Refresh model-to-instance mapping (instances may not be ready at startup)
-		refreshLlamaCppModelMap := func() {
-			for name, provider := range llamacppInstanceProviders {
-				if models, err := provider.GetModels(); err == nil && len(models) > 0 {
-					for _, modelID := range models {
-						if _, exists := llamacppModelToInstance[modelID]; !exists {
-							llamacppModelToInstance[modelID] = name
-							log.Printf("  -> instance '%s' serves model: %s", name, modelID)
-						}
-					}
-				}
-			}
-		}
-		// Try now, and also refresh periodically
-		refreshLlamaCppModelMap()
-		go func() {
-			for {
-				time.Sleep(30 * time.Second)
-				refreshLlamaCppModelMap()
-			}
-		}()
-
-		router.SetLlamaCppInstanceResolver(func(model string) (string, bool) {
-			inst, ok := llamacppModelToInstance[model]
-			return inst, ok
-		})
-	}
-
 	// Wire lockdown checker so the router can reject cloud routes when enabled
 	router.SetLockdownChecker(getLockdownMode)
 
@@ -3333,6 +3303,35 @@ func main() {
 
 	// Initialize provider adapters (ports -> implementations)
 	initChatProviders()
+
+	// Set llama.cpp instance resolver for model-based routing (must be after initChatProviders)
+	if len(llamacppInstanceProviders) > 0 {
+		refreshLlamaCppModelMap := func() {
+			for name, provider := range llamacppInstanceProviders {
+				if models, err := provider.GetModels(); err == nil && len(models) > 0 {
+					for _, modelID := range models {
+						if _, exists := llamacppModelToInstance[modelID]; !exists {
+							llamacppModelToInstance[modelID] = name
+							log.Printf("  -> instance '%s' serves model: %s", name, modelID)
+						}
+					}
+				}
+			}
+		}
+		refreshLlamaCppModelMap()
+		go func() {
+			for {
+				time.Sleep(30 * time.Second)
+				refreshLlamaCppModelMap()
+			}
+		}()
+
+		router.SetLlamaCppInstanceResolver(func(model string) (string, bool) {
+			inst, ok := llamacppModelToInstance[model]
+			return inst, ok
+		})
+		log.Printf("LlamaCpp instance resolver set with %d model mappings", len(llamacppModelToInstance))
+	}
 
 	// Enable backend switching for vision routes if llama.cpp is configured
 	enableVisionBackendSwitch()
