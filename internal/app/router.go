@@ -3,6 +3,7 @@ package app
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -183,8 +184,10 @@ func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 		if r.llamacppResolver != nil {
 			if instName, found := r.llamacppResolver(model); found {
 				provider = "llamacpp-" + instName
+				log.Printf("[Router] Resolved llamacpp model %q to instance %q (provider: %s)", model, instName, provider)
 			} else {
 				provider = "llamacpp" // fallback to default
+				log.Printf("[Router] No instance found for llamacpp model %q, using default", model)
 			}
 		} else {
 			provider = "llamacpp"
