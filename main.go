@@ -1386,6 +1386,35 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Add models from named llama.cpp instances
+	for name, provider := range llamacppInstanceProviders {
+		if llamaModels, err := provider.GetModels(); err == nil {
+			for _, model := range llamaModels {
+				prefixedModel := "llamacpp/" + model
+				if !seen[prefixedModel] {
+					models = append(models, map[string]interface{}{
+						"id":       prefixedModel,
+						"object":   "model",
+						"owned_by": "llm-proxy",
+						"local":    true,
+					})
+					seen[prefixedModel] = true
+				}
+				// Also expose as llamacpp-{instance}/{model} for explicit instance targeting
+				instanceModel := "llamacpp-" + name + "/" + model
+				if !seen[instanceModel] {
+					models = append(models, map[string]interface{}{
+						"id":       instanceModel,
+						"object":   "model",
+						"owned_by": "llm-proxy",
+						"local":    true,
+					})
+					seen[instanceModel] = true
+				}
+			}
+		}
+	}
+
 	// Add llama.cpp vision models if the provider is configured
 	if llamacppVisionProvider != nil {
 		if llamaModels, err := llamacppVisionProvider.GetModels(); err == nil {
