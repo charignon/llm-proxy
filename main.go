@@ -51,6 +51,7 @@ var (
 	llamacppHost           = getEnv("LLAMACPP_HOST", "")        // Optional: llama.cpp text server (e.g., "localhost:8091")
 	llamacppVisionHost     = getEnv("LLAMACPP_VISION_HOST", "") // Optional: llama.cpp vision server with mmproj (e.g., "localhost:8081")
 	llamacppInstances      = getEnv("LLAMACPP_INSTANCES", "")   // Named instances: "text:localhost:8091,fast:localhost:8092,mini:localhost:8094"
+	llmManagerURL          = getEnv("LLM_MANAGER_URL", "")     // Optional: llm-manager API URL for dynamic instance discovery (e.g., "http://localhost:8095")
 	mlxHost                = getEnv("MLX_HOST", "")      // Optional: MLX LM server (e.g., "localhost:8086")
 	dataDir                = getEnv("DATA_DIR", "./data")
 	postgresConnStr        = getEnv("POSTGRES_CONN_STR", "")                       // PostgreSQL connection string for analytics (optional)
@@ -1168,6 +1169,57 @@ var llamacppInstanceProviders = map[string]*providers.LlamaCppProvider{}
 // llamacppModelToInstance maps model filenames to instance names for auto-routing.
 var llamacppModelToInstance = map[string]string{}
 
+// llmManagerInstance represents an instance from the llm-manager API.
+type llmManagerInstance struct {
+	Name      string `json:"name"`
+	Port      int    `json:"port"`
+	Model     string `json:"model"`
+	Running   bool   `json:"running"`
+	HealthOK  bool   `json:"health_ok"`
+	MmprojPath string `json:"mmproj_path"`
+}
+
+// refreshFromLLMManager fetches running instances from llm-manager and registers them as providers.
+func refreshFromLLMManager() {
+	if llmManagerURL == "" {
+		return
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(llmManagerURL + "/api/instances")
+	if err != nil {
+		log.Printf("llm-manager discovery failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	var instances []llmManagerInstance
+	if err := json.NewDecoder(resp.Body).Decode(&instances); err != nil {
+		log.Printf("llm-manager discovery: failed to decode response: %v", err)
+		return
+	}
+
+	for _, inst := range instances {
+		if !inst.Running || !inst.HealthOK {
+			continue
+		}
+		host := fmt.Sprintf("localhost:%d", inst.Port)
+		providerKey := "llamacpp-" + inst.Name
+
+		// Register provider if not already registered
+		if _, exists := llamacppInstanceProviders[inst.Name]; !exists {
+			provider := providers.NewLlamaCppProvider(host, llamacppTimeout)
+			chatProviders[providerKey] = provider
+			llamacppInstanceProviders[inst.Name] = provider
+			log.Printf("llm-manager: registered instance '%s' at %s (provider: %s)", inst.Name, host, providerKey)
+		}
+
+		// Update model-to-instance mapping
+		if inst.Model != "" {
+			llamacppModelToInstance[inst.Model] = inst.Name
+		}
+	}
+}
+
 func initChatProviders() {
 	ollamaProvider = providers.NewOllamaProvider(ollamaHost, chatTimeout)
 	ollamaCloudProvider = providers.NewOllamaCloudProvider(ollamaHost, chatTimeout)
@@ -1193,8 +1245,11 @@ func initChatProviders() {
 		log.Printf("llama.cpp vision provider configured at %s", llamacppVisionHost)
 	}
 
-	// Register named llama.cpp instances (e.g., "text:localhost:8091,fast:localhost:8092")
-	if llamacppInstances != "" {
+	// Register named llama.cpp instances from static config or llm-manager
+	if llmManagerURL != "" {
+		refreshFromLLMManager()
+		log.Printf("llm-manager: discovered %d instances from %s", len(llamacppInstanceProviders), llmManagerURL)
+	} else if llamacppInstances != "" {
 		for _, entry := range strings.Split(llamacppInstances, ",") {
 			entry = strings.TrimSpace(entry)
 			parts := strings.SplitN(entry, ":", 2)
@@ -3334,8 +3389,11 @@ func main() {
 	initChatProviders()
 
 	// Set llama.cpp instance resolver for model-based routing (must be after initChatProviders)
-	if len(llamacppInstanceProviders) > 0 {
+	if len(llamacppInstanceProviders) > 0 || llmManagerURL != "" {
 		refreshLlamaCppModelMap := func() {
+			if llmManagerURL != "" {
+				refreshFromLLMManager()
+			}
 			for name, provider := range llamacppInstanceProviders {
 				if models, err := provider.GetModels(); err == nil && len(models) > 0 {
 					for _, modelID := range models {
