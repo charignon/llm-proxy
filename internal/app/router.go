@@ -166,6 +166,7 @@ func (r *Router) ResolveRoute(req *domain.ChatCompletionRequest) (*domain.RouteC
 
 // resolveExplicitModel determines the provider for an explicitly specified model.
 func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
+	log.Printf("[Router] resolveExplicitModel: input=%q, hasResolver=%v", model, r.llamacppResolver != nil)
 	provider := "openai"
 	if strings.HasPrefix(model, "ollama-cloud/") {
 		provider = "ollama-cloud"
