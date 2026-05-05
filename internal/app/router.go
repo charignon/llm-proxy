@@ -14,6 +14,10 @@ import (
 // Returns (provider, model, found). If found is false, the alias is not an assistant model.
 type AssistantModelResolver func(alias string) (provider string, model string, found bool)
 
+// LlamaCppInstanceResolver resolves a model name to a named llama.cpp instance.
+// Returns (instanceName, found). The provider key is "llamacpp-{instanceName}".
+type LlamaCppInstanceResolver func(model string) (instanceName string, found bool)
+
 // LockdownChecker reports whether the proxy is in lockdown mode (cloud blocked).
 type LockdownChecker func() bool
 
@@ -29,6 +33,9 @@ type Router struct {
 
 	// Assistant model resolver for assistant aliases.
 	assistantResolver AssistantModelResolver
+
+	// LlamaCpp instance resolver: model name -> named instance.
+	llamacppResolver LlamaCppInstanceResolver
 
 	// Lockdown checker: when it returns true, cloud routes are rejected.
 	lockdownChecker LockdownChecker
@@ -49,6 +56,11 @@ func NewRouter(
 // SetAssistantResolver sets the function used to resolve assistant model aliases.
 func (r *Router) SetAssistantResolver(resolver AssistantModelResolver) {
 	r.assistantResolver = resolver
+}
+
+// SetLlamaCppInstanceResolver sets the function used to resolve model names to llama.cpp instances.
+func (r *Router) SetLlamaCppInstanceResolver(resolver LlamaCppInstanceResolver) {
+	r.llamacppResolver = resolver
 }
 
 // SetLockdownChecker sets the function used to check whether lockdown mode is on.
@@ -160,9 +172,23 @@ func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 	} else if strings.HasPrefix(model, "llamacpp-vision/") {
 		provider = "llamacpp-vision"
 		model = strings.TrimPrefix(model, "llamacpp-vision/")
+	} else if strings.HasPrefix(model, "llamacpp-") && strings.Contains(model, "/") {
+		// Explicit instance: "llamacpp-fast/model-name"
+		parts := strings.SplitN(model, "/", 2)
+		provider = parts[0]
+		model = parts[1]
 	} else if strings.HasPrefix(model, "llamacpp/") {
-		provider = "llamacpp"
 		model = strings.TrimPrefix(model, "llamacpp/")
+		// Auto-resolve to the instance serving this model
+		if r.llamacppResolver != nil {
+			if instName, found := r.llamacppResolver(model); found {
+				provider = "llamacpp-" + instName
+			} else {
+				provider = "llamacpp" // fallback to default
+			}
+		} else {
+			provider = "llamacpp"
+		}
 	} else if strings.HasPrefix(model, "mlx/") {
 		provider = "mlx"
 		model = strings.TrimPrefix(model, "mlx/")

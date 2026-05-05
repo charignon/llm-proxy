@@ -50,6 +50,7 @@ var (
 	ollamaHost             = getEnv("OLLAMA_HOST", "localhost:11434")
 	llamacppHost           = getEnv("LLAMACPP_HOST", "")        // Optional: llama.cpp text server (e.g., "localhost:8091")
 	llamacppVisionHost     = getEnv("LLAMACPP_VISION_HOST", "") // Optional: llama.cpp vision server with mmproj (e.g., "localhost:8081")
+	llamacppInstances      = getEnv("LLAMACPP_INSTANCES", "")   // Named instances: "text:localhost:8091,fast:localhost:8092,mini:localhost:8094"
 	mlxHost                = getEnv("MLX_HOST", "")      // Optional: MLX LM server (e.g., "localhost:8086")
 	dataDir                = getEnv("DATA_DIR", "./data")
 	postgresConnStr        = getEnv("POSTGRES_CONN_STR", "")                       // PostgreSQL connection string for analytics (optional)
@@ -1161,6 +1162,12 @@ var ollamaCloudProvider *providers.OllamaCloudProvider
 var llamacppProvider *providers.LlamaCppProvider
 var llamacppVisionProvider *providers.LlamaCppProvider
 
+// llamacppInstanceProviders maps instance names to their providers.
+var llamacppInstanceProviders = map[string]*providers.LlamaCppProvider{}
+
+// llamacppModelToInstance maps model filenames to instance names for auto-routing.
+var llamacppModelToInstance = map[string]string{}
+
 func initChatProviders() {
 	ollamaProvider = providers.NewOllamaProvider(ollamaHost, chatTimeout)
 	ollamaCloudProvider = providers.NewOllamaCloudProvider(ollamaHost, chatTimeout)
@@ -1184,6 +1191,33 @@ func initChatProviders() {
 		llamacppVisionProvider = providers.NewLlamaCppProvider(llamacppVisionHost, llamacppTimeout)
 		chatProviders["llamacpp-vision"] = llamacppVisionProvider
 		log.Printf("llama.cpp vision provider configured at %s", llamacppVisionHost)
+	}
+
+	// Register named llama.cpp instances (e.g., "text:localhost:8091,fast:localhost:8092")
+	if llamacppInstances != "" {
+		for _, entry := range strings.Split(llamacppInstances, ",") {
+			entry = strings.TrimSpace(entry)
+			parts := strings.SplitN(entry, ":", 2)
+			if len(parts) != 2 {
+				log.Printf("Invalid llamacpp instance format: %s (expected name:host:port)", entry)
+				continue
+			}
+			name := parts[0]
+			host := parts[1]
+			provider := providers.NewLlamaCppProvider(host, llamacppTimeout)
+			providerKey := "llamacpp-" + name
+			chatProviders[providerKey] = provider
+			llamacppInstanceProviders[name] = provider
+			log.Printf("llama.cpp instance '%s' configured at %s (provider: %s)", name, host, providerKey)
+
+			// Discover which model this instance is serving
+			if models, err := provider.GetModels(); err == nil && len(models) > 0 {
+				for _, modelID := range models {
+					llamacppModelToInstance[modelID] = name
+					log.Printf("  -> serves model: %s", modelID)
+				}
+			}
+		}
 	}
 
 	// If MLX host is configured, add it as a provider
@@ -3256,6 +3290,14 @@ func main() {
 
 	// Set assistant model resolver on router
 	router.SetAssistantResolver(getAssistantModel)
+
+	// Set llama.cpp instance resolver for model-based routing
+	if len(llamacppModelToInstance) > 0 {
+		router.SetLlamaCppInstanceResolver(func(model string) (string, bool) {
+			inst, ok := llamacppModelToInstance[model]
+			return inst, ok
+		})
+	}
 
 	// Wire lockdown checker so the router can reject cloud routes when enabled
 	router.SetLockdownChecker(getLockdownMode)
