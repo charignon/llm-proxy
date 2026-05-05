@@ -19,6 +19,9 @@ type AssistantModelResolver func(alias string) (provider string, model string, f
 // Returns (instanceName, found). The provider key is "llamacpp-{instanceName}".
 type LlamaCppInstanceResolver func(model string) (instanceName string, found bool)
 
+// LlamaCppInstanceModelResolver resolves an instance name to the model it serves.
+type LlamaCppInstanceModelResolver func(instanceName string) (model string, found bool)
+
 // LockdownChecker reports whether the proxy is in lockdown mode (cloud blocked).
 type LockdownChecker func() bool
 
@@ -37,6 +40,9 @@ type Router struct {
 
 	// LlamaCpp instance resolver: model name -> named instance.
 	llamacppResolver LlamaCppInstanceResolver
+
+	// LlamaCpp instance model resolver: instance name -> model name.
+	llamacppInstanceModel LlamaCppInstanceModelResolver
 
 	// Lockdown checker: when it returns true, cloud routes are rejected.
 	lockdownChecker LockdownChecker
@@ -62,6 +68,11 @@ func (r *Router) SetAssistantResolver(resolver AssistantModelResolver) {
 // SetLlamaCppInstanceResolver sets the function used to resolve model names to llama.cpp instances.
 func (r *Router) SetLlamaCppInstanceResolver(resolver LlamaCppInstanceResolver) {
 	r.llamacppResolver = resolver
+}
+
+// SetLlamaCppInstanceModelResolver sets the function used to resolve instance names to model names.
+func (r *Router) SetLlamaCppInstanceModelResolver(resolver LlamaCppInstanceModelResolver) {
+	r.llamacppInstanceModel = resolver
 }
 
 // SetLockdownChecker sets the function used to check whether lockdown mode is on.
@@ -192,6 +203,19 @@ func (r *Router) resolveExplicitModel(model string) *domain.RouteConfig {
 			}
 		} else {
 			provider = "llamacpp"
+		}
+	} else if strings.HasPrefix(model, "llm/") {
+		// Alias: "llm/text" -> resolve to llamacpp instance "text"
+		instName := strings.TrimPrefix(model, "llm/")
+		provider = "llamacpp-" + instName
+		// Look up the model this instance is serving
+		if r.llamacppInstanceModel != nil {
+			if resolvedModel, found := r.llamacppInstanceModel(instName); found {
+				model = resolvedModel
+				log.Printf("[Router] Resolved llm/%s to model %q (provider: %s)", instName, model, provider)
+			} else {
+				log.Printf("[Router] No model found for llm/%s, passing instance name", instName)
+			}
 		}
 	} else if strings.HasPrefix(model, "mlx/") {
 		provider = "mlx"

@@ -1424,7 +1424,7 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Add llama.cpp models from named instances (llm-manager or static config)
-	for _, provider := range llamacppInstanceProviders {
+	for name, provider := range llamacppInstanceProviders {
 		if llamaModels, err := provider.GetModels(); err == nil {
 			for _, model := range llamaModels {
 				prefixedModel := "llamacpp/" + model
@@ -1438,6 +1438,17 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 					seen[prefixedModel] = true
 				}
 			}
+		}
+		// Add friendly alias: llm/{instance-name}
+		alias := "llm/" + name
+		if !seen[alias] {
+			models = append(models, map[string]interface{}{
+				"id":       alias,
+				"object":   "model",
+				"owned_by": "llm-proxy",
+				"local":    true,
+			})
+			seen[alias] = true
 		}
 	}
 
@@ -3405,6 +3416,14 @@ func main() {
 		router.SetLlamaCppInstanceResolver(func(model string) (string, bool) {
 			inst, ok := llamacppModelToInstance[model]
 			return inst, ok
+		})
+		router.SetLlamaCppInstanceModelResolver(func(instanceName string) (string, bool) {
+			for model, inst := range llamacppModelToInstance {
+				if inst == instanceName {
+					return model, true
+				}
+			}
+			return "", false
 		})
 		log.Printf("LlamaCpp instance resolver set with %d model mappings", len(llamacppModelToInstance))
 	}
