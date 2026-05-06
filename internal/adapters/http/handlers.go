@@ -1486,8 +1486,8 @@ func (h *ChatHandler) handleMLXStreaming(w http.ResponseWriter, r *http.Request,
 	// Resolve host and timeout based on provider (works for both mlx and llamacpp)
 	var host string
 	var timeout int
-	switch route.Provider {
-	case "llamacpp", "llamacpp-vision":
+	isLlamaCpp := route.Provider == "llamacpp" || route.Provider == "llamacpp-vision" || strings.HasPrefix(route.Provider, "llamacpp-")
+	if isLlamaCpp {
 		p, ok := h.Providers[route.Provider]
 		if !ok {
 			http.Error(w, route.Provider+" provider not configured", http.StatusInternalServerError)
@@ -1500,7 +1500,7 @@ func (h *ChatHandler) handleMLXStreaming(w http.ResponseWriter, r *http.Request,
 		}
 		host = lp.Host
 		timeout = lp.Timeout
-	default: // mlx
+	} else { // mlx
 		p, ok := h.Providers["mlx"]
 		if !ok {
 			http.Error(w, "MLX provider not configured", http.StatusInternalServerError)
