@@ -370,13 +370,13 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // handleStreaming handles streaming chat completion requests by forwarding to OpenAI/Together/Ollama/Baseten with stream=true.
 func (h *ChatHandler) handleStreaming(w http.ResponseWriter, r *http.Request, ctx context.Context, req *domain.ChatCompletionRequest, route *domain.RouteConfig, body []byte, logEntry *domain.RequestLog, startTime time.Time) {
 	// Check if provider supports streaming
-	if route.Provider != "openai" && route.Provider != "together" && route.Provider != "baseten" && route.Provider != "ollama" && route.Provider != "ollama-cloud" && route.Provider != "mlx" && route.Provider != "llamacpp" && route.Provider != "llamacpp-vision" {
+	if route.Provider != "openai" && route.Provider != "together" && route.Provider != "baseten" && route.Provider != "ollama" && route.Provider != "ollama-cloud" && route.Provider != "mlx" && route.Provider != "llamacpp" && route.Provider != "llamacpp-vision" && !strings.HasPrefix(route.Provider, "llamacpp-") {
 		http.Error(w, fmt.Sprintf("Streaming not supported for provider: %s", route.Provider), http.StatusBadRequest)
 		return
 	}
 
 	// Handle Ollama streaming separately (uses NDJSON, not SSE)
-	if route.Provider == "mlx" || route.Provider == "llamacpp" || route.Provider == "llamacpp-vision" {
+	if route.Provider == "mlx" || route.Provider == "llamacpp" || route.Provider == "llamacpp-vision" || strings.HasPrefix(route.Provider, "llamacpp-") {
 		h.handleMLXStreaming(w, r, req, route, logEntry, startTime)
 		return
 	}
