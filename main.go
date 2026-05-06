@@ -1521,6 +1521,28 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleLlamaCppModels returns only the llm-manager instance models (llm/* aliases).
+// This powers LibreChat's auto-discovery so it only shows llama-server models.
+func handleLlamaCppModels(w http.ResponseWriter, r *http.Request) {
+	models := []map[string]interface{}{}
+	for name := range llamacppInstanceProviders {
+		models = append(models, map[string]interface{}{
+			"id":       "llm/" + name,
+			"object":   "model",
+			"owned_by": "llm-proxy",
+			"local":    true,
+		})
+	}
+	sort.Slice(models, func(i, j int) bool {
+		return models[i]["id"].(string) < models[j]["id"].(string)
+	})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"object": "list",
+		"data":   models,
+	})
+}
+
 // EstimateRequest is a simplified request for route estimation
 type EstimateRequest struct {
 	Model     string `json:"model"`
@@ -3564,6 +3586,8 @@ func main() {
 	http.Handle("/v1/messages", anthropicMessagesHandler)
 	http.HandleFunc("/v1/estimate", handleEstimate)
 	http.HandleFunc("/v1/models", handleModels)
+	http.HandleFunc("/llamacpp/v1/models", handleLlamaCppModels)
+	http.Handle("/llamacpp/v1/chat/completions", chatHandler)
 	http.HandleFunc("/api/stats", withCORS(historyHandler.HandleStats))
 	http.HandleFunc("/api/stats/models", withCORS(historyHandler.HandleModelStats))
 	http.HandleFunc("/api/timing", withCORS(historyHandler.HandleTiming))
