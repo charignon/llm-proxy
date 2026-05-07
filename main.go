@@ -216,12 +216,12 @@ var visionRoutingTable = map[string]map[string]*RouteConfig{
 		"medium":    {Provider: "openai", Model: "gpt-4o"},
 		"low":       {Provider: "ollama", Model: "qwen3-vl:30b"},
 	},
-	// sensitive: true (local only)
+	// sensitive: true (local only, llama-server instances via llm-manager)
 	"true": {
-		"very_high": {Provider: "ollama", Model: "qwen3-vl:235b"}, // Largest local vision model (143GB)
-		"high":      {Provider: "ollama", Model: "qwen3-vl:30b"},
-		"medium":    {Provider: "ollama", Model: "qwen3-vl:30b"},
-		"low":       {Provider: "ollama", Model: "qwen3-vl:30b"},
+		"very_high": {Provider: "ollama", Model: "qwen3-vl:235b"},         // Largest local vision model (143GB)
+		"high":      {Provider: "llamacpp-vision-small", Model: "qwen3-vl-30b-Q4_K_M.gguf"},   // ~18GB
+		"medium":    {Provider: "llamacpp-vision-mini", Model: "gemma-4-E4B-it-Q4_K_M.gguf"}, // ~3GB
+		"low":       {Provider: "llamacpp-mini", Model: "gemma-4-E2B-it-Q4_K_M.gguf"},        // ~1.5GB
 	},
 }
 
