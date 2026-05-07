@@ -1622,7 +1622,7 @@ func handleEstimate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	isLocal := route.Provider == "ollama"
+	isLocal := isLocalProvider(route.Provider)
 
 	resp := EstimateResponse{
 		Provider:         route.Provider,
@@ -3035,7 +3035,7 @@ func isLocalProvider(provider string) bool {
 	case "ollama", "llamacpp", "llamacpp-vision", "local-vision":
 		return true
 	default:
-		return false
+		return strings.HasPrefix(provider, "llamacpp-")
 	}
 }
 

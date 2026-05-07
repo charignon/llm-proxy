@@ -260,7 +260,7 @@ func isLocalExplicitProvider(route *domain.RouteConfig) bool {
 	case "ollama", "llamacpp", "llamacpp-vision", "local-vision", "mlx":
 		return !providers.IsOllamaCloudModel(route.Model)
 	default:
-		return false
+		return strings.HasPrefix(route.Provider, "llamacpp-")
 	}
 }
 
