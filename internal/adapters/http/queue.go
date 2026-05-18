@@ -144,29 +144,22 @@ func NewRequestQueue(providerLimits map[string]int) *RequestQueue {
 		queues:   make(map[string]*providerQueue),
 		defaults: providerLimits,
 	}
-	// Pre-create queues for non-per-model providers
 	for name, limit := range providerLimits {
-		if !perModelProviders[name] {
-			rq.queues[name] = newProviderQueue(name, limit)
-		}
+		rq.queues[name] = newProviderQueue(name, limit)
 	}
 	return rq
 }
 
-// Acquire waits for a slot on the given provider+model queue.
-// Returns a release ID that must be passed to Release when done.
+// Acquire waits for a slot on the provider's queue.
 func (rq *RequestQueue) Acquire(ctx context.Context, provider, model, usecase string, hasImages bool) (string, error) {
-	// For providers with per-model queuing, use provider/model as the key
-	key := rq.queueKey(provider, model)
-	pq := rq.getOrCreate(key, provider)
+	pq := rq.getOrCreate(provider)
 	return pq.acquire(ctx, model, usecase, hasImages)
 }
 
-// Release returns a slot to the provider+model queue
+// Release returns a slot to the provider's queue
 func (rq *RequestQueue) Release(provider, model, id string) {
-	key := rq.queueKey(provider, model)
 	rq.mu.RLock()
-	pq, ok := rq.queues[key]
+	pq, ok := rq.queues[provider]
 	rq.mu.RUnlock()
 	if ok {
 		pq.release(id)
@@ -186,21 +179,10 @@ func (rq *RequestQueue) Stats() QueueStats {
 	return stats
 }
 
-// perModelProviders lists providers that get per-model queues
-var perModelProviders = map[string]bool{
-	"ollama": true,
-}
 
-func (rq *RequestQueue) queueKey(provider, model string) string {
-	if perModelProviders[provider] {
-		return provider + "/" + model
-	}
-	return provider
-}
-
-func (rq *RequestQueue) getOrCreate(key, provider string) *providerQueue {
+func (rq *RequestQueue) getOrCreate(provider string) *providerQueue {
 	rq.mu.RLock()
-	pq, ok := rq.queues[key]
+	pq, ok := rq.queues[provider]
 	rq.mu.RUnlock()
 	if ok {
 		return pq
@@ -210,16 +192,15 @@ func (rq *RequestQueue) getOrCreate(key, provider string) *providerQueue {
 	defer rq.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if pq, ok := rq.queues[key]; ok {
+	if pq, ok := rq.queues[provider]; ok {
 		return pq
 	}
 
-	// Use provider-level default limit
 	limit := 2
 	if l, ok := rq.defaults[provider]; ok {
 		limit = l
 	}
-	pq = newProviderQueue(key, limit)
-	rq.queues[key] = pq
+	pq = newProviderQueue(provider, limit)
+	rq.queues[provider] = pq
 	return pq
 }
