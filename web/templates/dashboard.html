@@ -479,6 +479,7 @@
             <button class="nav-tab" onclick="window.location.href='/analytics'">Analytics</button>
             <button class="nav-tab" onclick="window.location.href='/stats'">Stats</button>
             <button class="nav-tab" onclick="window.location.href='/budgets'">Budgets</button>
+            <button class="nav-tab" onclick="switchTab('queue')">Queue</button>
             <button class="nav-tab" onclick="switchTab('system')">System</button>
             <button class="nav-tab" onclick="window.location.href='http://llm.lan:8095'" style="border-left:1px solid #333;margin-left:8px">LLM Manager</button>
             <button class="nav-tab" onclick="window.location.href='http://llm-resources.lan'">Resources</button>
@@ -601,6 +602,18 @@
                 <h2 class="section-title">Model Traffic Volume</h2>
                 <p style="color: #888; font-size: 13px; margin-bottom: 12px;">Request counts by model - helps identify high-traffic routes to optimize</p>
                 <div id="model-volume-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px;"></div>
+            </div>
+        </div>
+
+        <!-- Queue Tab -->
+        <div id="tab-queue" class="tab-content">
+            <div class="section">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <h2>Request Queue</h2>
+                    <button onclick="refreshQueue()" style="background:#1a1a2e;color:#888;border:1px solid #333;border-radius:4px;padding:4px 12px;cursor:pointer;">Refresh</button>
+                </div>
+                <p style="color:#888;margin-bottom:16px;">Per-provider concurrency limits prevent OOM from parallel requests. Queued requests wait for a slot.</p>
+                <div id="queue-content"></div>
             </div>
         </div>
 
@@ -1839,6 +1852,10 @@
             if (tabName === 'models') {
                 loadModelsConfig();
             }
+            // Queue tab
+            if (tabName === 'queue') {
+                refreshQueue();
+            }
             // System metrics tab
             if (tabName === 'system') {
                 loadSystemMetrics();
@@ -1875,6 +1892,59 @@
             if (days > 0) return days + 'd ' + hours + 'h';
             if (hours > 0) return hours + 'h ' + mins + 'm';
             return mins + 'm';
+        }
+
+        async function refreshQueue() {
+            try {
+                const resp = await fetch('/api/queue');
+                const data = await resp.json();
+                const container = document.getElementById('queue-content');
+                if (!data.providers || data.providers.length === 0) {
+                    container.innerHTML = '<p style="color:#888;">No providers configured.</p>';
+                    return;
+                }
+                let html = '';
+                for (const p of data.providers) {
+                    const barWidth = p.max_concurrent > 0 ? (p.running / p.max_concurrent * 100) : 0;
+                    const barColor = p.queued > 0 ? '#d29922' : (p.running > 0 ? '#58a6ff' : '#3fb950');
+                    html += '<div style="background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:16px;margin-bottom:12px;">';
+                    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
+                    html += '<span style="font-weight:600;color:#58a6ff;font-size:1.1em;">' + p.provider + '</span>';
+                    html += '<span style="color:#888;font-size:0.85em;">max ' + p.max_concurrent + ' concurrent</span>';
+                    html += '</div>';
+                    // Progress bar
+                    html += '<div style="background:#21262d;border-radius:4px;height:12px;margin-bottom:8px;">';
+                    html += '<div style="background:' + barColor + ';height:100%;border-radius:4px;width:' + Math.min(barWidth, 100) + '%;transition:width 0.3s;"></div>';
+                    html += '</div>';
+                    // Stats row
+                    html += '<div style="display:flex;gap:24px;font-size:0.85em;">';
+                    html += '<span style="color:' + (p.running > 0 ? '#58a6ff' : '#888') + ';">Running: ' + p.running + '</span>';
+                    html += '<span style="color:' + (p.queued > 0 ? '#d29922' : '#888') + ';">Queued: ' + p.queued + '</span>';
+                    html += '<span style="color:#888;">Total served: ' + p.total_served + '</span>';
+                    html += '</div>';
+                    // Entries
+                    if (p.entries && p.entries.length > 0) {
+                        html += '<table style="width:100%;margin-top:8px;font-size:0.8em;">';
+                        html += '<tr style="color:#888;"><th style="text-align:left;padding:4px 8px;">Status</th><th style="text-align:left;padding:4px 8px;">Model</th><th style="text-align:left;padding:4px 8px;">Usecase</th><th style="text-align:left;padding:4px 8px;">Wait</th></tr>';
+                        for (const e of p.entries) {
+                            const status = e.status === 'running'
+                                ? '<span style="color:#3fb950;">● running</span>'
+                                : '<span style="color:#d29922;">◌ queued</span>';
+                            const wait = ((Date.now() - new Date(e.enqueued_at).getTime()) / 1000).toFixed(0) + 's';
+                            const img = e.has_images ? ' 🖼️' : '';
+                            html += '<tr><td style="padding:4px 8px;">' + status + '</td>';
+                            html += '<td style="padding:4px 8px;">' + e.model + img + '</td>';
+                            html += '<td style="padding:4px 8px;">' + e.usecase + '</td>';
+                            html += '<td style="padding:4px 8px;">' + wait + '</td></tr>';
+                        }
+                        html += '</table>';
+                    }
+                    html += '</div>';
+                }
+                container.innerHTML = html;
+            } catch (e) {
+                console.error('Failed to load queue:', e);
+            }
         }
 
         async function loadSystemMetrics() {

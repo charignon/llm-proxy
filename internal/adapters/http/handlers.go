@@ -62,6 +62,9 @@ type ChatHandler struct {
 	// Returns an error if budget is exceeded, nil otherwise.
 	CheckBudget func(provider string) error
 
+	// Queue manages per-provider concurrency limits
+	Queue *RequestQueue
+
 	// Timeouts
 	OpenAIStreamingTimeout int // Timeout in seconds for OpenAI streaming requests
 
@@ -255,6 +258,20 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}()
 		}
 
+		// Acquire queue slot for streaming too
+		if h.Queue != nil {
+			queueID, qErr := h.Queue.Acquire(reqCtx, route.Provider, route.Model, req.Usecase, req.HasImages())
+			if qErr != nil {
+				logEntry.Success = false
+				logEntry.Error = "queue: " + qErr.Error()
+				logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+				h.Logger.LogRequest(logEntry)
+				http.Error(w, "request cancelled while queued", statusClientClosedRequest)
+				return
+			}
+			defer h.Queue.Release(route.Provider, queueID)
+		}
+
 		h.handleStreaming(w, r, reqCtx, &req, route, body, logEntry, startTime)
 		return
 	}
@@ -301,6 +318,20 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				h.RemovePending(pendingID)
 			}
 		}()
+	}
+
+	// Acquire queue slot (blocks if provider is at capacity)
+	if h.Queue != nil {
+		queueID, qErr := h.Queue.Acquire(reqCtx, route.Provider, route.Model, req.Usecase, req.HasImages())
+		if qErr != nil {
+			logEntry.Success = false
+			logEntry.Error = "queue: " + qErr.Error()
+			logEntry.LatencyMs = time.Since(startTime).Milliseconds()
+			h.Logger.LogRequest(logEntry)
+			http.Error(w, "request cancelled while queued", statusClientClosedRequest)
+			return
+		}
+		defer h.Queue.Release(route.Provider, queueID)
 	}
 
 	// Make the actual call

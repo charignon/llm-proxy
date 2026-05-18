@@ -3453,6 +3453,17 @@ func main() {
 	// Enable backend switching for vision routes if llama.cpp is configured
 	enableVisionBackendSwitch()
 
+	// Initialize per-provider request queue
+	// Limits concurrent requests to each provider to prevent OOM from parallel vision requests
+	requestQueue := httphandlers.NewRequestQueue(map[string]int{
+		"ollama":   1, // Ollama: 1 concurrent (vision models are memory-heavy)
+		"llamacpp": 2, // llama.cpp: 2 concurrent (managed by llama-server's --parallel)
+		"openai":   5, // OpenAI: 5 concurrent (cloud, no local resource concern)
+		"anthropic": 5,
+		"together": 5,
+		"gemini":   5,
+	})
+
 	// Initialize chat handler (primary adapter)
 	chatHandler = &httphandlers.ChatHandler{
 		Router:                 router,
@@ -3469,6 +3480,7 @@ func main() {
 		CheckBudget:            budgetChecker.CheckBudget,
 		OpenAIStreamingTimeout: openaiStreamingTimeout,
 		OllamaHost:             ollamaHost,
+		Queue:                  requestQueue,
 	}
 
 	// Initialize Responses API handler (OpenAI's newer API with smart routing)
@@ -3605,6 +3617,10 @@ func main() {
 	http.HandleFunc("/api/cache/clear", withCORS(historyHandler.HandleClearCache))
 	http.HandleFunc("/api/pending", withCORS(historyHandler.HandlePendingRequests))
 	http.HandleFunc("/api/pending/", withCORS(historyHandler.HandleCancelPendingRequest))
+	http.HandleFunc("/api/queue", withCORS(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(requestQueue.Stats())
+	}))
 	http.HandleFunc("/api/tts-history", withCORS(historyHandler.HandleTTSHistory))
 	http.HandleFunc("/api/tts-cache-stats", withCORS(handleTTSCacheStats))
 	http.HandleFunc("/api/tts-cache/clear", withCORS(handleTTSCacheClear))
