@@ -269,7 +269,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "request cancelled while queued", statusClientClosedRequest)
 				return
 			}
-			defer h.Queue.Release(route.Provider, queueID)
+			defer h.Queue.Release(route.Provider, route.Model, queueID)
 		}
 
 		h.handleStreaming(w, r, reqCtx, &req, route, body, logEntry, startTime)
@@ -331,7 +331,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "request cancelled while queued", statusClientClosedRequest)
 			return
 		}
-		defer h.Queue.Release(route.Provider, queueID)
+		defer h.Queue.Release(route.Provider, route.Model, queueID)
 	}
 
 	// Make the actual call
